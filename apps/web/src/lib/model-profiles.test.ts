@@ -2,7 +2,7 @@ import { afterEach,beforeEach,describe,expect,it,vi } from 'vitest';
 const fixture=vi.hoisted(()=>({userId:'member-a',sessionUser:'member-a',fetch:vi.fn()}));
 vi.mock('../stores/auth',()=>({useAuthStore:Object.assign(()=>undefined,{getState:()=>({user:{id:fixture.userId}})})}));
 vi.mock('./supabase',()=>({API_URL:'',supabase:{auth:{getSession:async()=>({data:{session:{access_token:'TEST_ONLY_TOKEN',user:{id:fixture.sessionUser}}}})}}}));
-import { isModelProfileReady,parseModelNamesInput,profileModelNames,modelProfilesApi,normalizeModelProfileId,type ModelProfile } from './model-profiles';
+import { defaultModelChoice,isModelProfileReady,parseModelNamesInput,profileModelNames,modelProfilesApi,normalizeModelProfileId,type ModelProfile } from './model-profiles';
 const id='11111111-2222-4333-8444-555555555555';
 beforeEach(()=>{fixture.userId='member-a';fixture.sessionUser='member-a';fixture.fetch.mockReset();vi.stubGlobal('fetch',fixture.fetch);});
 afterEach(()=>vi.unstubAllGlobals());
@@ -14,4 +14,10 @@ describe('private model profile client',()=>{
  it('retains a saved key when an edit omits the key and uses authenticated PUT',async()=>{fixture.fetch.mockResolvedValue({ok:true,status:200,json:async()=>({id})});await modelProfilesApi.update(id,{name:'My endpoint',provider:'openai-compatible',model:'example-model',models:['example-model','second-model'],baseUrl:'https://api.example.com/v1'});const [url,options]=fixture.fetch.mock.calls[0]!;expect(url).toBe('/api/ai/profiles/'+id);expect(options.method).toBe('PUT');expect(options.headers.Authorization).toBe('Bearer TEST_ONLY_TOKEN');expect(JSON.parse(options.body)).not.toHaveProperty('apiKey');expect(JSON.parse(options.body).models).toEqual(['example-model','second-model']);});
  it('does not parse a 204 delete response and refuses default deletion',async()=>{fixture.fetch.mockResolvedValue({ok:true,status:204});await expect(modelProfilesApi.remove(id)).resolves.toBeUndefined();expect(()=>modelProfilesApi.remove('default')).toThrow();});
  it('refuses a response request after an account has switched and surfaces friendly validation errors',async()=>{fixture.sessionUser='member-b';await expect(modelProfilesApi.list('member-a')).rejects.toThrow('账号已切换');expect(fixture.fetch).not.toHaveBeenCalled();fixture.sessionUser='member-a';fixture.fetch.mockResolvedValue({ok:false,status:400,json:async()=>({message:'模型名称不能为空'})});await expect(modelProfilesApi.create({name:'Cloud',provider:'openai',model:''})).rejects.toThrow('模型名称不能为空');});
+});
+
+describe('canonical named default model',()=>{
+ const profile={id,name:'Migrated connection',provider:'openai-compatible',model:'first',models:['first','second'],baseUrl:'https://api.example.com/v1',apiKeySet:true,ready:true,updatedAt:'2026-10-01'} as ModelProfile;
+ it('selects the persisted named default and never resurrects a deleted legacy default',()=>{expect(defaultModelChoice({profiles:[profile],defaultProfileId:id,defaultModel:'second'})?.value).toBe(JSON.stringify([id,'second']));expect(defaultModelChoice({profiles:[profile],defaultProfileId:null,defaultModel:null})).toBeUndefined();expect(defaultModelChoice({profiles:[profile],defaultProfileId:id,defaultModel:'unknown'})).toBeUndefined();});
+ it('writes an explicit profile/model default without sending or rewriting its key',async()=>{fixture.fetch.mockResolvedValue({ok:true,status:200,json:async()=>({profiles:[profile],defaultProfileId:id,defaultModel:'second'})});await modelProfilesApi.setDefault(id,'second');const [url,options]=fixture.fetch.mock.calls[0]!;expect(url).toBe('/api/ai/profiles/default');expect(options.method).toBe('PUT');expect(JSON.parse(options.body)).toEqual({profileId:id,modelName:'second'});});
 });

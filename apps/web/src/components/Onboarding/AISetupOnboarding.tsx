@@ -1,12 +1,10 @@
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@scribe/ui';
-import { useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from 'react-router-dom';
 
 import { SUPPORTED_LANGUAGES } from '../../i18n';
-import { api } from '../../lib/api';
-import { needsPersonalAISetup } from '../../lib/ai-setup';
+import { isModelProfileReady,useModelProfiles } from '../../lib/model-profiles';
 import { AISettingsTab } from '../../pages/settings/AISettingsTab';
 import { useAuthStore } from '../../stores/auth';
 
@@ -15,9 +13,9 @@ export function AISetupOnboarding() {
   const userId=useAuthStore(state=>state.user?.id);
   const {pathname}=useLocation();
   const [dismissed,setDismissed]=useState(false);
-  const config=useQuery({queryKey:['ai-config',userId],queryFn:api.ai.getConfig,enabled:!!userId,staleTime:30000});
+  const profiles=useModelProfiles();
   useEffect(()=>setDismissed(false),[userId]);
-  const open=!!userId&&config.isSuccess&&needsPersonalAISetup(config.data)&&!dismissed&&!pathname.startsWith('/settings')&&!pathname.startsWith('/admin');
+  const open=!!userId&&!profiles.isPending&&!profiles.data?.profiles.some(isModelProfileReady)&&!dismissed&&!pathname.startsWith('/settings')&&!pathname.startsWith('/admin');
   return <Dialog open={open} onOpenChange={next=>{if(!next)setDismissed(true);}}>
     <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
       <DialogHeader><DialogTitle>{t('onboarding.title')}</DialogTitle><DialogDescription>{t('onboarding.description')}</DialogDescription></DialogHeader>

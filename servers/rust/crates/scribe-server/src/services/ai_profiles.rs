@@ -4,6 +4,7 @@ use chrono::{DateTime,Utc};
 use scribe_ai::CryptoBox;
 use scribe_shared::{AIConfigStored,AIProvider,ApiError,ApiResult,UpdateAIConfigInput,UserId};
 use serde::{Deserialize,Serialize};
+use serde_json::Value;
 use sqlx::{PgPool,Row,postgres::PgRow};
 use uuid::Uuid;
 
@@ -17,26 +18,64 @@ impl<'de> Deserialize<'de> for ProfileInput{
 }
 #[derive(Serialize)]#[serde(rename_all="camelCase")]
 pub struct ProfilePublic {pub id:Uuid,pub name:String,pub provider:AIProvider,pub model:String,pub models:Vec<String>,pub base_url:Option<String>,pub api_key_set:bool,pub ready:bool,pub api_key_preview:Option<String>,pub updated_at:DateTime<Utc>}
-#[derive(Serialize)]pub struct ProfileList{pub profiles:Vec<ProfilePublic>}
+#[derive(Serialize)]#[serde(rename_all="camelCase")]pub struct ProfileList{pub profiles:Vec<ProfilePublic>,pub default_profile_id:Option<Uuid>,pub default_model:Option<String>,pub migration:MigrationStatus}
+#[derive(Serialize)]pub struct MigrationStatus{pub status:String,pub message:Option<String>}
+#[derive(Deserialize)]#[serde(rename_all="camelCase",deny_unknown_fields)]pub struct SetDefaultInput{pub profile_id:Uuid,pub model_name:Option<String>}
 #[derive(Clone)]pub struct AIProfiles{pool:PgPool,crypto:Arc<CryptoBox>}
 impl AIProfiles{
  pub fn new(pool:PgPool,crypto:Arc<CryptoBox>)->Self{Self{pool,crypto}}
- pub async fn list(&self,user:UserId)->ApiResult<ProfileList>{let rows=sqlx::query("select id,name,provider,model,models,base_url,api_key_cipher is not null as api_key_set,updated_at from public.scribe_ai_model_profiles where user_id=$1 order by updated_at desc,id limit 20").bind(user.into_inner()).fetch_all(&self.pool).await.map_err(db)?;Ok(ProfileList{profiles:rows.into_iter().map(public).collect::<ApiResult<Vec<_>>>()?})}
+ pub async fn list(&self,user:UserId)->ApiResult<ProfileList>{let migration=self.ensure_legacy(user).await?;let rows=sqlx::query("select id,name,provider,model,models,base_url,api_key_cipher is not null as api_key_set,updated_at from public.scribe_ai_model_profiles where user_id=$1 order by updated_at desc,id limit 20").bind(user.into_inner()).fetch_all(&self.pool).await.map_err(db)?;let pref=sqlx::query("select default_profile_id,default_model from public.scribe_ai_profile_preferences where user_id=$1").bind(user.into_inner()).fetch_one(&self.pool).await.map_err(db)?;Ok(ProfileList{profiles:rows.into_iter().map(public).collect::<ApiResult<Vec<_>>>()?,default_profile_id:pref.get("default_profile_id"),default_model:pref.get("default_model"),migration})}
+ async fn ensure_legacy(&self,user:UserId)->ApiResult<MigrationStatus>{
+  let mut tx=self.pool.begin().await.map_err(db)?;sqlx::query("select pg_advisory_xact_lock(hashtextextended($1,48190322))").bind(format!("prims-ai-profiles:{user}")).execute(&mut *tx).await.map_err(db)?;
+  sqlx::query("insert into public.scribe_ai_profile_preferences(user_id) values($1) on conflict do nothing").bind(user.into_inner()).execute(&mut *tx).await.map_err(db)?;
+  let pref=sqlx::query("select legacy_migrated_at,migration_status from public.scribe_ai_profile_preferences where user_id=$1 for update").bind(user.into_inner()).fetch_one(&mut *tx).await.map_err(db)?;
+  if pref.get::<Option<DateTime<Utc>>,_>("legacy_migrated_at").is_some(){return Ok(migration_status(pref.get("migration_status")));}
+  let raw:Option<Value>=sqlx::query_scalar("select ai_config from public.users where id=$1").bind(user.into_inner()).fetch_optional(&mut *tx).await.map_err(db)?.flatten();
+  let Some(raw)=raw.filter(|v|!v.is_null())else{sqlx::query("update public.scribe_ai_profile_preferences set migration_status='none',legacy_migrated_at=now(),updated_at=now() where user_id=$1").bind(user.into_inner()).execute(&mut *tx).await.map_err(db)?;tx.commit().await.map_err(db)?;return Ok(migration_status("none".into()));};
+  let legacy=match serde_json::from_value::<AIConfigStored>(raw){Ok(value)=>value,Err(_)=>{sqlx::query("update public.scribe_ai_profile_preferences set migration_status='invalid',updated_at=now() where user_id=$1").bind(user.into_inner()).execute(&mut *tx).await.map_err(db)?;tx.commit().await.map_err(db)?;return Ok(migration_status("invalid".into()));}};
+  let input=ProfileInput{name:"原默认连接".into(),models:vec![legacy.model.clone()],config:UpdateAIConfigInput{provider:legacy.provider,model:legacy.model,base_url:legacy.base_url,api_key:None}};
+  let input=match normalize(input){Ok(value)=>value,Err(_)=>{sqlx::query("update public.scribe_ai_profile_preferences set migration_status='invalid',updated_at=now() where user_id=$1").bind(user.into_inner()).execute(&mut *tx).await.map_err(db)?;tx.commit().await.map_err(db)?;return Ok(migration_status("invalid".into()));}};
+  // Never emit the cleartext, ciphertext, preview or provider response in a migration error.
+  let clear=match legacy.api_key_encrypted.filter(|v|!v.is_empty()).map(|cipher|self.crypto.decrypt(&cipher)).transpose(){Ok(value)=>value,Err(_)=>{sqlx::query("update public.scribe_ai_profile_preferences set migration_status='decrypt_failed',updated_at=now() where user_id=$1").bind(user.into_inner()).execute(&mut *tx).await.map_err(db)?;tx.commit().await.map_err(db)?;return Ok(migration_status("decrypt_failed".into()));}};
+  let clear=clear.filter(|key|!key.is_empty());
+  let encrypted=clear.as_deref().map(|key|self.crypto.encrypt(key).map_err(|_|ApiError::internal("旧配置迁移加密失败，原配置保持不变"))).transpose()?;
+  let candidates=sqlx::query("select id,model,models,api_key_cipher from public.scribe_ai_model_profiles where user_id=$1 and provider=$2 and base_url is not distinct from $3 order by id for update").bind(user.into_inner()).bind(input.config.provider.as_str()).bind(&input.config.base_url).fetch_all(&mut *tx).await.map_err(db)?;
+  let mut reused=None;
+  for row in candidates{let existing:Option<String>=row.get("api_key_cipher");let old=match existing.map(|cipher|self.crypto.decrypt(&cipher)).transpose(){Ok(value)=>value,Err(_)=>continue};if old!=clear{continue;}let mut models=effective_models(&row.get::<String,_>("model"),row.get("models"));if !models.contains(&input.config.model){if models.len()>=100{continue;}models.push(input.config.model.clone());}let id:Uuid=row.get("id");sqlx::query("update public.scribe_ai_model_profiles set models=$3 where user_id=$1 and id=$2").bind(user.into_inner()).bind(id).bind(models).execute(&mut *tx).await.map_err(db)?;reused=Some(id);break;}
+  let id=if let Some(id)=reused{id}else{let count:i64=sqlx::query_scalar("select count(*) from public.scribe_ai_model_profiles where user_id=$1").bind(user.into_inner()).fetch_one(&mut *tx).await.map_err(db)?;if count>=20{sqlx::query("update public.scribe_ai_profile_preferences set migration_status='capacity',updated_at=now() where user_id=$1").bind(user.into_inner()).execute(&mut *tx).await.map_err(db)?;tx.commit().await.map_err(db)?;return Ok(migration_status("capacity".into()));}let id=Uuid::new_v4();sqlx::query("insert into public.scribe_ai_model_profiles(id,user_id,name,provider,model,models,base_url,api_key_cipher) values($1,$2,$3,$4,$5,$6,$7,$8)").bind(id).bind(user.into_inner()).bind(input.name).bind(input.config.provider.as_str()).bind(&input.config.model).bind(input.models).bind(input.config.base_url).bind(encrypted).execute(&mut *tx).await.map_err(db)?;id};
+  let ready=profile_ready(input.config.provider,clear.as_ref().is_some_and(|key|!key.is_empty()));
+  sqlx::query("update public.scribe_ai_profile_preferences set legacy_profile_id=$2,legacy_migrated_at=now(),migration_status='migrated',default_profile_id=case when default_profile_id is null and $4 then $2 else default_profile_id end,default_model=case when default_profile_id is null and $4 then $3 else default_model end,updated_at=now() where user_id=$1").bind(user.into_inner()).bind(id).bind(input.config.model).bind(ready).execute(&mut *tx).await.map_err(db)?;
+  // users.ai_config remains an unchanged encrypted backup; repeat GETs cannot create another copy.
+  tx.commit().await.map_err(db)?;Ok(migration_status("migrated".into()))
+ }
+ pub async fn set_default(&self,user:UserId,input:SetDefaultInput)->ApiResult<ProfileList>{
+  self.ensure_legacy(user).await?;let stored=self.load(user,input.profile_id,input.model_name.as_deref()).await?;if !profile_ready(stored.provider,stored.api_key_encrypted.is_some()){return Err(ApiError::validation("请先填写此云连接的 API Key，再设为默认"));}
+  sqlx::query("update public.scribe_ai_profile_preferences set default_profile_id=$2,default_model=$3,updated_at=now() where user_id=$1").bind(user.into_inner()).bind(input.profile_id).bind(stored.model).execute(&self.pool).await.map_err(db)?;self.list(user).await
+ }
+ pub async fn resolve_default(&self,user:UserId)->ApiResult<Option<AIConfigStored>>{
+  self.ensure_legacy(user).await?;let row=sqlx::query("select default_profile_id,default_model from public.scribe_ai_profile_preferences where user_id=$1").bind(user.into_inner()).fetch_one(&self.pool).await.map_err(db)?;let id:Option<Uuid>=row.get("default_profile_id");let Some(id)=id else{return Ok(None)};let model:Option<String>=row.get("default_model");let mut stored=self.load(user,id,model.as_deref()).await?;stored.api_key_preview=stored.api_key_encrypted.as_ref().map(|_|"已配置".into());Ok(Some(stored))
+ }
+ /// Backward-compatible API writes address the real named default, never a disconnected shadow form.
+ pub async fn compat_update(&self,user:UserId,config:UpdateAIConfigInput)->ApiResult<AIConfigStored>{
+  self.ensure_legacy(user).await?;let preferred=config.model.clone();let id:Option<Uuid>=sqlx::query_scalar("select default_profile_id from public.scribe_ai_profile_preferences where user_id=$1").bind(user.into_inner()).fetch_one(&self.pool).await.map_err(db)?;
+  let profile=if let Some(id)=id{let row=sqlx::query("select name,model,models from public.scribe_ai_model_profiles where user_id=$1 and id=$2").bind(user.into_inner()).bind(id).fetch_one(&self.pool).await.map_err(db)?;let mut models=effective_models(&row.get::<String,_>("model"),row.get("models"));if !models.contains(&preferred){models.push(preferred.clone());}self.update(user,id,ProfileInput{name:row.get("name"),models,config}).await?}else{self.create(user,ProfileInput{name:"默认连接".into(),models:vec![preferred.clone()],config}).await?};
+  self.set_default(user,SetDefaultInput{profile_id:profile.id,model_name:Some(preferred)}).await?;self.resolve_default(user).await?.ok_or_else(||ApiError::validation("请设置默认模型"))
+ }
  pub async fn create(&self,user:UserId,input:ProfileInput)->ApiResult<ProfilePublic>{
-  let input=normalize(input)?;let cipher=self.encrypt_new_key(input.config.api_key.as_deref())?;
+  self.ensure_legacy(user).await?;let input=normalize(input)?;let cipher=self.encrypt_new_key(input.config.api_key.as_deref())?;
   let mut tx=self.pool.begin().await.map_err(db)?;
   // Serialize all creates for this user so concurrent requests cannot exceed the cap.
   sqlx::query("select pg_advisory_xact_lock(hashtextextended($1,48190322))").bind(format!("prims-ai-profiles:{user}")).execute(&mut *tx).await.map_err(db)?;
   let count:i64=sqlx::query_scalar("select count(*) from public.scribe_ai_model_profiles where user_id=$1").bind(user.into_inner()).fetch_one(&mut *tx).await.map_err(db)?;
   if count>=20{return Err(ApiError::validation("每个账号最多保存 20 个模型配置"));}
   let row=sqlx::query("insert into public.scribe_ai_model_profiles(id,user_id,name,provider,model,models,base_url,api_key_cipher) values($1,$2,$3,$4,$5,$6,$7,$8) returning id,name,provider,model,models,base_url,api_key_cipher is not null as api_key_set,updated_at").bind(Uuid::new_v4()).bind(user.into_inner()).bind(input.name).bind(input.config.provider.as_str()).bind(input.config.model).bind(input.models).bind(input.config.base_url).bind(cipher).fetch_one(&mut *tx).await.map_err(db)?;
-  tx.commit().await.map_err(db)?;public(row)
+  let value=public(row)?;if value.ready{sqlx::query("update public.scribe_ai_profile_preferences set default_profile_id=$2,default_model=$3,updated_at=now() where user_id=$1 and default_profile_id is null").bind(user.into_inner()).bind(value.id).bind(&value.model).execute(&mut *tx).await.map_err(db)?;}tx.commit().await.map_err(db)?;Ok(value)
  }
  pub async fn update(&self,user:UserId,id:Uuid,input:ProfileInput)->ApiResult<ProfilePublic>{
   let input=normalize(input)?;let cipher=self.encrypt_new_key(input.config.api_key.as_deref())?;
-  let row=sqlx::query("update public.scribe_ai_model_profiles set name=$3,provider=$4,model=$5,models=$6,base_url=$7,api_key_cipher=coalesce($8,api_key_cipher),updated_at=now() where user_id=$1 and id=$2 returning id,name,provider,model,models,base_url,api_key_cipher is not null as api_key_set,updated_at").bind(user.into_inner()).bind(id).bind(input.name).bind(input.config.provider.as_str()).bind(input.config.model).bind(input.models).bind(input.config.base_url).bind(cipher).fetch_optional(&self.pool).await.map_err(db)?.ok_or_else(||ApiError::not_found("找不到此模型配置"))?;public(row)
+  let row=sqlx::query("update public.scribe_ai_model_profiles set name=$3,provider=$4,model=$5,models=$6,base_url=$7,api_key_cipher=coalesce($8,api_key_cipher),updated_at=now() where user_id=$1 and id=$2 returning id,name,provider,model,models,base_url,api_key_cipher is not null as api_key_set,updated_at").bind(user.into_inner()).bind(id).bind(input.name).bind(input.config.provider.as_str()).bind(input.config.model).bind(input.models).bind(input.config.base_url).bind(cipher).fetch_optional(&self.pool).await.map_err(db)?.ok_or_else(||ApiError::not_found("找不到此模型配置"))?;let value=public(row)?;sqlx::query("update public.scribe_ai_profile_preferences set default_model=$3,updated_at=now() where user_id=$1 and default_profile_id=$2 and not(coalesce(default_model,'')=any($4))").bind(user.into_inner()).bind(id).bind(&value.model).bind(&value.models).execute(&self.pool).await.map_err(db)?;Ok(value)
  }
- pub async fn delete(&self,user:UserId,id:Uuid)->ApiResult<()>{let count=sqlx::query("delete from public.scribe_ai_model_profiles where user_id=$1 and id=$2").bind(user.into_inner()).bind(id).execute(&self.pool).await.map_err(db)?.rows_affected();if count==0{return Err(ApiError::not_found("找不到此模型配置"));}Ok(())}
+ pub async fn delete(&self,user:UserId,id:Uuid)->ApiResult<()>{let count=sqlx::query("delete from public.scribe_ai_model_profiles where user_id=$1 and id=$2").bind(user.into_inner()).bind(id).execute(&self.pool).await.map_err(db)?.rows_affected();if count==0{return Err(ApiError::not_found("找不到此模型配置"));}sqlx::query("update public.scribe_ai_profile_preferences set default_model=null where user_id=$1 and default_profile_id is null").bind(user.into_inner()).execute(&self.pool).await.map_err(db)?;Ok(())}
  fn encrypt_new_key(&self,key:Option<&str>)->ApiResult<Option<String>>{key.filter(|key|!key.is_empty()).map(|key|self.crypto.encrypt(key).map_err(|_|ApiError::internal("模型 Key 加密失败"))).transpose()}
  /// The caller's user id is mandatory: another account's UUID is never a selectable config.
  pub async fn load(&self,user:UserId,id:Uuid,model_name:Option<&str>)->ApiResult<AIConfigStored>{
@@ -45,6 +84,7 @@ impl AIProfiles{
   Ok(AIConfigStored{provider:provider(&row)?,model,base_url:row.get("base_url"),api_key_encrypted:row.get("api_key_cipher"),api_key_preview:None,updated_at:Some(row.get::<DateTime<Utc>,_>("updated_at").to_rfc3339())})
  }
 }
+fn migration_status(status:String)->MigrationStatus{let message=match status.as_str(){"capacity"=>Some("旧默认配置已保留为备份；连接已满 20 个，请删除一个连接后刷新完成迁移。"),"invalid"=>Some("旧默认配置格式无法直接迁移，备份保持不变；请创建一个有效连接并设为默认。"),"decrypt_failed"=>Some("旧配置密钥暂时无法解密，备份保持不变；请管理员检查加密配置。"),_=>None};MigrationStatus{status,message:message.map(str::to_string)}}
 fn provider(row:&PgRow)->ApiResult<AIProvider>{AIProvider::parse(row.get::<String,_>("provider").as_str()).ok_or_else(||ApiError::internal("模型配置类型无效"))}
 fn public(row:PgRow)->ApiResult<ProfilePublic>{let provider=provider(&row)?;let api_key_set=row.get("api_key_set");let legacy:String=row.get("model");let models=effective_models(&legacy,row.get("models"));let model=choose_model(&legacy,&models,None).unwrap_or_default();let ready=!models.is_empty()&&profile_ready(provider,api_key_set);Ok(ProfilePublic{id:row.get("id"),name:row.get("name"),provider,model,models,base_url:row.get("base_url"),api_key_set,ready,api_key_preview:None,updated_at:row.get("updated_at")})}
 fn effective_models(legacy:&str,models:Vec<String>)->Vec<String>{if models.is_empty(){if legacy.trim().is_empty(){vec![]}else{vec![legacy.to_string()]}}else{models}}

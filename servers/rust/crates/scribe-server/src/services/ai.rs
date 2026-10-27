@@ -1,7 +1,7 @@
 //! AI configuration + completion dispatch.
 //!
 //! Mirrors `server/src/services/aiService.ts`. Config lives in
-//! `users.ai_config` (JSONB) so reads/writes are a single row lookup.
+//! named per-user profiles; legacy users.ai_config is preserved as an encrypted backup.
 //! The completion endpoint:
 //!
 //!   1. Loads the user's saved config (provider/model/baseUrl/key).
@@ -10,22 +10,20 @@
 //!   4. Dispatches to the right [`scribe_ai::Adapter`] and returns its
 //!      token stream straight back to the route handler.
 
-use chrono::Utc;
 use futures::{stream::BoxStream,StreamExt};
 use scribe_ai::{adapter_for, system_prompt, AdapterError, CompleteRequest, CompletionChunk, CryptoBox};
 use scribe_shared::{
-    mask_api_key, AICompleteInput, AIConfigPublic, AIConfigStored, AIFeature, AIPingResult,
+    AICompleteInput, AIConfigPublic, AIConfigStored, AIFeature, AIPingResult,
     AIProvider, ApiError, ApiResult, ChatMessage, ChatRole, ErrorCode, UpdateAIConfigInput, UserId,
 };
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::warn;
 
 pub enum AIStreamStartError { Request(ApiError), Provider(AdapterError) }
 impl From<ApiError> for AIStreamStartError {fn from(error:ApiError)->Self{Self::Request(error)}}
 impl AIStreamStartError {
- pub fn into_api_error(self)->ApiError{match self{Self::Request(error)=>error,Self::Provider(_)=>ApiError::new(ErrorCode::ServiceUnavailable,"模型接口请求失败，请检查接口配置、模型权限及网络后重试")}}
+ pub fn into_api_error(self)->ApiError{match self{Self::Request(error)=>error,Self::Provider(AdapterError::OutputLimit)=>ApiError::validation(AdapterError::OutputLimit.to_string()),Self::Provider(_)=>ApiError::new(ErrorCode::ServiceUnavailable,"模型接口请求失败，请检查接口配置、模型权限及网络后重试")}}
  pub fn is_image_unsupported(&self)->bool{matches!(self,Self::Provider(error) if error.is_image_unsupported())}
 }
 
@@ -43,7 +41,7 @@ impl AIService {
     /// Public-facing config for the current user. `None` if they haven't
     /// configured a provider yet.
     pub async fn get_config(&self, user: UserId) -> ApiResult<Option<AIConfigPublic>> {
-        let stored = self.load_stored(user).await?;
+        let stored = super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).resolve_default(user).await?;
         Ok(stored.map(|s| s.to_public()))
     }
 
@@ -52,50 +50,13 @@ impl AIService {
         user: UserId,
         input: UpdateAIConfigInput,
     ) -> ApiResult<AIConfigPublic> {
-        if input.provider.needs_base_url()
-            && input.base_url.as_deref().map(str::is_empty).unwrap_or(true)
-        {
-            return Err(ApiError::validation(format!(
-                "{} requires a baseUrl",
-                input.provider.as_str()
-            )));
-        }
-
-        let mut stored = self.load_stored(user).await?.unwrap_or_else(|| AIConfigStored {
-            provider: input.provider,
-            model: input.model.clone(),
-            base_url: None,
-            api_key_encrypted: None,
-            api_key_preview: None,
-            updated_at: None,
-        });
-        stored.provider = input.provider;
-        stored.model = input.model;
-        stored.base_url = input.base_url;
-        if let Some(plain) = input.api_key.as_deref() {
-            let encrypted = self
-                .crypto
-                .encrypt(plain)
-                .map_err(|err| ApiError::internal(format!("encrypt: {err}")))?;
-            stored.api_key_encrypted = Some(encrypted);
-            stored.api_key_preview = Some(mask_api_key(plain));
-        }
-        stored.updated_at = Some(Utc::now().to_rfc3339());
-
-        let payload = serde_json::to_value(&stored).map_err(internal_serde)?;
-        sqlx::query("update public.users set ai_config = $2 where id = $1")
-            .bind(user.into_inner())
-            .bind(payload)
-            .execute(&self.pool)
-            .await
-            .map_err(internal_db)?;
-        Ok(stored.to_public())
+        Ok(super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).compat_update(user,input).await?.to_public())
     }
 
     /// Verify the user's saved config by talking to the provider. Doesn't
     /// throw — failures land in the `error` field of the returned struct.
     pub async fn ping(&self, user: UserId) -> ApiResult<AIPingResult> {
-        let Some(stored) = self.load_stored(user).await? else {
+        let Some(stored) = super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).resolve_default(user).await? else {
             return Ok(AIPingResult {
                 ok: false,
                 model: None,
@@ -103,14 +64,7 @@ impl AIService {
                 error: Some("AI not configured".into()),
             });
         };
-        let Some(api_key) = self.decrypt_key(&stored)? else {
-            return Ok(AIPingResult {
-                ok: false,
-                model: None,
-                latency_ms: 0,
-                error: Some("API key not set".into()),
-            });
-        };
+        let api_key=match self.decrypt_key(&stored)?{Some(key)=>key,None if super::ai_profiles::profile_ready(stored.provider,false)=>String::new(),None=>return Ok(AIPingResult{ok:false,model:Some(stored.model),latency_ms:0,error:Some("请先配置默认连接的 API Key".into())})};
         let req = CompleteRequest {
             provider: stored.provider,
             model: stored.model.clone(),
@@ -145,7 +99,7 @@ impl AIService {
         input: AICompleteInput,
     ) -> ApiResult<BoxStream<'static, Result<CompletionChunk, AdapterError>>> {
         let stream=self.complete_stream_for_agent(user,input).await.map_err(AIStreamStartError::into_api_error)?;
-        Ok(Box::pin(stream.map(|chunk|chunk.map_err(|_|AdapterError::Stream("模型接口返回错误，请检查接口配置、权限及网络后重试".into())))))
+        Ok(Box::pin(stream.map(|chunk|chunk.map_err(|error|match error{AdapterError::OutputLimit=>AdapterError::OutputLimit,_=>AdapterError::Stream("模型接口返回错误，请检查接口配置、权限及网络后重试".into())}))))
     }
 
     pub async fn complete_stream_for_agent(
@@ -157,11 +111,11 @@ impl AIService {
         let stored=if let Some(id)=profile_id{
             super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).load(user,id,input.options.as_ref().and_then(|options|options.get("modelName")).map(String::as_str)).await?
         }else{
-            self.load_stored(user).await?.ok_or_else(||ApiError::new(ErrorCode::Forbidden,"AI not configured"))?
+            super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).resolve_default(user).await?.ok_or_else(||ApiError::new(ErrorCode::Forbidden,"请在设置中选择一个可用的默认模型"))?
         };
         let api_key=match self.decrypt_key(&stored)?{
             Some(key)=>key,
-            None if profile_id.is_some()&&super::ai_profiles::profile_ready(stored.provider,false)=>String::new(),
+            None if super::ai_profiles::profile_ready(stored.provider,false)=>String::new(),
             None=>return Err(ApiError::new(ErrorCode::Forbidden,"所选模型尚未填写 API Key，请先在设置中完成配置").into()),
         };
 
@@ -199,6 +153,14 @@ impl AIService {
             });
         }
 
+        // Only project_agent sets this after stripping the client-supplied option. Keep
+        // tool execution results after the original question, so this is a real continuation.
+        if inline && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") {
+            if let Some(turns)=input.options.as_ref().and_then(|o|o.get("projectContinuation")).and_then(|raw|serde_json::from_str::<Vec<ChatMessage>>(raw).ok()) {
+                messages.extend(turns.into_iter().filter(|message|matches!(message.role,ChatRole::User|ChatRole::Assistant)).take(12));
+            }
+        }
+
         // OCR wants determinism and only needs a short reply; the other
         // features keep the conversational defaults.
         let (temperature, max_tokens) = match input.feature {
@@ -225,27 +187,6 @@ impl AIService {
             .map_err(AIStreamStartError::Provider)
     }
 
-    async fn load_stored(&self, user: UserId) -> ApiResult<Option<AIConfigStored>> {
-        let row: Option<serde_json::Value> = sqlx::query_scalar(
-            "select ai_config from public.users where id = $1",
-        )
-        .bind(user.into_inner())
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(internal_db)?
-        .flatten();
-        match row {
-            None => Ok(None),
-            Some(v) => match serde_json::from_value::<AIConfigStored>(v) {
-                Ok(parsed) => Ok(Some(parsed)),
-                Err(err) => {
-                    warn!(?err, "ai_config row failed to parse; treating as unset");
-                    Ok(None)
-                }
-            },
-        }
-    }
-
     fn decrypt_key(&self, stored: &AIConfigStored) -> ApiResult<Option<String>> {
         let Some(encrypted) = stored.api_key_encrypted.as_deref() else {
             return Ok(None);
@@ -255,21 +196,9 @@ impl AIService {
         }
         match self.crypto.decrypt(encrypted) {
             Ok(plain) => Ok(Some(plain)),
-            Err(err) => Err(ApiError::new(
-                ErrorCode::Internal,
-                format!("api key decrypt failed: {err}"),
-            )),
+            Err(_) => Err(ApiError::new(ErrorCode::Internal,"模型密钥无法解密，请检查服务器加密配置")),
         }
     }
-}
-
-fn internal_db(err: sqlx::Error) -> ApiError {
-    tracing::error!(?err, "database error in ai service");
-    ApiError::new(ErrorCode::Internal, "Database error")
-}
-fn internal_serde(err: serde_json::Error) -> ApiError {
-    tracing::error!(?err, "serde error in ai service");
-    ApiError::new(ErrorCode::Internal, "Serialization error")
 }
 
 /// Provider used by the route layer so the AppState doesn't need to

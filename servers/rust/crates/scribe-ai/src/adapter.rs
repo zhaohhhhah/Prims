@@ -21,6 +21,8 @@ pub use crate::providers::{anthropic, gemini, openai};
 
 #[derive(Debug, Error)]
 pub enum AdapterError {
+    #[error("模型输出达到上限，请按章节或短段分批修改；本轮没有可应用的修改方案，正文未改动。")]
+    OutputLimit,
     #[error("provider {provider:?} requires a base URL but none was set")]
     MissingBaseUrl { provider: AIProvider },
     #[error("provider returned {status}: {message}")]

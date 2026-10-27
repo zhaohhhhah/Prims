@@ -36,12 +36,15 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type ImperativePanelHandle, Panel, PanelGroup } from 'react-resizable-panels';
 import { toast } from 'sonner';
 
 import type { InlineAssistantController } from '@scribe/editor';
 import { InlineAssistant, openProjectAssistant } from '../../components/InlineAssistant/InlineAssistant';
+import { ASSISTANT_OPEN_EVENT, type AssistantOpenDetail } from '../../lib/assistant-events';
+import { effectiveAssistantMode, useAssistantLayout } from '../../lib/assistant-layout';
 import { BibliographyPanel } from '../../components/Bibliography/BibliographyPanel';
 import { CitationLookup } from '../../components/Citations/CitationLookup';
 import { CommandPalette, type CommandItem } from '../../components/CommandPalette/CommandPalette';
@@ -198,7 +201,8 @@ export function ProjectWorkspace({
   const [cursorLine, setCursorLine] = useState<number>(1);
   const [cursorCol, setCursorCol] = useState<number>(1);
   const [rightPanel, setRightPanel] = useState<RightPanelId>(null);
-  const [assistantController, setAssistantController] = useState<InlineAssistantController | null>(null);
+  const [assistantBinding,setAssistantBinding]=useState<{controller:InlineAssistantController;filePath:string}|null>(null);
+  const assistantController=assistantBinding&&assistantBinding.filePath===selectedFile?.path?assistantBinding.controller:null;
   const [handwritingOpen, setHandwritingOpen] = useState(false);
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
@@ -298,6 +302,24 @@ export function ProjectWorkspace({
   const compileSession = useCompileSession(projectId);
   const synctex = useSyncTeX(compileSession.synctexUrl);
   const editorRef = useRef<LatexEditorImperativeHandle>(null);
+  const workspaceRef=useRef<HTMLDivElement>(null);
+  const [workspaceWidth,setWorkspaceWidth]=useState(window.innerWidth);
+  const [assistantRightHost,setAssistantRightHost]=useState<HTMLDivElement|null>(null);
+  const [assistantBottomHost,setAssistantBottomHost]=useState<HTMLDivElement|null>(null);
+  const {layout:assistantLayout,updateLayout:updateAssistantLayout,viewport:assistantViewport}=useAssistantLayout(authUser?.id);
+  const assistantMode=effectiveAssistantMode(assistantLayout,workspaceWidth);
+  const resizeCleanup=useRef<(()=>void)|null>(null);
+  const [compileAnchor,setCompileAnchor]=useState<{projectId:string;filePath:string;line:number}|null>(null);
+  useEffect(()=>{const element=workspaceRef.current;if(!element)return;const observer=new ResizeObserver(()=>setWorkspaceWidth(element.clientWidth));setWorkspaceWidth(element.clientWidth);observer.observe(element);return()=>observer.disconnect();},[]);
+  useEffect(()=>()=>resizeCleanup.current?.(),[]);
+  useEffect(()=>{setCompileAnchor(null);},[projectId,authUser?.id]);
+  function resizeAssistant(kind:'right'|'bottom',event:ReactPointerEvent<HTMLDivElement>){
+    event.preventDefault();resizeCleanup.current?.();const start=kind==='right'?event.clientX:event.clientY,initial=kind==='right'?assistantLayout.rightWidth:assistantLayout.bottomHeight;
+    const move=(next:PointerEvent)=>{const amount=initial-((kind==='right'?next.clientX:next.clientY)-start);updateAssistantLayout(kind==='right'?{rightWidth:amount}:{bottomHeight:amount});};
+    const end=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',end);window.removeEventListener('pointercancel',end);window.removeEventListener('blur',end);resizeCleanup.current=null;};resizeCleanup.current=end;window.addEventListener('pointermove',move);window.addEventListener('pointerup',end);window.addEventListener('pointercancel',end);window.addEventListener('blur',end);
+  }
+  useEffect(()=>{const receive=(event:Event)=>{const detail=(event as CustomEvent<AssistantOpenDetail>).detail;if((detail?.source!=='compile'&&detail?.source!=='restore')||detail.projectId!==projectId)return;assistantController?.close();if(detail.source==='restore'){const file=files.find(item=>item.path===detail.restore?.filePath&&isEditableTextFile(item));if(file&&!editorReadOnly)onSelectFile(file);return;}const diagnostic=detail.diagnostic;const file=diagnostic?files.find(item=>item.path===diagnostic.filePath&&isTexFile(item)):undefined;if(editorReadOnly||!file||!diagnostic){setCompileAnchor(null);return;}onSelectFile(file);setCompileAnchor({projectId,filePath:file.path,line:diagnostic.line});};window.addEventListener(ASSISTANT_OPEN_EVENT,receive);return()=>window.removeEventListener(ASSISTANT_OPEN_EVENT,receive);},[projectId,files,editorReadOnly,onSelectFile,assistantController]);
+
 
   // Publish the compiled PDF URL into the chrome store so the navbar
   // project-menu and the sidebar download button can offer
@@ -1131,6 +1153,19 @@ export function ProjectWorkspace({
     };
   }, [pendingJump, selectedFile?.id, editorReady]);
 
+  useEffect(()=>{
+    if(!compileAnchor||compileAnchor.projectId!==projectId||selectedFile?.path!==compileAnchor.filePath||!editorReady||!assistantController)return;
+    const content=editorRef.current?.getContent()??'';const lines=content.split('\n');const line=Math.max(0,Math.min(lines.length-1,compileAnchor.line-1));const first=Math.max(0,line-2),last=Math.min(lines.length,line+3);let from=0;for(let index=0;index<first;index++)from+=lines[index]!.length+1;let to=from;for(let index=first;index<last;index++)to+=lines[index]!.length+(index<lines.length-1?1:0);to=Math.min(content.length,from+16000,to);editorRef.current?.gotoLine(line+1,{flash:true});if(to>from&&content.slice(from,to).trim())assistantController.captureRange(from,to);setCompileAnchor(null);
+  },[compileAnchor,projectId,selectedFile?.path,editorReady,assistantController]);
+  useEffect(()=>{if(!compileAnchor)return;const timeout=window.setTimeout(()=>setCompileAnchor(null),10000);return()=>window.clearTimeout(timeout);},[compileAnchor]);
+
+  const flushAssistantEditor=useCallback(async()=>{
+    if(editorReadOnly)throw new Error('当前项目为只读');if(writeMutation.isPending)throw new Error('当前文件仍在保存，请完成后再确认文件操作。');if(!selectedFile||!isEditableTextFile(selectedFile))return;
+    const editor=editorRef.current;if(!editor)throw new Error('编辑器尚未就绪，请稍后再试');if(saveTimerRef.current!==null){clearTimeout(saveTimerRef.current);saveTimerRef.current=null;}
+    const live=editor.getContent();const cached=queryClient.getQueryData<{content:string}>(['file-content',projectId,selectedFile.id]);if(cached?.content===live)return;
+    await api.files.writeContent(projectId,selectedFile.id,live);queryClient.setQueryData(['file-content',projectId,selectedFile.id],{content:live});
+  },[editorReadOnly,selectedFile,projectId,queryClient,writeMutation.isPending]);
+
   const commandList = useMemo<CommandItem[]>(() => {
     const cmds: CommandItem[] = [
       {
@@ -1288,6 +1323,9 @@ export function ProjectWorkspace({
     }
     return null;
   })();
+
+  const assistantBottomSlot=assistantLayout.visible&&assistantMode==='bottom'?<div data-testid="assistant-bottom-host" className="relative min-h-0 shrink-0 border-t" style={{height:assistantLayout.bottomHeight}}><div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="调整助手高度" className="absolute -top-1 left-0 z-10 h-2 w-full cursor-row-resize" onPointerDown={event=>resizeAssistant('bottom',event)} onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();updateAssistantLayout({bottomHeight:assistantLayout.bottomHeight+(event.key==='ArrowUp'?20:-20)});}}}/><div ref={setAssistantBottomHost} className="h-full min-h-0"/></div>:null;
+  const assistantRightSlot=assistantLayout.visible&&assistantMode==='right'?<aside data-testid="assistant-right-host" className="relative min-h-0 shrink-0 border-l" style={{width:assistantLayout.rightWidth}}><div role="separator" tabIndex={0} aria-orientation="vertical" aria-label="调整助手宽度" className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize" onPointerDown={event=>resizeAssistant('right',event)} onKeyDown={event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();updateAssistantLayout({rightWidth:assistantLayout.rightWidth+(event.key==='ArrowLeft'?20:-20)});}}}/><div ref={setAssistantRightHost} className="h-full min-h-0"/></aside>:null;
 
   const editorPanel = (
     <div className="flex h-full flex-col">
@@ -1459,7 +1497,7 @@ export function ProjectWorkspace({
           </Button>
         </div>
       </div>
-      <div className="flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden">
         {selectedFile === null ? (
           <div className="flex h-full items-center justify-center bg-muted/30 p-6 text-center text-sm text-muted-foreground">
             {t('compile.openTexFile')}
@@ -1476,7 +1514,7 @@ export function ProjectWorkspace({
           </div>
         ) : (
           <LatexEditor
-            onAssistantController={setAssistantController}
+            onAssistantController={controller=>setAssistantBinding(controller&&selectedFile?{controller,filePath:selectedFile.path}:null)}
             key={selectedFile.id}
             ref={editorRef}
             filePath={selectedFile.path}
@@ -1506,12 +1544,17 @@ export function ProjectWorkspace({
           />
         )}
       </div>
+      {assistantBottomSlot}
     </div>
   );
 
   const previewPanel = (
     <PreviewPanel
       compileSession={compileSession}
+      projectId={projectId}
+      jobProjectId={compileSession.job?.projectId??null}
+      knownFilePaths={files.map(file=>file.path)}
+      {...(compileSession.job?.id?{compileId:compileSession.job.id}:{})}
       highlight={highlight}
       onInverseSync={handleInverseSync}
       onJumpTo={handleJumpTo}
@@ -1525,8 +1568,9 @@ export function ProjectWorkspace({
   const showWordCount = selectedFile !== null && isTexFile(selectedFile);
 
   return (
-    <div className="flex h-full flex-col">
-      <PanelGroup direction="horizontal" autoSaveId="scribe:workspace" className="min-h-0 flex-1">
+    <div ref={workspaceRef} className="flex h-full flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1">
+      <PanelGroup direction="horizontal" autoSaveId="scribe:workspace" className="min-h-0 min-w-0 flex-1">
         <Panel defaultSize={50} minSize={20}>
           <ErrorBoundary scope="editor">{editorPanel}</ErrorBoundary>
         </Panel>
@@ -1593,6 +1637,8 @@ export function ProjectWorkspace({
               {rightPanel === 'history' ? (
                 <VersionHistory
                   projectId={projectId}
+                  readOnly={editorReadOnly}
+                  beforeReview={flushAssistantEditor}
                   onClose={() => {
                     setRightPanel(null);
                   }}
@@ -1651,7 +1697,9 @@ export function ProjectWorkspace({
           </>
         ) : null}
       </PanelGroup>
-      <InlineAssistant controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} />
+      {assistantRightSlot}
+      </div>
+      <InlineAssistant controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} layout={assistantLayout} effectiveMode={assistantMode} onLayoutChange={updateAssistantLayout} viewport={assistantViewport} rightHost={assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} />
       <HandwritingToLatex
         open={handwritingOpen}
         onOpenChange={setHandwritingOpen}

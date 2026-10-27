@@ -284,6 +284,8 @@ struct WriteContentResponse {
     path: String,
     size_bytes: i64,
     updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(rename="versionWarning",skip_serializing_if="Option::is_none")]
+    version_warning: Option<String>,
 }
 
 async fn write_content(
@@ -305,10 +307,16 @@ async fn write_content(
     // List shape didn't change (still the same file), but size_bytes did,
     // so the list response body would also be stale.
     invalidate_list_and_file(&state, ProjectId::new(project_id), FileId::new(file_id)).await;
+    // Saving succeeded. Optional history failure must not look like a failed write or trigger blind retries.
+    let version_warning=match (state.db(),state.inner.storage.clone()){
+        (Some(db),Some(storage))=>crate::services::versions::VersionService::new(db.pool().clone(),storage).automatic_snapshot(user.id,ProjectId::new(project_id)).await.err().map(|_|"文件已保存，但自动文本版本暂时未能创建；请稍后手动创建快照".to_string()),
+        _=>Some("文件已保存，但版本服务暂时不可用".to_string()),
+    };
     Ok(Json(WriteContentResponse {
         path: file.path,
         size_bytes: file.size_bytes,
         updated_at: file.updated_at,
+        version_warning,
     }))
 }
 

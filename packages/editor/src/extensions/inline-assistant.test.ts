@@ -116,3 +116,8 @@ describe('inline review controls remain intents until React records a decision',
   expect(widgets).toHaveLength(2);expect(widgets.every(spec=>(spec as {block?:boolean}).block===true)).toBe(true);expect(redLines).toBe(2);expect(e.writes()).toBe(0);e.controller.destroy();
  });
 });
+
+describe('explicit diagnostic range capture',()=>{
+ it('anchors exactly the requested current text without writing content',()=>{const e=editor();expect(e.controller.captureRange(8,12).ok).toBe(true);expect(e.controller.snapshot().target).toMatchObject({from:8,to:12,text:'beta',conflict:false});expect(e.writes()).toBe(0);e.controller.destroy();});
+ it('rejects invalid and readonly ranges while preserving document content',()=>{const e=editor();for(const [from,to] of [[-1,4],[0,0],[0,999],[0.5,4]])expect(e.controller.captureRange(from!,to!).ok).toBe(false);expect(e.writes()).toBe(0);e.controller.destroy();const f=editor(undefined,true);expect(f.controller.captureRange(0,5).ok).toBe(false);expect(f.writes()).toBe(0);f.controller.destroy();});
+});

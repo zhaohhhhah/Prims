@@ -19,9 +19,10 @@ use scribe_storage::{
     Storage, SupabaseStorage, PROJECT_FILES_BUCKET, VERSION_SNAPSHOTS_BUCKET,
 };
 use sqlx::{PgPool, Row};
+use sha2::{Digest,Sha256};
 use uuid::Uuid;
 
-use super::membership::{assert_member, assert_owner};
+use super::membership::{assert_can_write, assert_member, assert_owner};
 
 #[derive(Clone)]
 pub struct VersionService {
@@ -59,20 +60,36 @@ impl VersionService {
         Ok(rows.into_iter().map(row_to_version).collect())
     }
 
-    pub async fn snapshot(
-        &self,
-        user: UserId,
-        project: ProjectId,
-        input: CreateVersionInput,
-    ) -> ApiResult<ProjectVersion> {
+    pub async fn snapshot(&self,user:UserId,project:ProjectId,input:CreateVersionInput)->ApiResult<ProjectVersion>{
+        self.snapshot_inner(user,project,input,false,true).await?.ok_or_else(||ApiError::internal("手动快照未创建"))
+    }
+    /// Every persisted editing session gets bounded automatic text history; no old versions are deleted.
+    pub async fn automatic_snapshot(&self,user:UserId,project:ProjectId)->ApiResult<Option<ProjectVersion>>{
+        assert_can_write(&self.pool,user,project).await?;
+        self.snapshot_inner(user,project,CreateVersionInput{label:Some("自动保存的文本版本".into())},true,false).await
+    }
+    /// An AI file operation cannot proceed without a verified current-text checkpoint.
+    pub async fn checkpoint(&self,user:UserId,project:ProjectId)->ApiResult<ProjectVersion>{
+        assert_can_write(&self.pool,user,project).await?;
+        if let Some(version)=self.snapshot_inner(user,project,CreateVersionInput{label:Some("AI 文件操作前的文本版本".into())},true,true).await?{return Ok(version);}
+        let id:Option<Uuid>=sqlx::query_scalar("select last_version_id from public.scribe_project_version_state where project_id=$1").bind(project.into_inner()).fetch_optional(&self.pool).await.map_err(internal)?.flatten();
+        let id=id.ok_or_else(||ApiError::internal("无法确认文件操作前的版本记录"))?;
+        self.list(user,project).await?.into_iter().find(|v|v.id.into_inner()==id).ok_or_else(||ApiError::internal("文件操作前的版本记录不可用"))
+    }
+    async fn snapshot_inner(&self,user:UserId,project:ProjectId,input:CreateVersionInput,deduplicate:bool,force:bool)->ApiResult<Option<ProjectVersion>>{
         assert_member(&self.pool, user, project).await?;
 
-        // Fetch all text-ish files (mirrors Node: tex + bib only).
+        let mut tx=self.pool.begin().await.map_err(internal)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtextextended($1,4078231))").bind(format!("prims-versions:{project}")).execute(&mut *tx).await.map_err(internal)?;
+        let previous=sqlx::query("select content_hash,last_auto_at from public.scribe_project_version_state where project_id=$1").bind(project.into_inner()).fetch_optional(&mut *tx).await.map_err(internal)?;
+        if deduplicate&&!force&&previous.as_ref().and_then(|r|r.get::<Option<DateTime<Utc>>,_>("last_auto_at")).is_some_and(|last|Utc::now().signed_duration_since(last).num_seconds()<120){return Ok(None);}
+        // Text snapshots include common project text files, while binary assets remain untouched.
+
         let file_rows = sqlx::query(
             r#"
             select path, storage_key
             from public.project_files
-            where project_id = $1 and type in ('tex', 'bib')
+            where project_id = $1 and (type in ('tex', 'bib') or path ~* '\.(md|txt|csv|tsv|json|yaml|yml|toml|ini|cfg|bst|def|ins|dtx)$') order by path
             "#,
         )
         .bind(project.into_inner())
@@ -114,6 +131,8 @@ impl VersionService {
         let payload = VersionPayload { version: 1, files };
         let body = serde_json::to_vec(&payload)
             .map_err(|err| ApiError::internal(format!("json encode: {err}")))?;
+        let hash=Sha256::digest(&body).iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+        if deduplicate&&previous.as_ref().is_some_and(|r|r.get::<String,_>("content_hash")==hash){sqlx::query("update public.scribe_project_version_state set last_auto_at=now() where project_id=$1").bind(project.into_inner()).execute(&mut *tx).await.map_err(internal)?;tx.commit().await.map_err(internal)?;return Ok(None);}
         let file_count = payload.files.len() as i32;
 
         self.storage
@@ -141,11 +160,16 @@ impl VersionService {
         .bind(&storage_key)
         .bind(file_count)
         .bind(total_bytes)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await;
 
         match insert {
-            Ok(row) => Ok(row_to_version(row)),
+            Ok(row) => {
+                let version=row_to_version(row);
+                sqlx::query("insert into public.scribe_project_version_state(project_id,content_hash,last_version_id,last_auto_at) values($1,$2,$3,case when $4 then now() else null end) on conflict(project_id) do update set content_hash=excluded.content_hash,last_version_id=excluded.last_version_id,last_auto_at=case when $4 then now() else scribe_project_version_state.last_auto_at end,updated_at=now()")
+                    .bind(project.into_inner()).bind(hash).bind(version.id.into_inner()).bind(deduplicate).execute(&mut *tx).await.map_err(internal)?;
+                tx.commit().await.map_err(internal)?;Ok(Some(version))
+            },
             Err(err) => {
                 let _ = self
                     .storage
@@ -188,47 +212,9 @@ impl VersionService {
         project: ProjectId,
         version: VersionId,
     ) -> ApiResult<()> {
-        // Owner-only — restore overwrites text content for the entire project.
-        assert_owner(&self.pool, user, project).await?;
-        let payload = self.get_payload(user, project, version).await?;
-
-        let current = sqlx::query(
-            "select id, path, storage_key from public.project_files where project_id = $1",
-        )
-        .bind(project.into_inner())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(internal)?;
-
-        use std::collections::HashMap;
-        let mut by_path: HashMap<String, (Uuid, String)> = HashMap::with_capacity(current.len());
-        for row in current {
-            let id: Uuid = row.get("id");
-            let path: String = row.get("path");
-            let key: String = row.get("storage_key");
-            by_path.insert(path, (id, key));
-        }
-
-        for file in payload.files {
-            let Some((file_id, key)) = by_path.get(&file.path).cloned() else { continue };
-            self.storage
-                .upload_text(PROJECT_FILES_BUCKET, &key, &file.content)
-                .await?;
-            sqlx::query(
-                r#"
-                update public.project_files
-                set size_bytes = $2, updated_at = now()
-                where id = $1
-                "#,
-            )
-            .bind(file_id)
-            .bind(file.content.len() as i64)
-            .execute(&self.pool)
-            .await
-            .map_err(internal)?;
-        }
-
-        Ok(())
+        assert_owner(&self.pool,user,project).await?;
+        let _=version;
+        Err(ApiError::new(ErrorCode::Conflict,"请先打开版本恢复预览，并在编辑器中逐项确认；直接覆盖存储会与协作文档冲突"))
     }
 }
 

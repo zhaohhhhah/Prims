@@ -22,5 +22,6 @@ pub mod whoami;
 pub mod yjs;
 
 pub mod ai_context;
+pub mod project_actions;
 
 pub mod ai_profiles;

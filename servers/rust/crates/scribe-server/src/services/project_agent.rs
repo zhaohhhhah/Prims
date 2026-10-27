@@ -21,7 +21,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  let (history,history_truncated)=model_history(&saved,&current,&selection_id);let history_count=history.len();input.history=Some(history);
  let options=input.options.get_or_insert_with(Default::default);options.insert("writingBrief".into(),saved.brief.clone());options.insert("projectTitle".into(),saved.project_title.clone());options.insert("projectDescription".into(),saved.project_description.clone().unwrap_or_default());options.insert("autoSummary".into(),saved.auto_summary.clone());
  // Client-provided synthetic tool results never bypass the server's read authorization.
- options.remove("projectTools");options.remove("projectContext");
+ options.remove("projectTools");options.remove("projectContext");options.remove("projectContinuation");
  if !allow_files{options.remove("documentOutline");}
  let context_used=json!({"brief":!saved.brief.trim().is_empty(),"autoSummary":!saved.auto_summary.trim().is_empty(),"historyMessages":history_count,"historyTruncated":history_truncated,"fileTools":allow_files,"currentSection":options.get("currentSection"),"selectionStartLine":options.get("selectionStartLine"),"selectionEndLine":options.get("selectionEndLine"),"documentWindowStartLine":if allow_files{options.get("documentWindowStartLine")}else{None},"documentWindowEndLine":if allow_files{options.get("documentWindowEndLine")}else{None}});
  let storage=state.inner.storage.clone().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"storage unavailable"))?;
@@ -43,7 +43,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
     input.options.as_mut().unwrap().insert("projectTools".into(),"enabled".into());
    }
    input.options.as_mut().unwrap().remove("currentDocument");
-   let mut image_fallback_used=false;
+   let mut image_fallback_used=false;let mut read_tools_used=0usize;let mut completed=std::collections::HashMap::<String,Value>::new();let mut continuation=Vec::<Value>::new();
    for step in 0..6 {
     if let Some(context)=context.as_ref(){context.sync(&mut input);}
     emit(&tx,json!({"status":if step==0{"模型正在分析写作目标和当前内容…"}else{"模型正在结合项目上下文生成…"}})).await?;
@@ -51,6 +51,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
      let round=async{
       let mut stream=ai.complete_stream_for_agent(user,input.clone()).await?;let mut text=String::new();let mut tick=0;
       while let Some(chunk)=stream.next().await{
+       if matches!(&chunk,Err(scribe_ai::AdapterError::OutputLimit)){tracing::warn!(finish_reason="length",raw_chars=text.chars().count(),"AI output reached model token limit; no content recorded");}
        let chunk=chunk.map_err(AIStreamStartError::Provider)?;text.push_str(&chunk.text);
        if text.len()>150000{return Err(AIStreamStartError::Request(ApiError::validation("模型输出过长，请缩小问题范围")));}
        if text.len()/500>tick{tick=text.len()/500;emit(&tx,json!({"status":"模型正在生成…","received":text.chars().count()})).await?;}
@@ -67,25 +68,43 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
       Err(error)=>return Err(error.into_api_error()),
      }
     };
+    private_format_trace(step,&raw);
     let mut output=parse_model_output(&raw)?;
+    let public_status=output.as_object_mut().and_then(|object|object.remove("_publicStatus")).and_then(|value|value.as_str().map(String::from));
     if let Some(tool)=output.get("tool").and_then(Value::as_str){
      if step==5{return Err(ApiError::validation("本轮文件工具调用已达上限，请缩小问题或分次提问"));}
      let Some(context)=context.as_mut()else{return Err(ApiError::validation("本轮已关闭项目文件读取；请开启后重试"));};
-     let result=match tool{
-      "search_project"=>{emit(&tx,json!({"status":"正在查找项目内容…"})).await?;let query=output.get("query").and_then(Value::as_str).unwrap_or("");context.search(&files,user,query).await},
-      "list_files"=>{emit(&tx,json!({"status":"正在列出项目文件…"})).await?;Ok(context.listing())},
-      "read_file"=>{
-       let path=output.get("path").and_then(Value::as_str).unwrap_or("");emit(&tx,json!({"status":format!("正在读取：{path}")})).await?;
-       let start=output.get("startLine").and_then(Value::as_u64).map(|n|n as usize);let end=output.get("endLine").and_then(Value::as_u64).map(|n|n as usize);
-       let result=context.read_window(&files,user,path,start,end,&mut input).await;
-       if result.is_ok(){emit(&tx,json!({"status":format!("已读取：{path}"),"file":path})).await?;}result
-      },_=>Err(ApiError::validation("只支持 list_files、search_project、read_file 三个只读工具"))
-     };
-     let value=match result{Ok(value) if tool=="search_project"=>value,Ok(_)=>json!({"ok":true,"note":"结果已加入 projectContext.directory 或 readFiles"}),Err(err)=>json!({"tool":tool,"error":err.message})};context.results.push(json!({"toolCall":output,"toolResult":value}));
+     let calls=if tool=="_read_batch"{output.get("calls").and_then(Value::as_array).cloned().ok_or_else(||ApiError::validation("读取工具批次格式无效"))?}else{vec![output.clone()]};
+     if let Some(status)=public_status.as_ref(){emit(&tx,json!({"status":status})).await?;}
+     let new_calls=count_new_read_calls(&calls,&completed);
+     if new_calls>0{reserve_read_tools(&mut read_tools_used,new_calls)?;}
+     let mut round_results=vec![];
+     for call in &calls{
+      let key=call.to_string();
+      if let Some(previous)=completed.get(&key){round_results.push(json!({"toolCall":call,"toolResult":{"alreadyCompleted":true,"source":"Use the prior actual tool result in this conversation or projectContext.readFiles","ok":previous.get("error").is_none()},"reused":true}));continue;}
+      let tool=call.get("tool").and_then(Value::as_str).ok_or_else(||ApiError::validation("读取工具缺少名称"))?;
+      let result=match tool{
+       "search_project"=>{emit(&tx,json!({"status":action_status(public_status.as_deref(),"正在查找项目内容…")})).await?;let query=call.get("query").and_then(Value::as_str).unwrap_or("");context.search(&files,user,query).await},
+       "list_files"=>{emit(&tx,json!({"status":action_status(public_status.as_deref(),"正在列出项目文件…")})).await?;Ok(context.listing())},
+       "read_file"=>{
+        let path=call.get("path").and_then(Value::as_str).unwrap_or("");emit(&tx,json!({"status":action_status(public_status.as_deref(),&format!("正在读取：{path}"))})).await?;
+        let start=call.get("startLine").and_then(Value::as_u64).map(|n|n as usize);let end=call.get("endLine").and_then(Value::as_u64).map(|n|n as usize);
+        let result=context.read_window(&files,user,path,start,end,&mut input).await;
+        if result.is_ok(){emit(&tx,json!({"status":action_status(public_status.as_deref(),&format!("已读取：{path}")),"file":path})).await?;}result
+       },_=>return Err(ApiError::validation("只支持 list_files、search_project、read_file 三个只读工具")),
+      };
+      let value=match result{Ok(value) if tool=="search_project"=>value,Ok(value)=>value,Err(err)=>json!({"tool":tool,"error":err.message})};
+      completed.insert(key,value.clone());round_results.push(json!({"toolCall":call,"toolResult":value}));
+     }
+     continuation.push(json!({"role":"assistant","content":if calls.len()==1{calls[0].to_string()}else{json!(calls).to_string()}}));
+     continuation.push(json!({"role":"user","content":json!({"serverToolResults":round_results,"completedCalls":read_tools_used,"remainingBudget":MAX_READ_TOOLS.saturating_sub(read_tools_used),"nextAction":"The requested tools have executed. Use the actual authorized results above and projectContext. Answer the original question now when sufficient. Do not repeat completed calls; cached results are unchanged. If a tool failed, explain the missing context rather than repeating it. Only request a new read when essential. Return one final answer JSON; no file has been changed."}).to_string()}));
+     input.options.as_mut().unwrap().insert("projectContinuation".into(),json!(continuation).to_string());
     }else{
      if !output.get("reply").is_some_and(Value::is_string)||!output.get("replacement").is_some_and(|v|v.is_null()||v.is_string()){return Err(ApiError::validation("模型未返回有效答复或选区方案"));}
      // A model cannot manufacture an edit target when the assistant was opened without a selection.
+     validate_file_action_proposals(&output)?;
      validate_edit_output(&mut output,&current,editing_allowed)?;
+     if let Some(status)=public_status.as_ref(){emit(&tx,json!({"status":status})).await?;}
      let recovered=output.as_object_mut().and_then(|value|value.remove("_formatRecovery")).and_then(|value|value.as_bool()).unwrap_or(false);
      if recovered{emit(&tx,json!({"warning":{"code":"answer_only_recovered","message":"修改建议未完整生成，本轮只保留可读答复；没有任何修改已应用。"}})).await?;}
      let summary=take_generated_summary(&mut output);
@@ -98,7 +117,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
       let result=tokio::select!{_=tx.closed()=>return Ok(()),result=memory.save_generated_summary(user,project,&saved,&summary)=>result};
       match result{Ok(updated)=>memory_updated=updated,Err(_)=>tracing::warn!("Could not save generated private writing context; normal reply preserved")}
      }
-     let has_preview=output.get("replacement").is_some_and(Value::is_string)||output.get("edits").and_then(Value::as_array).is_some_and(|edits|!edits.is_empty());
+     let has_preview=output.get("replacement").is_some_and(Value::is_string)||output.get("edits").and_then(Value::as_array).is_some_and(|edits|!edits.is_empty())||output.get("actions").and_then(Value::as_array).is_some_and(|actions|!actions.is_empty());
      emit(&tx,json!({"status":if has_preview{"答复与修改预览已生成"}else{"答复已生成"},"text":output.to_string(),"contextMemoryUpdated":memory_updated})).await?;return Ok(());
     }
    }Ok(())
@@ -109,12 +128,14 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  let stream=futures::stream::unfold(rx,|mut rx|async move{let value=rx.recv().await?;let data=if value.get("done")==Some(&Value::Bool(true)){"[DONE]".into()}else{value.to_string()};Some((Ok::<_,Infallible>(Event::default().data(data)),rx))});
  Ok(Sse::new(stream).keep_alive(KeepAlive::default()).into_response())
 }
+fn action_status(custom:Option<&str>,action:&str)->String{match custom{Some(custom)=>format!("{custom} · {action}"),None=>action.to_string()}}
 async fn emit(tx:&mpsc::Sender<Value>,value:Value)->ApiResult<()>{tx.send(value).await.map_err(|_|ApiError::validation("请求已取消"))}
 
-const SUPPORT_FILE_ACTIONS:bool=false;
+const SUPPORT_FILE_ACTIONS:bool=true;
 /// Only exact valid protocol JSON can carry edits. Recovery retains a complete reply only.
 fn parse_model_output(raw:&str)->ApiResult<Value>{
  let text=raw.trim();if text.is_empty()||contains_hidden_reasoning(text){return Err(output_format_error());}
+ if let Some(batch)=parse_read_tool_sequence(text)?{return Ok(batch);}
  let mut clean=text.to_string();let mut structured=false;let mut mixed=false;
  if let Some(at)=text.to_ascii_lowercase().find("```json"){
   structured=true;mixed=at>0;clean=text[at..].split_once('\n').map(|(_,body)|body).unwrap_or("").trim().strip_suffix("```").unwrap_or_else(||text[at..].split_once('\n').map(|(_,body)|body).unwrap_or("").trim()).trim().to_string();
@@ -138,6 +159,44 @@ fn parse_model_output(raw:&str)->ApiResult<Value>{
   }
  }
 }
+const MAX_READ_TOOLS:usize=6;
+fn count_new_read_calls(calls:&[Value],completed:&std::collections::HashMap<String,Value>)->usize{calls.iter().map(Value::to_string).filter(|key|!completed.contains_key(key)).collect::<std::collections::HashSet<_>>().len()}
+fn reserve_read_tools(used:&mut usize,count:usize)->ApiResult<()>{if count==0||used.saturating_add(count)>MAX_READ_TOOLS{return Err(ApiError::validation("本轮最多读取或查找 6 次，请缩小范围后继续提问"));}*used+=count;Ok(())}
+/// Accept complete read-only JSON sequences/arrays; validate the whole batch before any I/O.
+fn parse_read_tool_sequence(raw:&str)->ApiResult<Option<Value>>{
+ let clean=raw.lines().filter(|line|!matches!(line.trim().to_ascii_lowercase().as_str(),"```"|"```json")).collect::<Vec<_>>().join("\n");
+ let values=match serde_json::Deserializer::from_str(clean.trim()).into_iter::<Value>().collect::<Result<Vec<_>,_>>(){Ok(values)=>values,Err(_)=>return Ok(None)};
+ let batch=if values.len()==1{if let Some(array)=values[0].as_array(){array.clone()}else{return Ok(None)}}else if values.len()>1{values}else{return Ok(None)};
+ let mut calls=vec![];let mut public_status=None;
+ for mut value in batch{
+  let status=super::project_progress::take_public_status(&mut value);if public_status.is_none(){public_status=status;}
+  let item=value.as_object().ok_or_else(||ApiError::validation("读取工具批次必须由完整 JSON 对象组成"))?;
+  if let Some(name)=item.get("tool").filter(|value|!value.is_null()){
+   let name=name.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file")).ok_or_else(||ApiError::validation("工具批次只允许 list_files、search_project、read_file"))?;
+   let mut call=json!({"tool":name});
+   match name{
+    "read_file"=>{let path=item.get("path").and_then(Value::as_str).ok_or_else(||ApiError::validation("read_file 缺少项目相对路径"))?;super::project_context::validate_path(path)?;call["path"]=json!(path);for key in ["startLine","endLine"]{if let Some(value)=item.get(key){if !value.is_u64(){return Err(ApiError::validation("read_file 行号必须为正整数"));}call[key]=value.clone();}}},
+    "search_project"=>{let query=item.get("query").and_then(Value::as_str).ok_or_else(||ApiError::validation("search_project 缺少关键词"))?;if query.trim().is_empty()||query.chars().count()>200{return Err(ApiError::validation("查找关键词需要 1–200 个字符"));}call["query"]=json!(query);},_=>{},
+   }
+   calls.push(call);
+  }else if !item.get("reply").is_some_and(Value::is_string){return Err(ApiError::validation("工具批次包含无效对象"));}
+  // Any premature final answer is discarded. The model must first see authorized tool results.
+ }
+ if calls.is_empty(){return Err(output_format_error());}if calls.len()>MAX_READ_TOOLS{return Err(ApiError::validation("单次工具批次最多 6 个只读调用"));}
+ let mut output=json!({"tool":"_read_batch","calls":calls});if let Some(status)=public_status{output["_publicStatus"]=json!(status);}Ok(Some(output))
+}
+/// Candidate operator opt-in only; response bodies never enter ordinary logs.
+fn private_format_trace(round:usize,raw:&str){
+ if std::env::var("PRIMS_AI_FORMAT_TRACE").ok().as_deref()!=Some("1"){return;}
+ #[cfg(unix)]{
+  use std::{fs::OpenOptions,io::Write,os::unix::fs::{OpenOptionsExt,PermissionsExt}};
+  let path=std::path::Path::new("/tmp/prims-ai-format-trace.jsonl");
+  if let Ok(meta)=std::fs::symlink_metadata(path){if !meta.is_file()||meta.file_type().is_symlink()||meta.permissions().mode()&0o077!=0{return;}}
+  let line=match serde_json::to_string(&json!({"round":round,"raw_chars":raw.chars().count(),"response":raw})){Ok(line)=>line+"\n",Err(_)=>return};
+  let used=std::fs::metadata(path).map(|meta|meta.len()).unwrap_or(0);if used.saturating_add(line.len() as u64)>150000{return;}
+  if let Ok(mut file)=OpenOptions::new().create(true).append(true).mode(0o600).open(path){let _=file.write_all(line.as_bytes());}
+ }
+}
 fn output_format_error()->ApiError{ApiError::validation("本轮答复格式不完整，正文未改动。可以继续提问，或重试本轮。")}
 fn contains_hidden_reasoning(text:&str)->bool{let lower=text.to_ascii_lowercase();["<think","</think","<analysis","</analysis","<reasoning","</reasoning","<|analysis|>","<|channel|>analysis"].iter().any(|marker|lower.contains(marker))}
 fn answer_only(reply:&str,recovered:bool)->ApiResult<Value>{
@@ -150,13 +209,22 @@ fn recover_reply(text:&str)->ApiResult<Value>{
  if !text.starts_with('{')||text.contains("\"tool\""){return Err(output_format_error());}
  let reply=complete_reply_from_object(text).ok_or_else(output_format_error)?;answer_only(&reply,true)
 }
-fn normalize_model_value(value:Value,trusted:bool)->ApiResult<Value>{
+fn normalize_model_value(mut value:Value,trusted:bool)->ApiResult<Value>{
+ let status=super::project_progress::take_public_status(&mut value);
+ let mut output=normalize_model_value_without_status(value,trusted)?;
+ if trusted{if let Some(status)=status{output["_publicStatus"]=json!(status);}}
+ Ok(output)
+}
+fn normalize_model_value_without_status(value:Value,trusted:bool)->ApiResult<Value>{
  if let Some(reply)=value.as_str(){return answer_only(reply,false);}
  let object=value.as_object().ok_or_else(output_format_error)?;
  if let Some(tool)=object.get("tool").filter(|tool|!tool.is_null()){
   if !trusted{return Err(output_format_error());}
   let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file")).ok_or_else(output_format_error)?;
-  let mut output=json!({"tool":name});for key in ["path","query","startLine","endLine"]{if let Some(value)=object.get(key){output[key]=value.clone();}}return Ok(output);
+  let mut output=json!({"tool":name});for key in ["path","query","startLine","endLine"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
+  if name=="read_file"{let path=output.get("path").and_then(Value::as_str).ok_or_else(output_format_error)?;super::project_context::validate_path(path)?;for key in ["startLine","endLine"]{if output.get(key).is_some_and(|value|!value.is_u64()){return Err(output_format_error());}}}
+  if name=="search_project"&&!output.get("query").and_then(Value::as_str).is_some_and(|query|!query.trim().is_empty()&&query.chars().count()<=200){return Err(output_format_error());}
+  return Ok(output);
  }
  let reply=object.get("reply").and_then(Value::as_str).ok_or_else(output_format_error)?;
  if !trusted{return answer_only(reply,true);}let _=answer_only(reply,false)?;
@@ -205,6 +273,38 @@ fn repair_json_string_encoding(text:&str)->Option<String>{
 
 fn may_retry_without_images(input:&AICompleteInput,already_used:bool,error:&AIStreamStartError)->bool{!already_used&&(input.image.is_some()||!input.project_images.is_empty())&&error.is_image_unsupported()}
 fn strip_image_inputs(input:&mut AICompleteInput){input.image=None;input.project_images.clear();input.options.get_or_insert_with(Default::default).insert("imagesUnavailable".into(),"true".into());}
+/// File actions are proposal data only. No selection is needed, and no tool executes them.
+/// The separate authenticated prepare/apply service owns permissions, existence, source snapshots
+/// and version-history checks; this parser only bounds and validates the proposal contract.
+fn validate_file_action_proposals(output:&Value)->ApiResult<()>{
+ let Some(value)=output.get("actions")else{return Ok(())};let actions=value.as_array().ok_or_else(||ApiError::validation("文件整理建议必须是 actions 数组"))?;
+ if actions.len()>12{return Err(ApiError::validation("每轮最多预览 12 个文件操作，请分次处理"));}
+ let mut total=0usize;
+ for action in actions{
+  let item=action.as_object().ok_or_else(||ApiError::validation("文件操作建议格式不正确"))?;
+  let kind=item.get("type").and_then(Value::as_str).ok_or_else(||ApiError::validation("文件操作建议缺少 type"))?;
+  let path=item.get("path").and_then(Value::as_str).ok_or_else(||ApiError::validation("文件操作建议缺少相对路径"))?;
+  validate_action_path(path)?;total+=path.chars().count();
+  match kind{
+   "create_file"=>{
+    if item.len()!=3||item.keys().any(|key|!matches!(key.as_str(),"type"|"path"|"content")){return Err(ApiError::validation("新建文件建议仅支持 type、path、content"));}
+    let content=item.get("content").and_then(Value::as_str).ok_or_else(||ApiError::validation("新建文件建议缺少完整 content"))?;
+    if content.chars().count()>40000{return Err(ApiError::validation("每个新文件内容最多 40000 字符"));}total+=content.chars().count();
+   },
+   "create_directory"=>{if item.len()!=2||item.keys().any(|key|!matches!(key.as_str(),"type"|"path")){return Err(ApiError::validation("新建目录建议仅支持 type、path"));}},
+   "move_file"=>{
+    if item.len()!=3||item.keys().any(|key|!matches!(key.as_str(),"type"|"path"|"newPath")){return Err(ApiError::validation("移动/重命名建议仅支持 type、path、newPath"));}
+    let destination=item.get("newPath").and_then(Value::as_str).ok_or_else(||ApiError::validation("移动/重命名建议缺少 newPath"))?;validate_action_path(destination)?;total+=destination.chars().count();
+   },_=>return Err(ApiError::validation("只支持新建文件、创建目录、移动或重命名三个建议类型")),
+  }
+  if total>80000{return Err(ApiError::validation("本轮文件建议文本总量过大，请分次处理"));}
+ }
+ Ok(())
+}
+fn validate_action_path(path:&str)->ApiResult<()>{
+ super::project_context::validate_path(path)?;
+ if path.chars().any(char::is_control)||(path.as_bytes().get(1)==Some(&b':')&&path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)){return Err(ApiError::validation("文件建议只允许安全的项目相对路径"));}Ok(())
+}
 const MAX_EDITS:usize=12;
 const MAX_EDIT_BEFORE:usize=16000;
 const MAX_EDIT_AFTER:usize=24000;
@@ -240,6 +340,18 @@ fn validate_edit_output(output:&mut Value,current_file:&str,editing_allowed:bool
 #[cfg(test)]mod tests{
  use super::*;
  fn edit(path:&str,before:&str,after:&str)->Value{json!({"filePath":path,"before":before,"after":after})}
+ #[test]fn file_actions_can_be_previewed_without_a_selection_but_never_become_tools(){let mut value=parse_model_output(r#"{"reply":"可以这样整理，等待你逐项确认","actions":[{"type":"create_directory","path":"chapters"},{"type":"create_file","path":"chapters/new.tex","content":"proposed content"},{"type":"move_file","path":"old.tex","newPath":"chapters/old.tex"}]}"#).unwrap();validate_file_action_proposals(&value).unwrap();validate_edit_output(&mut value,"",false).unwrap();assert_eq!(value["actions"].as_array().unwrap().len(),3);assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));assert!(parse_model_output(r#"{"tool":"create_file","path":"new.tex","content":"no execution"}"#).is_err());}
+ #[test]fn file_action_paths_shape_and_limits_are_strict(){for action in [json!({"type":"create_file","path":"../outside","content":"x"}),json!({"type":"create_directory","path":"C:/system"}),json!({"type":"move_file","path":"main.tex","newPath":"/tmp/new.tex"}),json!({"type":"delete_file","path":"main.tex"}),json!({"type":"create_file","path":"new.tex","content":"x","overwrite":true}),json!({"type":"create_file","path":"new.tex","content":"界".repeat(40001)})]{assert!(validate_file_action_proposals(&json!({"actions":[action]})).is_err());}assert!(validate_file_action_proposals(&json!({"actions":(0..13).map(|n|json!({"type":"create_directory","path":format!("dir{n}")})).collect::<Vec<_>>()})).is_err());let oversized=json!({"actions":[{"type":"create_file","path":"one.tex","content":"a".repeat(40000)},{"type":"create_file","path":"two.tex","content":"b".repeat(40000)}]});assert!(validate_file_action_proposals(&oversized).is_err());let value=parse_model_output(r#"{"reply":"只解释，不需要文件变更"}"#).unwrap();assert_eq!(value["actions"],json!([]));}
+ #[test]fn public_progress_survives_the_actual_tool_event(){assert_eq!(action_status(Some("正在核对引用"),"正在读取：refs.bib"),"正在核对引用 · 正在读取：refs.bib");assert_eq!(action_status(None,"正在查找项目内容…"),"正在查找项目内容…");}
+ #[test]fn progress_metadata_is_validated_separate_from_tools_and_final_history(){
+  let mut value=parse_model_output(r#"{"reply":"safe answer","publicStatus":"正在核对相关文件"}"#).unwrap();assert_eq!(value.as_object_mut().unwrap().remove("_publicStatus"),Some(json!("正在核对相关文件")));assert!(value.get("publicStatus").is_none());assert!(value.get("status").is_none());
+  let value=parse_model_output(r#"[{"tool":"read_file","path":"a.tex","publicStatus":"正在查看参考内容"},{"tool":"read_file","path":"b.tex"}]"#).unwrap();assert_eq!(value["_publicStatus"],"正在查看参考内容");assert!(value["calls"][0].get("publicStatus").is_none());
+  assert!(parse_model_output(r#"{"tool":"write_file","publicStatus":"trying"}"#).is_err());
+  assert!(parse_model_output(r#"{"reply":"safe","publicStatus":"<think>hidden</think>"}"#).is_err()); // The outer hidden-reasoning guard stays stricter than optional metadata filtering.
+ }
+ #[test]fn completed_reads_reuse_results_without_spending_new_budget(){let a=json!({"tool":"read_file","path":"a.tex"});let b=json!({"tool":"read_file","path":"b.tex"});let mut completed=std::collections::HashMap::new();assert_eq!(count_new_read_calls(&[a.clone(),a.clone(),b.clone()],&completed),2);completed.insert(a.to_string(),json!({"content":"authorized"}));assert_eq!(count_new_read_calls(&[a.clone(),b.clone()],&completed),1);completed.insert(b.to_string(),json!({"content":"authorized"}));assert_eq!(count_new_read_calls(&[a,b],&completed),0);}
+ #[test]fn complete_read_tool_sequences_execute_as_one_authorized_batch_before_answer(){let first=json!({"tool":"read_file","path":"chapters/a.tex"});let second=json!({"tool":"read_file","path":"chapters/b.tex","startLine":2,"endLine":8});for raw in [format!("{}\n{}",first,second),json!([first.clone(),second.clone()]).to_string(),format!("```json\n{}\n```\n```json\n{}\n```",first,second),format!("{}\n{}\n{}",first,second,json!({"reply":"premature","replacement":"NEVER_APPLY"}))]{let value=parse_model_output(&raw).unwrap();assert_eq!(value["tool"],"_read_batch");assert_eq!(value["calls"].as_array().unwrap().len(),2);assert!(value.get("reply").is_none());}let single=parse_model_output(&first.to_string()).unwrap();assert_eq!(single["tool"],"read_file");}
+ #[test]fn read_tool_batches_reject_unknown_write_truncation_and_enforce_total_budget(){let first=json!({"tool":"read_file","path":"main.tex"});for raw in [format!("{}\n{}",first,json!({"tool":"delete_file","path":"main.tex"})),format!("{}\n{{\"tool\":",first),json!([{"tool":"read_file","path":"../outside"}]).to_string(),json!([{"tool":"read_file"}]).to_string(),serde_json::to_string(&(0..7).map(|_|first.clone()).collect::<Vec<_>>()).unwrap()]{assert!(parse_model_output(&raw).is_err());}let mut used=0;reserve_read_tools(&mut used,4).unwrap();reserve_read_tools(&mut used,2).unwrap();assert!(reserve_read_tools(&mut used,1).is_err());assert_eq!(used,6);}
  #[test]fn truncated_edit_can_only_recover_complete_reply_with_no_preview_notice(){let mut value=parse_model_output(r#"{"reply":"我已拟好章节展开思路。","replacement":null,"edits":[{"filePath":"main.tex","before":"unfinished"#).unwrap();assert!(value["reply"].as_str().unwrap().contains("没有可应用的方案"));assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));assert!(take_generated_summary(&mut value).is_none());assert!(parse_model_output(r#"{"reply":"incomplete"#).is_err());}
  #[test]fn optional_null_fields_allow_clarification_and_followup(){for raw in [r#"{"reply":"请先确认研究目标，我再提出修改。","tool":null,"replacement":null,"edits":null,"contextSummary":null}"#,r#"{"reply":"下一轮可以继续讨论。","replacement":null}"#]{let value=parse_model_output(raw).unwrap();assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));}}
  #[test]fn latex_encoding_recovery_never_recovers_modifications_or_summary(){for raw in [r#"{"reply":"请确认 \input{methods} 与 \begin{document}。","replacement":"UNTRUSTED","edits":null,"contextSummary":"must not save repaired metadata"}"#,r#"{"reply":"使用 \begin{document} 即可。","replacement":"UNTRUSTED"}"#]{let mut value=parse_model_output(raw).unwrap();assert!(value["reply"].as_str().unwrap().contains('\\'));assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));assert!(take_generated_summary(&mut value).is_none());}}

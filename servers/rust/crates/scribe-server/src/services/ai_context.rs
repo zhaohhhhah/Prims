@@ -32,7 +32,7 @@ pub struct ContextState {
  pub auto_summary:String,pub summary_updated_at:Option<DateTime<Utc>>,
  #[serde(skip)]pub summary_revision:i64,
 }
-#[derive(Debug,Serialize)]#[serde(rename_all="camelCase")]pub struct ContextThread{pub id:Uuid,pub title:String,pub updated_at:DateTime<Utc>,pub message_count:i64}
+#[derive(Debug,Serialize)]#[serde(rename_all="camelCase")]pub struct ContextThread{pub id:Uuid,pub title:String,pub updated_at:DateTime<Utc>,pub created_at:DateTime<Utc>,pub last_message_at:Option<DateTime<Utc>>,pub message_count:i64}
 #[derive(Debug,Serialize)]#[serde(rename_all="camelCase")]pub struct ThreadList{pub threads:Vec<ContextThread>,pub has_earlier:bool}
 #[derive(Deserialize)]#[serde(rename_all="camelCase")]pub struct SelectThreadInput{pub thread_id:Uuid}
 #[derive(Deserialize)]pub struct BriefInput{pub brief:String}
@@ -69,8 +69,8 @@ impl AIContextService {
  }
  pub async fn threads(&self,user:UserId,project:ProjectId)->ApiResult<ThreadList>{
   self.ensure(user,project).await?;
-  let rows=sqlx::query("select t.id,t.title,t.updated_at,count(m.seq) as message_count from public.scribe_ai_context_threads t left join public.scribe_ai_context_messages m on m.user_id=t.user_id and m.project_id=t.project_id and m.thread_id=t.id where t.user_id=$1 and t.project_id=$2 group by t.user_id,t.project_id,t.id,t.title,t.updated_at order by t.updated_at desc,t.id limit 51").bind(user.into_inner()).bind(project.into_inner()).fetch_all(&self.pool).await.map_err(db)?;
-  let has_earlier=rows.len()>50;let threads=rows.into_iter().take(50).map(|r|ContextThread{id:r.get("id"),title:r.get("title"),updated_at:r.get("updated_at"),message_count:r.get("message_count")}).collect();Ok(ThreadList{threads,has_earlier})
+  let rows=sqlx::query("select t.id,t.title,t.created_at,max(m.created_at) filter(where m.role in ('user','assistant')) as last_message_at,coalesce(max(m.created_at) filter(where m.role in ('user','assistant')),t.created_at) as updated_at,count(m.seq) as message_count from public.scribe_ai_context_threads t left join public.scribe_ai_context_messages m on m.user_id=t.user_id and m.project_id=t.project_id and m.thread_id=t.id where t.user_id=$1 and t.project_id=$2 group by t.user_id,t.project_id,t.id,t.title,t.created_at order by coalesce(max(m.created_at) filter(where m.role in ('user','assistant')),t.created_at) desc,t.id limit 51").bind(user.into_inner()).bind(project.into_inner()).fetch_all(&self.pool).await.map_err(db)?;
+  let has_earlier=rows.len()>50;let threads=rows.into_iter().take(50).map(|r|ContextThread{id:r.get("id"),title:r.get("title"),updated_at:r.get("updated_at"),created_at:r.get("created_at"),last_message_at:r.get("last_message_at"),message_count:r.get("message_count")}).collect();Ok(ThreadList{threads,has_earlier})
  }
  pub async fn select_thread(&self,user:UserId,project:ProjectId,input:SelectThreadInput)->ApiResult<ContextState>{
   self.ensure(user,project).await?;let mut tx=self.pool.begin().await.map_err(db)?;

@@ -1,13 +1,18 @@
 import { Button } from '@scribe/ui';
-import { AlertCircle, AlertTriangle, CheckCircle2, Info, Loader2, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, CheckCircle2, Info, Loader2, Sparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { CompileLogEntry } from '@scribe/compiler-client';
 import type { CompileJobStatus } from '@scribe/shared';
 import type { LucideIcon } from 'lucide-react';
+import { requestCompileAssistant } from '../../lib/compile-assist';
 
 interface CompileLogProps {
+  readonly projectId?: string;
+  readonly jobProjectId?: string | null;
+  readonly knownFilePaths?: readonly string[];
+  readonly compileId?: string;
   readonly status: CompileJobStatus | 'idle';
   readonly entries: readonly CompileLogEntry[];
   readonly durationMs?: number | null;
@@ -127,6 +132,7 @@ function StatusBadge({ status }: { readonly status: CompileLogProps['status'] })
 }
 
 export function CompileLog({
+  projectId, jobProjectId, knownFilePaths, compileId,
   status,
   entries,
   durationMs,
@@ -174,6 +180,12 @@ export function CompileLog({
           ) : null}
           <StatusBadge status={status} />
         </div>
+        <div className="flex items-center gap-2">
+        {status === 'error' && projectId && jobProjectId === projectId ? (
+          <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => requestCompileAssistant({ projectId, jobProjectId, knownFilePaths, compileId, status, entries, errorMessage })}>
+            <Sparkles className="h-3 w-3" aria-hidden="true" />交给 AI 处理
+          </Button>
+        ) : null}
         {onClose !== undefined ? (
           <Button
             variant="ghost"
@@ -185,6 +197,7 @@ export function CompileLog({
             <X className="h-3 w-3" aria-hidden="true" />
           </Button>
         ) : null}
+        </div>
       </div>
       <div className="scribe-scroll flex-1 overflow-auto p-2">
         {errorMessage !== null && errorMessage !== undefined ? (

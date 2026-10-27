@@ -15,6 +15,10 @@ const PDFPreview = lazy(() =>
 );
 
 interface PreviewPanelProps {
+  readonly projectId?: string;
+  readonly jobProjectId?: string | null;
+  readonly knownFilePaths?: readonly string[];
+  readonly compileId?: string;
   readonly compileSession: CompileSessionState;
   readonly highlight: {
     readonly page: number;
@@ -36,6 +40,7 @@ interface PreviewPanelProps {
 type View = 'pdf' | 'log';
 
 export function PreviewPanel({
+  projectId, jobProjectId, knownFilePaths, compileId,
   compileSession,
   highlight,
   onInverseSync,
@@ -65,6 +70,7 @@ export function PreviewPanel({
   }, [view]);
 
   const { entries, status, errorMessage } = compileSession;
+  const currentCompileId = compileId ?? compileSession.job?.id;
   const lintEnabled = useSettings((s) => s.editor.lintEnabled);
 
   // Tally counts once; the auto-switch effect and the toolbar badge
@@ -183,6 +189,10 @@ export function PreviewPanel({
           </Suspense>
         ) : (
           <CompileLog
+            {...(projectId ? { projectId } : {})}
+            jobProjectId={jobProjectId ?? compileSession.job?.projectId ?? null}
+            {...(knownFilePaths ? { knownFilePaths } : {})}
+            {...(currentCompileId ? { compileId: currentCompileId } : {})}
             status={compileSession.status}
             entries={entries}
             durationMs={compileSession.job?.durationMs ?? null}

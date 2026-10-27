@@ -66,12 +66,21 @@ struct StreamFrame {
 struct StreamChoice {
     #[serde(default)]
     delta: Option<StreamDelta>,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct StreamDelta {
     #[serde(default)]
     content: Option<String>,
+}
+
+fn chunk_from_frame(frame:StreamFrame)->Option<Result<CompletionChunk,AdapterError>>{
+    let choice=frame.choices.into_iter().next()?;
+    if choice.finish_reason.as_deref()==Some("length"){return Some(Err(AdapterError::OutputLimit));}
+    let text=choice.delta.and_then(|delta|delta.content).unwrap_or_default();
+    if text.is_empty(){None}else{Some(Ok(CompletionChunk{text}))}
 }
 
 fn base_url(req: &CompleteRequest) -> Result<String, AdapterError> {
@@ -163,17 +172,7 @@ impl Adapter for OpenAIAdapter {
                 Ok(f) => f,
                 Err(_) => return None, // skip malformed lines rather than killing the stream
             };
-            let text = frame
-                .choices
-                .into_iter()
-                .next()?
-                .delta
-                .and_then(|d| d.content)
-                .unwrap_or_default();
-            if text.is_empty() {
-                return None;
-            }
-            Some(Ok(CompletionChunk { text }))
+            chunk_from_frame(frame)
         });
         Ok(Box::pin(stream))
     }
@@ -262,6 +261,21 @@ mod tests {
             temperature: 0.0,
             max_tokens: Some(16),
         }
+    }
+
+    #[test]
+    fn standard_length_finish_frame_is_not_a_complete_answer(){
+        let frame:StreamFrame=serde_json::from_str(r#"{"id":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}"#).unwrap();
+        assert!(matches!(chunk_from_frame(frame),Some(Err(AdapterError::OutputLimit))));
+        let frame:StreamFrame=serde_json::from_str(r#"{"choices":[{"delta":{"content":"partial text"},"finish_reason":"length"}]}"#).unwrap();
+        assert!(matches!(chunk_from_frame(frame),Some(Err(AdapterError::OutputLimit))));
+    }
+    #[test]
+    fn null_or_stop_finish_frames_preserve_normal_stream_behavior(){
+        let frame:StreamFrame=serde_json::from_str(r#"{"choices":[{"delta":{"content":"answer"},"finish_reason":null}]}"#).unwrap();
+        assert_eq!(chunk_from_frame(frame).unwrap().unwrap().text,"answer");
+        let frame:StreamFrame=serde_json::from_str(r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#).unwrap();
+        assert!(chunk_from_frame(frame).is_none());
     }
 
     #[test]

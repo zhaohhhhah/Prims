@@ -32,5 +32,8 @@ pub use versions::VersionService;
 pub mod welcome;
 
 pub mod ai_context;
+pub mod project_actions;
 
 pub mod ai_profiles;
+
+pub mod project_progress;

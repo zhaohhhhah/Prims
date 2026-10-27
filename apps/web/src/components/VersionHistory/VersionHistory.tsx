@@ -3,22 +3,40 @@ import { Button, Skeleton } from '@scribe/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { diff_match_patch as DiffMatchPatch } from 'diff-match-patch';
 import { CameraIcon, History, Loader2, RotateCcw, X } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
 import { api, type ApiError } from '../../lib/api';
+import { projectActionsApi, type RestorePlan } from '../../lib/project-actions';
+import { openProjectAssistant } from '../../lib/assistant-events';
+
+function versionTimestamp(value:string):{label:string;title:string;valid:boolean}{
+  const parsed=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+  const date=new Date(value);const year=Number(parsed?.[1]),month=Number(parsed?.[2]),day=Number(parsed?.[3]);
+  const days=month>=1&&month<=12?new Date(Date.UTC(year,month,0)).getUTCDate():0;
+  if(!parsed||!Number.isFinite(date.getTime())||day<1||day>days||Number(parsed[4])>23||Number(parsed[5])>59||Number(parsed[6])>59)return {label:'时间未知',title:'版本记录的日期无效',valid:false};
+  const pad=(n:number)=>String(n).padStart(2,'0');const label=`${String(date.getFullYear()).padStart(4,'0')}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return {label,title:`${label}:${pad(date.getSeconds())} · ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,valid:true};
+}
 
 interface VersionHistoryProps {
   readonly projectId: ProjectId;
   readonly onClose: () => void;
+  readonly readOnly?:boolean;
+  readonly beforeReview?:()=>Promise<void>;
 }
 
-export function VersionHistory({ projectId, onClose }: VersionHistoryProps) {
+export function VersionHistory({ projectId, onClose,readOnly=false,beforeReview }: VersionHistoryProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [selectedVersionId, setSelectedVersionId] = useState<VersionId | null>(null);
   const [diffFile, setDiffFile] = useState<string | null>(null);
+  const owner=useRef({projectId});if(owner.current.projectId!==projectId)owner.current={projectId};
+  const selectedRef=useRef(selectedVersionId);selectedRef.current=selectedVersionId;
+  const [review,setReview]=useState<{projectId:string;versionId:string;plan:RestorePlan}|null>(null);
+  useEffect(()=>{setSelectedVersionId(null);setDiffFile(null);setReview(null);},[projectId]);
+  const visibleReview=review?.projectId===projectId&&review.versionId===selectedVersionId?review.plan:null;
 
   const versionsQuery = useQuery<ProjectVersion[], ApiError>({
     queryKey: ['versions', projectId],
@@ -36,23 +54,10 @@ export function VersionHistory({ projectId, onClose }: VersionHistoryProps) {
     },
   });
 
-  const restoreMutation = useMutation<unknown, ApiError, VersionId>({
-    mutationFn: (versionId) => api.versions.restore(projectId, versionId),
-    onSuccess: async () => {
-      toast.success(t('history.restored'));
-      // Restore only rewrites file content + sizes for files that
-      // existed in the snapshot. Invalidate just those query keys
-      // instead of nuking the whole React Query cache (which previously
-      // forced spinners on every panel — members, comments, AI config —
-      // for no reason).
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['files', projectId] }),
-        queryClient.invalidateQueries({ queryKey: ['file-content', projectId] }),
-      ]);
-    },
-    onError: (err) => {
-      toast.error(err.body.message);
-    },
+  const restoreMutation=useMutation({
+    mutationFn:async(versionId:VersionId)=>{if(readOnly)throw new Error('当前项目为只读');const scope=owner.current;await beforeReview?.();if(owner.current!==scope)throw new Error('项目已切换');await api.versions.snapshot(projectId,{label:'恢复前自动备份'});const plan=await projectActionsApi.restorePlan(projectId,versionId);return {scope,versionId,plan};},
+    onSuccess:async(result)=>{if(owner.current!==result.scope||selectedRef.current!==result.versionId)return;setReview({projectId,versionId:result.versionId,plan:result.plan});await queryClient.invalidateQueries({queryKey:['versions',projectId]});},
+    onError:(error:Error)=>toast.error(error.message),
   });
 
   const versionPayloadQuery = useQuery({
@@ -108,7 +113,7 @@ export function VersionHistory({ projectId, onClose }: VersionHistoryProps) {
           onClick={() => {
             snapshotMutation.mutate();
           }}
-          disabled={snapshotMutation.isPending}
+          disabled={snapshotMutation.isPending||readOnly}
         >
           {snapshotMutation.isPending ? (
             <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -129,6 +134,7 @@ export function VersionHistory({ projectId, onClose }: VersionHistoryProps) {
           <ul className="space-y-px p-2">
             {(versionsQuery.data ?? []).map((v) => {
               const isSelected = selectedVersionId === v.id;
+              const timestamp=versionTimestamp(v.createdAt);
               return (
                 <li key={v.id}>
                   <button
@@ -138,12 +144,11 @@ export function VersionHistory({ projectId, onClose }: VersionHistoryProps) {
                     }`}
                     onClick={() => {
                       setSelectedVersionId(v.id);
-                      setDiffFile(null);
+                      setDiffFile(null);setReview(null);
                     }}
                   >
-                    <div className="font-medium">
-                      {v.label ?? new Date(v.createdAt).toLocaleString()}
-                    </div>
+                    {v.label&&<div className="font-medium">{v.label}</div>}
+                    <time className="block font-medium" dateTime={timestamp.valid?v.createdAt:undefined} title={timestamp.title}>{timestamp.label}</time>
                     <div className="text-[10px] text-muted-foreground">
                       {t('history.fileCount', { count: v.fileCount })}
                       {v.authorDisplayName !== null ? ` · ${v.authorDisplayName}` : ''}
@@ -166,20 +171,19 @@ export function VersionHistory({ projectId, onClose }: VersionHistoryProps) {
               variant="outline"
               className="gap-1.5"
               onClick={() => {
-                if (window.confirm(t('history.restoreConfirm'))) {
-                  restoreMutation.mutate(selectedVersionId);
-                }
+                restoreMutation.mutate(selectedVersionId);
               }}
-              disabled={restoreMutation.isPending}
+              disabled={restoreMutation.isPending||readOnly}
             >
               {restoreMutation.isPending ? (
                 <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
               ) : (
                 <RotateCcw className="h-3 w-3" aria-hidden="true" />
               )}
-              {t('history.restore')}
+              预览恢复
             </Button>
           </div>
+          {visibleReview&&<div className="max-h-56 space-y-2 overflow-auto border-b p-2 text-xs"><p>按文件生成恢复预览，接受后才写入正文。</p>{visibleReview.edits.map(edit=><div key={edit.fileId} className="flex items-center justify-between gap-2"><span className="min-w-0 truncate" title={edit.path}>{edit.path}</span><Button size="sm" variant="outline" disabled={readOnly} onClick={()=>openProjectAssistant({projectId,source:'restore',restore:{filePath:edit.path,before:edit.before,after:edit.after,versionId:visibleReview.versionId}})}>预览此文件</Button></div>)}{visibleReview.edits.length===0&&<p className="text-muted-foreground">当前文本没有可预览的差异。</p>}{visibleReview.missingPaths.length>0&&<p className="text-muted-foreground">未恢复缺失路径：{visibleReview.missingPaths.join('、')}</p>}{visibleReview.unsupportedPaths.length>0&&<p className="text-muted-foreground">本轮未恢复：{visibleReview.unsupportedPaths.join('、')}</p>}</div>}
           <div className="flex-1 overflow-auto">
             {versionPayloadQuery.isLoading ? (
               <div className="p-3">

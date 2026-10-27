@@ -7,7 +7,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@scribe/ui';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronDown,
   ChevronRight,
@@ -28,6 +28,9 @@ import { toast } from 'sonner';
 
 import { api, type ApiError } from '../../lib/api';
 import { log } from '../../lib/debug';
+import { useAuthStore } from '../../stores/auth';
+import { projectActionsApi } from '../../lib/project-actions';
+import { buildFileTree, type FolderNode, type TreeNode } from '../../lib/file-tree-shape';
 
 interface FileTreeProps {
   readonly projectId: ProjectId;
@@ -36,65 +39,8 @@ interface FileTreeProps {
   readonly onSelect?: (file: ProjectFile) => void;
 }
 
-interface FolderNode {
-  readonly type: 'folder';
-  readonly name: string;
-  readonly path: string;
-  children: TreeNode[];
-}
-interface FileNode {
-  readonly type: 'file';
-  readonly name: string;
-  readonly file: ProjectFile;
-}
-type TreeNode = FolderNode | FileNode;
-
 const MIME_FILE_DRAG = 'application/x-scribe-file';
 
-function buildTree(files: readonly ProjectFile[]): TreeNode[] {
-  const root: FolderNode = { type: 'folder', name: '', path: '', children: [] };
-
-  for (const file of files) {
-    const parts = file.path.split('/').filter((p) => p.length > 0);
-    if (parts.length === 0) continue;
-    let cursor = root;
-    for (let i = 0; i < parts.length - 1; i += 1) {
-      const segment = parts[i];
-      if (segment === undefined) continue;
-      let folder = cursor.children.find(
-        (c): c is FolderNode => c.type === 'folder' && c.name === segment,
-      );
-      if (folder === undefined) {
-        folder = {
-          type: 'folder',
-          name: segment,
-          path: parts.slice(0, i + 1).join('/'),
-          children: [],
-        };
-        cursor.children.push(folder);
-      }
-      cursor = folder;
-    }
-    const leaf = parts[parts.length - 1];
-    if (leaf === undefined || leaf === '.gitkeep') continue;
-    cursor.children.push({ type: 'file', name: leaf, file });
-  }
-
-  sort(root.children);
-  return root.children;
-}
-
-function sort(nodes: TreeNode[]): void {
-  nodes.sort((a, b) => {
-    if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
-  for (const n of nodes) {
-    if (n.type === 'folder') sort(n.children);
-  }
-}
-
-/** All files whose path is `folderPath/...`. */
 function filesUnder(files: readonly ProjectFile[], folderPath: string): ProjectFile[] {
   const prefix = `${folderPath}/`;
   return files.filter((f) => f.path === `${folderPath}/.gitkeep` || f.path.startsWith(prefix));
@@ -107,7 +53,11 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(['']));
   const [dropTarget, setDropTarget] = useState<string | null>(null);
 
-  const tree = useMemo(() => buildTree(files), [files]);
+  const userId=useAuthStore(state=>state.user?.id);
+  const directories=useQuery({queryKey:['project-directories',userId,projectId],queryFn:()=>projectActionsApi.listDirectories(projectId),enabled:!!userId});
+  const directoryPaths=directories.data?.directories.map(item=>item.path)??[];
+  const protectedDirectory=(path:string)=>directoryPaths.some(item=>item===path||item.startsWith(`${path}/`));
+  const tree=useMemo(()=>buildFileTree(files,directories.data?.directories.map(item=>item.path)??[]),[files,directories.data]);
 
   const createMutation = useMutation<ProjectFile, ApiError, { path: string; content?: string }>({
     mutationFn: ({ path, content }) => api.files.create(projectId, path, content),
@@ -197,6 +147,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   async function promptRenameFolder(folder: FolderNode) {
+    if(protectedDirectory(folder.path)){toast.message('此目录暂不支持整体改名，可单独移动其中的文件。');return;}
     const next = window.prompt(t('project.renameFolderPrompt'), folder.path);
     if (next === null || next.trim() === '' || next.trim() === folder.path) return;
     const newPath = next.trim().replace(/\/$/, '');
@@ -216,6 +167,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   async function confirmDeleteFolder(folder: FolderNode) {
+    if(protectedDirectory(folder.path)){toast.message('此目录暂不支持删除，可单独管理其中的文件。');return;}
     const contained = filesUnder(files, folder.path);
     const ok = window.confirm(
       t('project.deleteFolderConfirm', { path: folder.path, count: contained.length }),
@@ -434,6 +386,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
               </ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem
+                disabled={protectedDirectory(node.path)}
+                title={protectedDirectory(node.path)?'真实目录暂不支持整体改名':undefined}
                 onClick={() => {
                   void promptRenameFolder(node);
                 }}
@@ -443,6 +397,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
               </ContextMenuItem>
               <ContextMenuItem
                 destructive
+                disabled={protectedDirectory(node.path)}
+                title={protectedDirectory(node.path)?'真实目录暂不支持删除':undefined}
                 onClick={() => {
                   void confirmDeleteFolder(node);
                 }}

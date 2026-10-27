@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { API_URL, supabase } from './supabase';
 export interface ModelProfile {id:string;name:string;provider:AIProvider;model:string;models?:string[];baseUrl:string|null;apiKeySet:boolean;ready:boolean;updatedAt:string}
+export interface ModelProfileList {profiles:ModelProfile[];defaultProfileId?:string|null;defaultModel?:string|null;migration?:{status:'migrated'|'none'|'capacity'|'invalid'|'decrypt_failed';message:string|null}}
 export interface ModelProfileDraft {name:string;provider:AIProvider;model:string;models?:string[];baseUrl?:string|null;apiKey?:string}
 export function profileModelNames(profile:Pick<ModelProfile,'model'|'models'>):string[]{const source=profile.models?.length?profile.models:[profile.model];return [...new Set(source.map(name=>name.trim()).filter(Boolean))];}
 /** One complete model ID per line: commas inside a model ID are deliberately preserved. */
@@ -14,6 +15,7 @@ export function parseModelNamesInput(input:string):string[]{
  return models;
 }
 export function isModelProfileReady(profile:ModelProfile):boolean{return profile.ready??(profile.apiKeySet||profile.provider==='ollama'||profile.provider==='lmstudio');}
+export function defaultModelChoice(list:ModelProfileList|undefined){const profile=list?.profiles.find(item=>item.id===list.defaultProfileId);if(!profile||!isModelProfileReady(profile))return undefined;const model=list?.defaultModel??profile.model;return profileModelNames(profile).includes(model)?{profile,model,value:JSON.stringify([profile.id,model])}:undefined;}
 export class ModelProfileError extends Error {constructor(public status:number,message:string){super(message);}}
 export const modelProfilesQueryKey=(userId:string|undefined)=>['ai-model-profiles',userId] as const;
 /** Only a saved profile UUID is sent; default deliberately leaves the existing API config untouched. */
@@ -31,5 +33,5 @@ async function request<T>(suffix='',body?:unknown,method=body===undefined?'GET':
  return value as T;
 }
 function path(id:string):string {const valid=normalizeModelProfileId(id);if(!valid)throw new Error('默认配置请在上方表单修改');return '/'+valid;}
-export const modelProfilesApi={list:(userId?:string)=>request<{profiles:ModelProfile[]}>('',undefined,'GET',userId),create:(input:ModelProfileDraft)=>request<ModelProfile>('',input),update:(id:string,input:ModelProfileDraft)=>request<ModelProfile>(path(id),input,'PUT'),remove:(id:string)=>request<void>(path(id),undefined,'DELETE')};
+export const modelProfilesApi={list:(userId?:string)=>request<ModelProfileList>('',undefined,'GET',userId),setDefault:(profileId:string,modelName:string)=>request<ModelProfileList>('/default',{profileId,modelName},'PUT'),create:(input:ModelProfileDraft)=>request<ModelProfile>('',input),update:(id:string,input:ModelProfileDraft)=>request<ModelProfile>(path(id),input,'PUT'),remove:(id:string)=>request<void>(path(id),undefined,'DELETE')};
 export function useModelProfiles(){const userId=useAuthStore(state=>state.user?.id);return useQuery({queryKey:modelProfilesQueryKey(userId),queryFn:()=>modelProfilesApi.list(userId),enabled:!!userId,staleTime:10000,refetchOnWindowFocus:false});}

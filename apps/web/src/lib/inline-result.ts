@@ -1,5 +1,6 @@
+import { parseProjectActions, type ProjectActionInput } from './project-actions';
 export interface InlineFileEdit {filePath:string;before:string;after:string}
-export interface InlineProposal {reply:string;replacement:string|null;edits:InlineFileEdit[]}
+export interface InlineProposal {reply:string;replacement:string|null;edits:InlineFileEdit[];actions:ProjectActionInput[]}
 /** Only complete, bounded proposals for this exact open file are eligible for preview. */
 export function parseInlineProposal(raw:string,expectedFilePath?:string):InlineProposal {
   const clean=raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
@@ -19,5 +20,5 @@ export function parseInlineProposal(raw:string,expectedFilePath?:string):InlineP
       edits.push({filePath:item.filePath,before:item.before,after:item.after});
     }
   }
-  return {reply:data.reply,replacement:edits.length?null:data.replacement,edits};
+  return {reply:data.reply,replacement:edits.length?null:data.replacement,edits,actions:parseProjectActions('actions' in data?data.actions:[])};
 }

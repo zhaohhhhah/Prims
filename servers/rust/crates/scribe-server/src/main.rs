@@ -384,6 +384,7 @@ fn build_router(
         .merge(routes::yjs::router())
         .merge(routes::compiles::router())
         .merge(routes::ai::router())
+        .merge(routes::project_actions::router())
         .merge(routes::exports::router())
         .merge(routes::voice::router())
         .layer(from_fn(rate_limit::per_user));
