@@ -6,6 +6,7 @@ import { RouterProvider } from 'react-router-dom';
 
 import '@scribe/ui/styles.css';
 import './i18n';
+import { AppearanceBridge } from './components/Appearance/AppearanceBridge';
 import { ErrorBoundary } from './components/ErrorBoundary/ErrorBoundary';
 import { queryClient } from './lib/queryClient';
 import { router } from './router';
@@ -26,6 +27,7 @@ createRoot(rootElement).render(
     <ErrorBoundary scope="app root">
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
+          <AppearanceBridge/>
           <RouterProvider router={router} />
         </ThemeProvider>
       </QueryClientProvider>

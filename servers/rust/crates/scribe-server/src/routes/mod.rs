@@ -27,3 +27,7 @@ pub mod project_actions;
 pub mod ai_profiles;
 
 pub mod version_summaries;
+
+pub mod archives;
+
+pub mod dashboard_summary;

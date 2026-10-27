@@ -15,8 +15,8 @@ describe('compile assistant snapshot', () => {
  });
  it('does not infer unknown, absolute or traversal targets; strips system paths and credentials', () => {
   expect(compileProjectPath('../main.tex', base.knownFilePaths)).toBeUndefined(); expect(compileProjectPath('/tmp/main.tex', base.knownFilePaths)).toBeUndefined();
-  const value = buildCompileAssistantRequest({ ...base, entries: [{ level: 'error', file: '/vol3/private/other/main.tex', line: 8, message: 'Error at /vol3/private/other/main.tex\nAuthorization: Bearer never-print-this\nPATH=/private/bin\nSee https://host.invalid/?key=never-print-this' }] });
-  expect(value?.diagnostic).toBeUndefined(); const text = value?.prompt ?? ''; expect(text).not.toContain('/vol3/'); expect(text).not.toContain('never-print-this'); expect(text).not.toContain('/private/bin');
+  const value = buildCompileAssistantRequest({ ...base, entries: [{ level: 'error', file: '/srv/private/other/main.tex', line: 8, message: 'Error at /srv/private/other/main.tex\nAuthorization: Bearer never-print-this\nPATH=/private/bin\nSee https://host.invalid/?key=never-print-this' }] });
+  expect(value?.diagnostic).toBeUndefined(); const text = value?.prompt ?? ''; expect(text).not.toContain('/srv/private/'); expect(text).not.toContain('never-print-this'); expect(text).not.toContain('/private/bin');
   expect(sanitizeCompileMessage('main.tex:8: undefined command')).toContain('main.tex:8');
  });
  it('can recover a known relative file:line prefix and caps the complete prompt', () => {

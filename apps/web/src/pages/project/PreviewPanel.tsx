@@ -4,6 +4,9 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { CompileLog } from '../../components/CompileLog/CompileLog';
+import { PDFReadingAppearance } from '../../components/PDFPreview/PDFReadingAppearance';
+import { useAuthStore } from '../../stores/auth';
+import { usePdfAppearance } from '../../stores/pdf-appearance';
 import { useSettings } from '../../stores/settings';
 
 import type { CompileSessionState } from '../../hooks/useCompileSession';
@@ -49,6 +52,8 @@ export function PreviewPanel({
   downloadFilename,
 }: PreviewPanelProps) {
   const { t } = useTranslation();
+  const userId = useAuthStore((state) => state.user?.id ?? null);
+  const { appearance, setAppearance, filter } = usePdfAppearance(userId);
   // Persisted across reloads — the user's chosen tab (PDF vs Log)
   // is a stable per-user preference, not a per-document one.
   const [view, setView] = useState<View>(() => {
@@ -169,6 +174,7 @@ export function PreviewPanel({
             ) : null}
           </Button>
         </div>
+        <PDFReadingAppearance appearance={appearance} onChange={setAppearance} />
       </div>
       <div className="min-h-0 flex-1">
         {view === 'pdf' ? (
@@ -182,6 +188,7 @@ export function PreviewPanel({
             <PDFPreview
               url={compileSession.pdfUrl}
               compiling={compileSession.compiling}
+              appearanceFilter={filter}
               highlight={highlight}
               onInverseSync={onInverseSync}
               {...(downloadFilename !== undefined ? { downloadFilename } : {})}

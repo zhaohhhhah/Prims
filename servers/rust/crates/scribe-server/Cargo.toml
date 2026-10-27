@@ -11,6 +11,8 @@ name = "scribe-server"
 path = "src/main.rs"
 
 [dependencies]
+flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
+zip = { version = "=2.4.2", default-features = false, features = ["deflate-flate2", "flate2"] }
 scribe-shared = { path = "../scribe-shared" }
 scribe-auth = { path = "../scribe-auth" }
 scribe-storage = { path = "../scribe-storage" }

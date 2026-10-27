@@ -1,6 +1,7 @@
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
+import { appearanceResources } from './locales/appearance-resources';
 import de from './locales/de.json';
 import en from './locales/en.json';
 import es from './locales/es.json';
@@ -64,8 +65,8 @@ const initialLang = resolveInitialLanguage();
 
 void i18next.use(initReactI18next).init({
   resources: {
-    en: { translation: en },
-    'zh-CN': { translation: zhCN },
+    en: { translation: en, appearance:appearanceResources.en },
+    'zh-CN': { translation: zhCN, appearance:appearanceResources['zh-CN'] },
     fr: { translation: fr },
     es: { translation: es },
     de: { translation: de },

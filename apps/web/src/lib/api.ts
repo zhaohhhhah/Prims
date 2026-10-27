@@ -107,6 +107,10 @@ async function fetchJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 }
 
+export interface ZipManifest {files:{path:string;sizeBytes:number}[];directories:string[];mainCandidates:string[];suggestedMainFile:string|null;totalBytes:number;skippedMetadata:number}
+export interface ZipUploadResult {created:ProjectFile[];complete:boolean;failed:{path?:string;message:string}|null;skippedMetadata:number}
+function zipForm(file:File,fields:Record<string,string>={}):FormData{const form=new FormData();for(const [key,value]of Object.entries(fields))form.append(key,value);form.append('file',file,file.name);return form;}
+
 export interface UserProfile {
   readonly id: string;
   readonly email: string;
@@ -119,6 +123,9 @@ export const api = {
     me: (): Promise<UserProfile> => fetchJson('/api/auth/me'),
   },
   projects: {
+    inspectZip:(file:File):Promise<ZipManifest>=>fetchJson('/api/projects/import-zip/inspect',{method:'POST',body:zipForm(file)}),
+    importZip:(input:CreateProjectInput,file:File,mainFile:string):Promise<Project>=>fetchJson('/api/projects/import-zip',{method:'POST',body:zipForm(file,{name:input.name,description:input.description??'',compiler:input.compiler??'tectonic',mainFile})}),
+    uploadZip:(projectId:ProjectId,file:File):Promise<ZipUploadResult>=>fetchJson(`/api/projects/${projectId}/import-zip`,{method:'POST',body:zipForm(file)}),
     list: (): Promise<Project[]> => fetchJson('/api/projects'),
     get: (id: ProjectId): Promise<Project> => fetchJson(`/api/projects/${id}`),
     create: (input: CreateProjectInput): Promise<Project> =>

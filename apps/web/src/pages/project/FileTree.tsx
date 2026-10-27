@@ -27,7 +27,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
 import { api, type ApiError } from '../../lib/api';
-import { log } from '../../lib/debug';
+import {uploadBatch} from '../../lib/archive-upload';
 import { useAuthStore } from '../../stores/auth';
 import { projectActionsApi } from '../../lib/project-actions';
 import { buildFileTree, type FolderNode, type TreeNode } from '../../lib/file-tree-shape';
@@ -70,15 +70,12 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
     },
   });
 
-  const uploadMutation = useMutation<ProjectFile, ApiError, { path: string; file: File }>({
-    mutationFn: ({ path, file }) => api.files.upload(projectId, path, file),
-    onSuccess: async (file) => {
-      toast.success(t('project.fileUploaded', { path: file.path }));
-      await queryClient.invalidateQueries({ queryKey: ['files', projectId] });
-    },
-    onError: (err) => {
-      toast.error(err.body.message);
-    },
+  const uploadMutation=useMutation<{uploaded:number;failed:string|null},Error,File[]>({
+    mutationFn:selected=>uploadBatch(selected,directoryPaths,{
+      listFiles:()=>api.files.list(projectId),inspectZip:file=>api.projects.inspectZip(file),uploadZip:file=>api.projects.uploadZip(projectId,file),uploadFile:(path,file)=>api.files.upload(projectId,path,file),
+    }),
+    onSuccess:async(result)=>{await queryClient.invalidateQueries({queryKey:['files',projectId]});await queryClient.invalidateQueries({queryKey:['project-directories']});if(result.failed)toast.warning(`已上传${result.uploaded}个文件；${result.failed}。已有文件未覆盖。`);else toast.success(`已上传${result.uploaded}个文件`);},
+    onError:error=>toast.error(error.message),
   });
 
   const renameMutation = useMutation<
@@ -192,83 +189,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
     }
   }
 
-  function handleUploadChange(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (file === undefined) return;
-    if (file.name.toLowerCase().endsWith('.zip')) {
-      void handleZipUpload(file);
-    } else {
-      uploadMutation.mutate({ path: file.name, file });
-    }
-    event.target.value = '';
-  }
-
-  async function handleZipUpload(file: File): Promise<void> {
-    const { unzipSync } = await import('fflate');
-    const buffer = new Uint8Array(await file.arrayBuffer());
-    let entries: Record<string, Uint8Array>;
-    try {
-      entries = unzipSync(buffer);
-    } catch (err) {
-      // Underlying error matters for bug reports — a corrupt ZIP and
-      // an unsupported algorithm (e.g. encrypted) fail the same way
-      // from the user's perspective. Log it so a console.export tells
-      // us which it was.
-      log.editor.warn('zip unpack failed', err, { name: file.name, bytes: file.size });
-      toast.error(t('project.zipParseFailed'));
-      return;
-    }
-    const toUpload = Object.entries(entries).filter(([name, data]) => {
-      if (name.endsWith('/')) return false; // directory entry
-      if (name.startsWith('__MACOSX/')) return false; // macOS resource forks
-      if (name.endsWith('.DS_Store')) return false;
-      if (data.byteLength === 0) return false;
-      return true;
-    });
-    if (toUpload.length === 0) {
-      toast.warning(t('project.zipEmpty'));
-      return;
-    }
-    const progressId = toast.loading(t('project.zipUploading', { count: toUpload.length }));
-    const existingPaths = new Set(files.map((f) => f.path));
-    const results = await Promise.allSettled(
-      toUpload.map(async ([name, data]) => {
-        // Normalize: drop leading "./" or single-folder ZIP wrappers so the
-        // project tree mirrors what the user packed, not what their OS did.
-        const normalized = name.replace(/^\.\/+/, '').replace(/\\/g, '/');
-        const finalPath = existingPaths.has(normalized)
-          ? `${normalized}.${Date.now().toString()}`
-          : normalized;
-        const isLikelyText =
-          /\.(tex|bib|cls|sty|bst|tikz|latex|md|txt|csv|json|yml|yaml|xml|html|ini|cfg)$/i.test(
-            finalPath,
-          );
-        if (isLikelyText) {
-          const text = new TextDecoder('utf-8', { fatal: false }).decode(data);
-          return api.files.create(projectId, finalPath, text);
-        }
-        // Slice off any potential SharedArrayBuffer backing so the TS lib's
-        // strict Blob/File typings accept the bytes.
-        const ab = data.buffer.slice(
-          data.byteOffset,
-          data.byteOffset + data.byteLength,
-        ) as ArrayBuffer;
-        const blob = new Blob([ab], { type: 'application/octet-stream' });
-        const f = new File([blob], finalPath.split('/').pop() ?? 'file', {
-          type: 'application/octet-stream',
-        });
-        return api.files.upload(projectId, finalPath, f);
-      }),
-    );
-    const ok = results.filter((r) => r.status === 'fulfilled').length;
-    const failed = results.length - ok;
-    toast.dismiss(progressId);
-    if (failed === 0) {
-      toast.success(t('project.zipUploaded', { count: ok }));
-    } else {
-      toast.warning(t('project.zipUploadedPartial', { ok, failed }));
-    }
-    await queryClient.invalidateQueries({ queryKey: ['files', projectId] });
+  function handleUploadChange(event:React.ChangeEvent<HTMLInputElement>){
+    const selected=Array.from(event.target.files??[]);event.target.value='';if(selected.length)uploadMutation.mutate(selected);
   }
 
   function toggleFolder(path: string) {
@@ -555,8 +477,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
             variant="ghost"
             size="icon"
             className="h-6 w-6"
-            aria-label={t('project.uploadFile')}
-            title={t('project.uploadFile')}
+            aria-label="上传多个文件或 ZIP"
+            title="上传多个文件或 ZIP（重名会提示，不会覆盖）"
             onClick={() => uploadInputRef.current?.click()}
             disabled={busy}
           >
@@ -571,6 +493,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
             type="file"
             id="file-tree-upload"
             name="file-tree-upload"
+            multiple
+            disabled={busy}
             accept=".tex,.bib,.cls,.sty,.bst,.tikz,.latex,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.svg,.pdf,.eps,.zip"
             className="hidden"
             onChange={handleUploadChange}

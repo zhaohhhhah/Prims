@@ -93,23 +93,7 @@ impl ProjectService {
         user: UserId,
         input: CreateProjectInput,
     ) -> ApiResult<Project> {
-        let row = sqlx::query(
-            r#"
-            insert into public.projects (name, description, owner_id, template, compiler)
-            values ($1, $2, $3, $4, $5)
-            returning id, name, description, owner_id, template, compiler,
-                      main_file, is_public, archived_at, created_at, updated_at
-            "#,
-        )
-        .bind(&input.name)
-        .bind(input.description.as_deref())
-        .bind(user.into_inner())
-        .bind(template_as_str(input.template))
-        .bind(input.compiler.as_str())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(internal)?;
-        let project = row_to_project(row);
+        let project = self.create_empty_for_import(user, &input).await?;
 
         // Seed templated files. If any fail, undo the project insert so
         // we don't leave a half-initialized row around.
@@ -134,6 +118,29 @@ impl ProjectService {
         }
 
         Ok(project)
+    }
+
+    /// ZIP import validates the complete archive before creating an unseeded project.
+    /// General project creation continues to seed its normal template above.
+    pub async fn create_empty_for_import(&self,user:UserId,input:&CreateProjectInput)->ApiResult<Project>{
+        let row = sqlx::query(
+            r#"
+            insert into public.projects (name, description, owner_id, template, compiler)
+            values ($1, $2, $3, $4, $5)
+            returning id, name, description, owner_id, template, compiler,
+                      main_file, is_public, archived_at, created_at, updated_at
+            "#,
+        )
+        .bind(&input.name)
+        .bind(input.description.as_deref())
+        .bind(user.into_inner())
+        .bind(template_as_str(input.template))
+        .bind(input.compiler.as_str())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(internal)?;
+        Ok(row_to_project(row))
+
     }
 
     pub async fn update(

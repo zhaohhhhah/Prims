@@ -26,8 +26,10 @@ adds a browser-first workflow for writing with your own AI endpoint.
 - **Conversation without forced edits.** The model can explain uncertainty or
   ask a clarifying question. A useful answer without a proposed change is a
   successful response.
-- **Appearance.** Light, dark and automatic system-following modes, with a
-  remembered preference.
+- **Appearance settings.** A separate Appearance section offers 26 palettes,
+  day/night choices, regional and impression-inspired series, and six coordinated
+  presets. Classic colors and existing text/code fonts remain the initial
+  defaults. Presets are opt-in; individual choices can still be adjusted.
 - **Bring your own API.** Each account configures its own endpoint, API key
   and model. Stored credentials use the server's encryption key. Explicit
   image-capability errors trigger one image-free retry with an optional hint;
@@ -154,3 +156,35 @@ fetches arbitrary result URLs from the application server.
 
 The pinned Codex source, adapted portions and Apache-2.0 notices are documented
 in [the compaction origin notice](servers/rust/crates/scribe-server/src/services/vendor/codex_compaction/ORIGIN.md).
+
+
+### Project import, bookshelf and reading appearance
+
+Create a project from a ZIP archive, choose its main TeX file, or add multiple
+files and ZIPs to an existing project. Import preserves relative paths and empty
+directories. Name conflicts are checked before writes; existing files are not
+silently overwritten. ZIPs are bounded to 20 MiB compressed, 32 MiB expanded,
+8 MiB per file and 256 entries. Unsafe paths, links, encrypted archives and
+unsupported compression are rejected. An existing-project upload can report
+partial success if a later storage operation fails, preserving completed files.
+
+The dashboard offers a bookshelf view using actual compiled first-page PDF
+thumbnails. Projects without an available PDF use a plain cover placeholder.
+PDF reading controls sit beside the PDF/Log tabs and offer Original, Soft and
+Night modes plus brightness. These are screen-only filters: PDF bytes, export,
+download and print output keep their original appearance. Reading preferences
+are separate from the application theme.
+
+The 26 application palettes include classic, impression-inspired, Chinese and
+Japanese traditional-color inspirations, and nature-inspired Mexican, American,
+Icelandic, Turkish and African series. These are design references rather than
+national or continent-wide color standards. Day and night palettes are remembered
+independently; filtering a series does not apply it. Six opt-in presets coordinate
+colors, wordmarks, book titles and icon strokes while retaining the selected
+text/code fonts. High-contrast mode remains available. Appearance preferences
+are local browser settings.
+
+Optional calligraphic wordmark/book-title choices use self-hosted Allura and
+Ma Shan Zheng, distributed with their SIL Open Font License texts in
+`apps/web/public/fonts/appearance/`. Existing application, editor and third-party
+licenses remain in place.

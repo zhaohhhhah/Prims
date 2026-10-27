@@ -51,3 +51,5 @@ pub mod agent_plan;
 pub mod agent_loop_guard;
 
 pub mod web_search;
+
+pub mod archive_import;

@@ -7,7 +7,7 @@
 //!     by user uploads from their machine.
 
 use axum::{
-    extract::{FromRequest, Multipart, Path, State},
+    extract::{DefaultBodyLimit, FromRequest, Multipart, Path, State},
     http::{HeaderMap, StatusCode},
     middleware::from_fn,
     response::{IntoResponse, Response},
@@ -71,6 +71,7 @@ pub fn router() -> Router<AppState> {
             "/api/projects/:project_id/files/:file_id/download-url",
             get(download_url),
         )
+        .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(from_fn(require_auth))
 }
 

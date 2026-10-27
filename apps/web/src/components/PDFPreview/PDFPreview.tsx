@@ -24,6 +24,8 @@ pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
 interface PDFPreviewProps {
   readonly url: string | null;
   readonly compiling: boolean;
+  /** Screen-only canvas treatment; downloads always use the original URL. */
+  readonly appearanceFilter?: string;
   /** Highlight a specific (page, x, y, width, height) when supplied (forward SyncTeX). */
   readonly highlight?: {
     readonly page: number;
@@ -79,6 +81,7 @@ export function PDFPreview({
   highlight,
   onInverseSync,
   downloadFilename,
+  appearanceFilter = 'none',
 }: PDFPreviewProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -313,6 +316,7 @@ export function PDFPreview({
     // dark mode the existing dark slate stays — the theme-aware
     // `dark:` variants below preserve the contrast direction.
     <div className="flex h-full flex-col bg-stone-100 dark:bg-stone-900">
+      <style>{'@media print { .prims-pdf-canvas-surface { filter: none !important; } }'}</style>
       <div className="flex flex-wrap items-center gap-2 border-b bg-background px-3 py-2">
         {/* Page nav */}
         <div className="flex items-center gap-0.5">
@@ -509,6 +513,7 @@ export function PDFPreview({
                       doc={docRef.current}
                       pageNumber={pageNo}
                       zoom={zoom}
+                      appearanceFilter={appearanceFilter}
                       highlight={highlight?.page === pageNo ? highlight : null}
                       onInverseSync={onInverseSync}
                     />
@@ -537,6 +542,7 @@ interface PageCanvasProps {
   readonly doc: pdfjs.PDFDocumentProxy;
   readonly pageNumber: number;
   readonly zoom: number;
+  readonly appearanceFilter: string;
   readonly highlight: PDFPreviewProps['highlight'];
   readonly onInverseSync: PDFPreviewProps['onInverseSync'];
 }
@@ -544,7 +550,7 @@ interface PageCanvasProps {
 /** Renders a single PDF page into a canvas + text layer. Memoized via
  *  React.memo so its host wrapper doesn't re-render every neighbour when
  *  one page's render finishes. */
-function PageCanvas({ doc, pageNumber, zoom, highlight, onInverseSync }: PageCanvasProps) {
+function PageCanvas({ doc, pageNumber, zoom, appearanceFilter, highlight, onInverseSync }: PageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -645,19 +651,21 @@ function PageCanvas({ doc, pageNumber, zoom, highlight, onInverseSync }: PageCan
 
   return (
     <>
-      <canvas
-        ref={canvasRef}
-        className="block"
-        aria-label={`Page ${pageNumber.toString()}`}
-        // `image-rendering: auto` keeps the browser's high-quality
-        // bilinear scaler when CSS-resizing the 2× backing store
-        // down to logical pixels (crisp-edges would *avoid* that
-        // scaler and look pixelated). `backface-visibility: hidden`
-        // promotes the canvas to its own compositor layer, which
-        // some Chrome builds need to avoid sub-pixel rounding on
-        // scroll.
-        style={{ imageRendering: 'auto', backfaceVisibility: 'hidden' }}
-      />
+      <div className="prims-pdf-canvas-surface" style={{ filter: appearanceFilter }}>
+        <canvas
+          ref={canvasRef}
+          className="block"
+          aria-label={`Page ${pageNumber.toString()}`}
+          // `image-rendering: auto` keeps the browser's high-quality
+          // bilinear scaler when CSS-resizing the 2× backing store
+          // down to logical pixels (crisp-edges would *avoid* that
+          // scaler and look pixelated). `backface-visibility: hidden`
+          // promotes the canvas to its own compositor layer, which
+          // some Chrome builds need to avoid sub-pixel rounding on
+          // scroll.
+          style={{ imageRendering: 'auto', backfaceVisibility: 'hidden' }}
+        />
+      </div>
       <div
         ref={textLayerRef}
         onDoubleClick={handleTextLayerDoubleClick}

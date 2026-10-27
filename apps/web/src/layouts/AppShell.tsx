@@ -3,6 +3,7 @@ import { LogOut, Settings as SettingsIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Link, Outlet, useNavigate } from 'react-router-dom';
 
+import { PrimsBrand } from '../components/Appearance/PrimsBrand';
 import { AISetupOnboarding } from '../components/Onboarding/AISetupOnboarding';
 import { NotificationBell } from '../components/Notifications/NotificationBell';
 import { useAuthStore } from '../stores/auth';
@@ -35,9 +36,7 @@ export function AppShell() {
             to="/dashboard"
             className="flex shrink-0 items-baseline gap-1 outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded"
           >
-            <span className="font-serif text-[17px] italic leading-none tracking-tight">
-              {t('appName')}
-            </span>
+            <PrimsBrand/>
           </Link>
           <ProjectNavSlot />
           <div className="flex shrink-0 items-center gap-1">

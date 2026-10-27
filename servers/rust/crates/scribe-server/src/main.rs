@@ -374,6 +374,7 @@ fn build_router(
         .merge(routes::smtp_mail::router())
         .merge(routes::whoami::router())
         .merge(routes::projects::router())
+        .merge(routes::dashboard_summary::router())
         .merge(routes::files::router())
         .merge(routes::comments::router())
         .merge(routes::members::router())
@@ -388,6 +389,7 @@ fn build_router(
         .merge(routes::ai::router())
         .merge(routes::project_actions::router())
         .merge(routes::exports::router())
+        .merge(routes::archives::router())
         .merge(routes::voice::router())
         .layer(from_fn(rate_limit::per_user));
 
