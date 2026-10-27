@@ -21,3 +21,17 @@
 .reader-stationary.right:after{background:linear-gradient(90deg,#00000012,transparent 12%)}
 
 .prims-book-cover{grid-template-rows:12px minmax(0,1fr)}
+/* Selection is painted above cover furniture and spine shadows, inside the
+   cover bounds so an overflow scroller can never cut off its leading edge. */
+.prims-shelf-scroll{scroll-padding:8px;isolation:isolate}
+.prims-shelf-scroll>div{position:relative;min-width:0}
+.prims-shelf-scroll>div:has(.prims-shelf-book[aria-pressed=true]),
+.prims-shelf-scroll>div:focus-within{z-index:3}
+.prims-book-cover{isolation:isolate}
+.prims-book-cover:after{content:'';position:absolute;inset:0;z-index:20;border:2px solid transparent;border-radius:inherit;pointer-events:none}
+.prims-shelf-book[aria-pressed=true] .prims-book-cover{outline:none}
+.prims-shelf-book[aria-pressed=true] .prims-book-cover:after{border-color:var(--prims-accent,hsl(var(--ring)));box-shadow:inset 0 0 0 1px var(--prims-ground,hsl(var(--background)))}
+.prims-shelf-book:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:-2px}
+.prims-shelf-book:focus-visible .prims-book-cover:after{border-width:3px;border-color:hsl(var(--ring));box-shadow:inset 0 0 0 2px var(--prims-ground,hsl(var(--background)))}
+.prims-reader-preview{display:flex;flex-direction:column;flex:1;min-height:310px;transform-origin:left center}
+@media(prefers-reduced-motion:reduce){.prims-shelf-book[aria-pressed=true] .prims-book-cover{transform:none}}
