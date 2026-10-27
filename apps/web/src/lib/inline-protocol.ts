@@ -2,8 +2,9 @@ import type { ContextUsed } from './project-ai-context';
 import type { AICompleteInput } from '@scribe/shared';
 import { API_URL, supabase } from './supabase';
 
-/** A completed SSE frame is required; stopped or disconnected output is never a proposal. */
-export async function streamInline(input:AICompleteInput, signal:AbortSignal, onChunk:(count:number)=>void, onActivity?:(event:{status?:string;file?:string;received?:number;contextUsed?:ContextUsed;warning?:{code:string;message:string}})=>void):Promise<string> {
+/** Public final text requires completion. Only individually committed proposal events may survive interruption. */
+export interface InlineActivity {status?:string;file?:string;received?:number;contextUsed?:ContextUsed;warning?:{code:string;message:string};proposal?:unknown;partial?:boolean;plan?:unknown;meta?:unknown;publicStatus?:unknown}
+export async function streamInline(input:AICompleteInput, signal:AbortSignal, onChunk:(count:number)=>void, onActivity?:(event:InlineActivity)=>void):Promise<string> {
   const {data:{session}}=await supabase.auth.getSession();
   if(!session)throw new Error('登录已过期，请重新登录');
   if(signal.aborted)throw new DOMException('Aborted','AbortError');
@@ -19,9 +20,9 @@ export async function streamInline(input:AICompleteInput, signal:AbortSignal, on
     if(!line.startsWith('data:'))return;
     const payload=line.slice(5).trim();
     if(payload==='[DONE]'){done=true;return;}
-    const value=JSON.parse(payload) as {text?:string;error?:string;status?:string;file?:string;received?:number;contextUsed?:ContextUsed;warning?:{code:string;message:string}};
+    const value=JSON.parse(payload) as InlineActivity&{text?:string;error?:string};
     if(value.error)throw new Error(value.error);
-    if(value.status||value.contextUsed||value.warning)onActivity?.(value);
+    if(value.status||value.contextUsed||value.warning||value.proposal||value.partial||value.plan||value.meta||value.publicStatus)onActivity?.(value);
     if(typeof value.text==='string'){text+=value.text;if(text.length>150000)throw new Error('生成内容过长，请缩小选区后重试');onChunk(text.length);}
   };
   try {

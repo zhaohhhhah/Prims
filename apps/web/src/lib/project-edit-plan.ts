@@ -1,4 +1,4 @@
-export interface ProjectTextEdit {id:string;filePath:string;before:string;after:string;state:'pending'|'applied'|'rejected'|'undone'}
+export interface ProjectTextEdit {id:string;filePath:string;before:string;after:string;sourceAfter?:string;state:'pending'|'applied'|'rejected'|'undone'}
 export interface ProjectTextPlan {id:string;threadId:string;selectionId?:string;edits:ProjectTextEdit[]}
 export interface PreparedTextEdit {id:string;before:string;after:string;conflict:boolean}
 export function makeProjectTextPlan(edits:readonly {filePath:string;before:string;after:string}[],threadId:string,selectionId?:string):ProjectTextPlan{return {id:crypto.randomUUID(),threadId,...(selectionId?{selectionId}:{}),edits:edits.map(edit=>({...edit,id:crypto.randomUUID(),state:'pending'}))};}

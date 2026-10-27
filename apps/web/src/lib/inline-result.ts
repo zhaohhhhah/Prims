@@ -10,7 +10,7 @@ export function parseInlineProposal(raw:string,expectedFilePath?:string,allowedF
   if(typeof data.replacement==='string'&&data.replacement.length>100000)throw new Error('生成结果过长，原文未改动');
   const edits:InlineFileEdit[]=[];
   if('edits' in data){
-    if(!Array.isArray(data.edits)||data.edits.length>12)throw new Error('一次修改最多支持 12 处，原文未改动');
+    if(!Array.isArray(data.edits)||data.edits.length>48)throw new Error('一次修改最多支持 48 处，原文未改动');
     let total=0;
     for(const item of data.edits){
       if(!item||typeof item!=='object'||typeof item.filePath!=='string'||typeof item.before!=='string'||typeof item.after!=='string')throw new Error('修改建议缺少文件路径、原文或新文，原文未改动');

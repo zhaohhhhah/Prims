@@ -38,6 +38,6 @@ describe('inline proposal protocol',()=>{
   });
   it('bounds edit count, anchor size and aggregate payload',()=>{
     const edit={filePath:'main.tex',before:'old',after:'new'};
-    for(const edits of [Array.from({length:13},()=>edit),[{...edit,before:' '}],[{...edit,before:'a'.repeat(16001)}],[{...edit,after:'b'.repeat(24001)}],Array.from({length:3},()=>({...edit,before:'a'.repeat(16000),after:'b'.repeat(24000)}))])expect(()=>parseInlineProposal(JSON.stringify({reply:'ok',replacement:null,edits}),'main.tex')).toThrow();
+    for(const edits of [Array.from({length:49},()=>edit),[{...edit,before:' '}],[{...edit,before:'a'.repeat(16001)}],[{...edit,after:'b'.repeat(24001)}],Array.from({length:3},()=>({...edit,before:'a'.repeat(16000),after:'b'.repeat(24000)}))])expect(()=>parseInlineProposal(JSON.stringify({reply:'ok',replacement:null,edits}),'main.tex')).toThrow();
   });
 });

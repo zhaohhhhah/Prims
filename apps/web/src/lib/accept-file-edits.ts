@@ -1,0 +1,4 @@
+export interface PendingFileEdit {id:string;from:number;to:number;before:string;after:string;conflict:boolean}
+interface ReviewController {snapshot():{plannedEdits:readonly PendingFileEdit[]};applyPreparedEdit(id:string):{ok:true}|{ok:false;message:string}}
+/** Each accepted hunk rechecks its live anchor and creates its own undo step. */
+export function acceptFileEdits(controller:ReviewController){const ids=controller.snapshot().plannedEdits.map(edit=>edit.id),accepted:PendingFileEdit[]=[],kept:{id:string;message:string}[]=[];for(const id of ids){const edit=controller.snapshot().plannedEdits.find(item=>item.id===id);if(!edit)continue;if(edit.conflict||edit.before===edit.after){kept.push({id,message:edit.conflict?'原文已变化，已保留待审':'候选与原文相同，已保留待审'});continue;}const result=controller.applyPreparedEdit(id);if(result.ok)accepted.push({...edit});else kept.push({id,message:result.message});}return {accepted,kept};}

@@ -28,7 +28,6 @@ import {
   Loader2,
   MessageSquare,
   MoreHorizontal,
-  PenLine,
   Play,
   Replace as ReplaceIcon,
   Search,
@@ -52,7 +51,6 @@ import { EditorTabs } from '../../components/Editor/EditorTabs';
 import { LatexEditor, type LatexEditorImperativeHandle } from '../../components/Editor/LatexEditor';
 import { PresenceAvatars } from '../../components/Editor/PresenceAvatars';
 import { ErrorBoundary } from '../../components/ErrorBoundary/ErrorBoundary';
-import { HandwritingToLatex } from '../../components/HandwritingToLatex/HandwritingToLatex';
 import { ImageViewer } from '../../components/ImageViewer/ImageViewer';
 import { Splitter } from '../../components/Layout/Splitter';
 import { MathPalette } from '../../components/MathPalette/MathPalette';
@@ -137,7 +135,6 @@ type RightPanelId =
   | 'bibliography'
   | 'citations'
   | 'find'
-  | 'ai-chat'
   | 'math'
   | null;
 
@@ -157,7 +154,6 @@ const PANEL_TOGGLES: readonly {
   { id: 'bibliography', icon: BookText, labelKey: 'bibliography.title' },
   { id: 'citations', icon: Search, labelKey: 'citations.title' },
   { id: 'find', icon: ReplaceIcon, labelKey: 'search.title' },
-  { id: 'ai-chat', icon: Sparkles, labelKey: 'ai.chat.title' },
   { id: 'math', icon: Sigma, labelKey: 'math.title' },
 ];
 
@@ -203,7 +199,6 @@ export function ProjectWorkspace({
   const [rightPanel, setRightPanel] = useState<RightPanelId>(null);
   const [assistantBinding,setAssistantBinding]=useState<{controller:InlineAssistantController;filePath:string}|null>(null);
   const assistantController=assistantBinding&&assistantBinding.filePath===selectedFile?.path?assistantBinding.controller:null;
-  const [handwritingOpen, setHandwritingOpen] = useState(false);
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
@@ -296,7 +291,6 @@ export function ProjectWorkspace({
   }, [project, projectId]);
 
   function toggleRightPanel(id: NonNullable<RightPanelId>) {
-    if (id === 'ai-chat') { openProjectAssistant({projectId, dock:true}); return; }
     setRightPanel((current) => (current === id ? null : id));
   }
   const compileSession = useCompileSession(projectId);
@@ -329,7 +323,7 @@ export function ProjectWorkspace({
     setChrome({ pdfUrl: compileSession.pdfUrl });
   }, [compileSession.pdfUrl, setChrome]);
 
-  // Ctrl/Cmd+Shift+A → AI palette. Ctrl/Cmd+K → global command
+  // Ctrl/Cmd+Shift+A → unified project assistant. Ctrl/Cmd+K → global command
   // palette. Ctrl/Cmd+W → close current tab (browsers reserve this
   // for the window/tab on most desktop shortcuts, but as a SPA we
   // can intercept it — same trick Overleaf / VS-Code-Web use).
@@ -355,11 +349,6 @@ export function ProjectWorkspace({
       window.removeEventListener('keydown', handler);
     };
   }, [projectId, selectedFile, onCloseFile]);
-
-  // OCR is collected by the existing image dialog; all writing uses the unified preview.
-  const handleAIInsert = useCallback((text: string) => {
-    openProjectAssistant({projectId, ocrText:text});
-  }, [projectId]);
 
   const openAIPalette = useCallback(() => {
     openProjectAssistant({projectId, dock:true});
@@ -1181,7 +1170,7 @@ export function ProjectWorkspace({
       },
       {
         id: 'ai-palette',
-        label: t('command.aiAssist'),
+        label: 'Prims 助手',
         group: t('command.groupActions'),
         icon: Sparkles,
         hint: 'Ctrl+Shift+A',
@@ -1241,15 +1230,6 @@ export function ProjectWorkspace({
         icon: ReplaceIcon,
         action: () => {
           toggleRightPanel('find');
-        },
-      },
-      {
-        id: 'ai-chat',
-        label: t('command.toggleAIChat'),
-        group: t('command.groupPanels'),
-        icon: Sparkles,
-        action: () => {
-          toggleRightPanel('ai-chat');
         },
       },
       {
@@ -1436,24 +1416,12 @@ export function ProjectWorkspace({
           <Button
             variant="ghost"
             size="icon"
-            aria-label={t('ai.palette.title')}
+            aria-label="Prims 助手"
             className="h-7 w-7"
             onClick={openAIPalette}
-            title="Ctrl+Shift+A"
+            title="Prims 助手 · Ctrl+Shift+A"
           >
             <span className="text-[10px] font-mono">AI</span>
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label={t('handwriting.title')}
-            className="h-7 w-7"
-            onClick={() => {
-              setHandwritingOpen(true);
-            }}
-            title={t('handwriting.title')}
-          >
-            <PenLine className="h-3.5 w-3.5" aria-hidden="true" />
           </Button>
           <Button
             variant="ghost"
@@ -1700,11 +1668,6 @@ export function ProjectWorkspace({
       {assistantRightSlot}
       </div>
       <InlineAssistant controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} layout={assistantLayout} effectiveMode={assistantMode} onLayoutChange={updateAssistantLayout} viewport={assistantViewport} rightHost={assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} />
-      <HandwritingToLatex
-        open={handwritingOpen}
-        onOpenChange={setHandwritingOpen}
-        onInsert={handleAIInsert}
-      />
       <CommandPalette
         open={cmdPaletteOpen}
         onOpenChange={setCmdPaletteOpen}

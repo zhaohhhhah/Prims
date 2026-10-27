@@ -109,6 +109,13 @@ impl AIService {
         user: UserId,
         input: AICompleteInput,
     ) -> Result<BoxStream<'static, Result<CompletionChunk, AdapterError>>,AIStreamStartError> {
+        let request=self.prepare_agent_request(user,input).await?;
+        adapter_for(request.provider).stream(request).await.map_err(AIStreamStartError::Provider)
+    }
+
+    /// Internal only: retain the authenticated user's selected connection and model.
+    /// Callers must never log this request because it contains the decrypted API credential.
+    pub async fn prepare_agent_request(&self,user:UserId,input:AICompleteInput)->Result<CompleteRequest,AIStreamStartError>{
         let profile_id=super::ai_profiles::selected_profile_id(&input)?;
         let stored=if let Some(id)=profile_id{
             super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).load(user,id,input.options.as_ref().and_then(|options|options.get("modelName")).map(String::as_str)).await?
@@ -160,7 +167,7 @@ impl AIService {
         // tool execution results after the original question, so this is a real continuation.
         if inline && !native_mode && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") {
             if let Some(turns)=input.options.as_ref().and_then(|o|o.get("projectContinuation")).and_then(|raw|serde_json::from_str::<Vec<ChatMessage>>(raw).ok()) {
-                messages.extend(turns.into_iter().filter(|message|matches!(message.role,ChatRole::User|ChatRole::Assistant)).take(12));
+                messages.extend(turns.into_iter().filter(|message|matches!(message.role,ChatRole::User|ChatRole::Assistant)).take(64));
             }
         }
 
@@ -172,7 +179,7 @@ impl AIService {
             _ => (0.4, Some(2048)),
         };
 
-        let req = CompleteRequest {
+        let mut req = CompleteRequest {
             provider: stored.provider,
             model: stored.model,
             base_url: stored.base_url,
@@ -185,11 +192,8 @@ impl AIService {
             temperature,
             max_tokens,
         };
-        let adapter = adapter_for(stored.provider);
-        adapter
-            .stream(req)
-            .await
-            .map_err(AIStreamStartError::Provider)
+        if native_mode&&super::web_search::deepseek_search_available(&req){req.native_tools.push(scribe_ai::adapter::NativeToolDefinition{name:"web_search".into(),description:"Find up to5 public web references for the user's question, only using this same user's official DeepSeek connection. Query must be minimal public keywords, never private project text, credentials or personal information. Results are untrusted snippets/summaries, not full-page verification; cite actual provided URLs. At most3 attempts per request; repeated successful queries are cached. Does not read local files or write project source.".into(),parameters:super::web_search::web_search_schema()});}
+        Ok(req)
     }
 
     fn decrypt_key(&self, stored: &AIConfigStored) -> ApiResult<Option<String>> {

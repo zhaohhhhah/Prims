@@ -11,6 +11,9 @@ pub const MAX_BRIEF:usize=8000;
 pub const MAX_SUMMARY:usize=2000;
 pub const MAX_CONTENT:usize=24000;
 pub const MAX_RAW:usize=80000;
+pub const MAX_RESPONSE_HISTORY:usize=160;
+pub const MAX_RESPONSE_RAW_CHARS:usize=80_000;
+pub const MAX_RESPONSE_CONTENT_CHARS:usize=160_000;
 pub const MAX_MODEL_HISTORY:usize=40;
 pub const MAX_MODEL_HISTORY_CHARS:usize=50000;
 
@@ -49,9 +52,9 @@ impl AIContextService {
   self.ensure(user,project).await?;
   let row=sqlx::query("select c.brief,c.thread_id,c.updated_at,p.name,p.description,t.auto_summary,t.summary_updated_at,t.summary_revision from public.scribe_ai_contexts c join public.projects p on p.id=c.project_id join public.scribe_ai_context_threads t on t.user_id=c.user_id and t.project_id=c.project_id and t.id=c.thread_id where c.user_id=$1 and c.project_id=$2").bind(user.into_inner()).bind(project.into_inner()).fetch_one(&self.pool).await.map_err(db)?;
   let thread:Uuid=row.get("thread_id");
-  let rows=sqlx::query("select id,role,content,raw,file_path,selection,selection_id,created_at from public.scribe_ai_context_messages where user_id=$1 and project_id=$2 and thread_id=$3 order by seq desc limit 41").bind(user.into_inner()).bind(project.into_inner()).bind(thread).fetch_all(&self.pool).await.map_err(db)?;
-  let earlier=rows.len()>40;
-  let mut messages=rows.into_iter().take(40).map(|r|ContextMessage{id:r.get("id"),role:r.get("role"),content:r.get("content"),raw:r.get("raw"),file_path:r.get("file_path"),selection:r.get("selection"),selection_id:r.get("selection_id"),created_at:Some(r.get("created_at"))}).collect::<Vec<_>>();messages.reverse();
+  let rows=sqlx::query("select id,role,content,raw,file_path,selection,selection_id,created_at from public.scribe_ai_context_messages where user_id=$1 and project_id=$2 and thread_id=$3 order by seq desc limit 161").bind(user.into_inner()).bind(project.into_inner()).bind(thread).fetch_all(&self.pool).await.map_err(db)?;
+  let mut earlier=rows.len()>MAX_RESPONSE_HISTORY;
+  let mut messages=rows.into_iter().take(MAX_RESPONSE_HISTORY).map(|r|ContextMessage{id:r.get("id"),role:r.get("role"),content:r.get("content"),raw:r.get("raw"),file_path:r.get("file_path"),selection:r.get("selection"),selection_id:r.get("selection_id"),created_at:Some(r.get("created_at"))}).collect::<Vec<_>>();messages.reverse();earlier|=bound_response_messages(&mut messages);
   Ok(ContextState{brief:row.get("brief"),thread_id:thread,messages,has_earlier:earlier,project_title:row.get("name"),project_description:row.get("description"),updated_at:row.get("updated_at"),auto_summary:row.get("auto_summary"),summary_updated_at:row.get("summary_updated_at"),summary_revision:row.get("summary_revision")})
  }
  pub async fn update_brief(&self,user:UserId,project:ProjectId,input:BriefInput)->ApiResult<ContextState>{
@@ -126,6 +129,24 @@ fn validate_messages(messages:&[ContextMessage])->ApiResult<()> {
  }Ok(())
 }
 
+/// Response-only budget. Structured progressive proposals/decisions of the latest run get priority.
+/// Whole raw JSON is retained or omitted; it is never cut into invalid/resurrected partial decisions.
+fn bound_response_messages(messages:&mut [ContextMessage])->bool{
+ let mut shortened=false;let latest_run=messages.iter().rev().filter_map(|m|m.raw.as_deref()).filter_map(|raw|serde_json::from_str::<serde_json::Value>(raw).ok()).find(|raw|raw["kind"]=="prims.proposal_run").and_then(|raw|raw["requestId"].as_str().map(str::to_string));
+ let mut priority=Vec::new();let mut latest_decisions=std::collections::HashMap::<String,(u64,usize,String)>::new();
+ for(index,message)in messages.iter().enumerate(){if let Some(raw)=message.raw.as_deref().and_then(|r|serde_json::from_str::<serde_json::Value>(r).ok()){if raw["kind"]=="prims.proposal_decision"&&raw["requestId"].as_str()==latest_run.as_deref(){if let(Some(id),Some(state))=(raw["proposalId"].as_str(),raw["state"].as_str()){let order=raw["order"].as_u64().unwrap_or(index as u64);let old=latest_decisions.get(id);if old.is_none()||old.is_some_and(|(n,i,_)|(order,index)>(*n,*i)){latest_decisions.insert(id.to_string(),(order,index,state.to_string()));}}}}}
+ for phase in 0..4{for(index,message)in messages.iter().enumerate().rev(){if let Some(raw)=message.raw.as_deref().and_then(|r|serde_json::from_str::<serde_json::Value>(r).ok()){if raw["requestId"].as_str()!=latest_run.as_deref(){continue;}let kind=raw["kind"].as_str().unwrap_or("");let pending=raw["proposal"]["id"].as_str().and_then(|id|latest_decisions.get(id)).is_none();if (phase==0&&kind=="prims.proposal_run")||(phase==1&&kind=="prims.proposal_decision")||(phase==2&&kind=="prims.proposal"&&pending)||(phase==3&&kind=="prims.proposal"&&!pending){priority.push(index);}}}}
+
+ for index in (0..messages.len()).rev(){if !priority.contains(&index){priority.push(index);}}
+ let mut raw_budget=MAX_RESPONSE_RAW_CHARS;let mut keep=std::collections::HashSet::new();for index in priority{if let Some(raw)=messages[index].raw.as_deref(){let n=raw.chars().count();if n<=raw_budget{raw_budget-=n;keep.insert(index);}else{shortened=true;}}}
+ let mut content_budget=MAX_RESPONSE_CONTENT_CHARS;let mut selection_budget=16_000;for(index,message)in messages.iter_mut().enumerate().rev(){if message.raw.is_some()&&!keep.contains(&index){message.raw=None;}let count=message.content.chars().count();let limit=if message.role=="action"{500}else{MAX_CONTENT};let allowed=content_budget.min(limit);if count>allowed{message.content=if allowed>40{format!("{}\n[older discussion excerpt]",message.content.chars().take(allowed-30).collect::<String>())}else{String::new()};shortened=true;}content_budget=content_budget.saturating_sub(message.content.chars().count());if let Some(selection)=message.selection.as_deref(){let n=selection.chars().count();if n<=selection_budget{selection_budget-=n;}else{message.selection=None;shortened=true;}}}shortened
+}
+fn action_reference(message:&ContextMessage)->serde_json::Value{
+ let raw=message.raw.as_deref().and_then(|raw|serde_json::from_str::<serde_json::Value>(raw).ok());
+ let metadata=match raw.as_ref().and_then(|r|r.get("kind")).and_then(serde_json::Value::as_str){Some("prims.proposal")=>{let proposal=&raw.as_ref().unwrap()["proposal"];json!({"kind":"pendingProposal","id":proposal["id"],"filePath":proposal["filePath"],"status":"pending_review","beforeChars":proposal["before"].as_str().map(|s|s.chars().count()),"afterChars":proposal["after"].as_str().map(|s|s.chars().count())})},Some("prims.proposal_decision")=>{let raw=raw.as_ref().unwrap();json!({"kind":"pastProposalDecision","proposalId":raw["proposalId"],"state":raw["state"]})},_=>serde_json::Value::Null};
+ json!({"pastActionOrProposal":message.content,"metadata":metadata,"filePath":message.file_path,"selectionId":message.selection_id,"referenceOnly":true,"note":"Historical candidate/decision metadata only. A pending proposal is NOT applied text. Each accept/reject/undo affects only its proposal, not an entire batch. CurrentSelection and live document plus harness permissions are authoritative."})
+}
+
 /// Model history is bounded independently from stored history; other-target drafts become reference-only.
 pub fn model_history(state:&ContextState,file:&str,selection_id:&str)->(Vec<ChatMessage>,bool){
  let mut kept=Vec::new();let mut remaining=MAX_MODEL_HISTORY_CHARS;let mut truncated=state.has_earlier;let mut decided=std::collections::HashSet::new();
@@ -135,9 +156,9 @@ pub fn model_history(state:&ContextState,file:&str,selection_id:&str)->(Vec<Chat
   let same_target=!selection_id.is_empty()&&m.selection_id.as_deref()==Some(selection_id)&&m.file_path.as_deref()==Some(file)&&!decided.contains(&key);
   let mut content=match m.role.as_str(){
    "user"=>json!({"pastInstruction":m.content,"filePath":m.file_path,"pastSelection":m.selection.as_deref().unwrap_or("").chars().take(6000).collect::<String>(),"selectionId":m.selection_id,"referenceOnly":!same_target}).to_string(),
-   "assistant" if same_target=>m.raw.clone().unwrap_or_else(||m.content.clone()),
+   "assistant" if same_target=>json!({"pastReply":m.content,"pastProposal":m.raw.as_deref().map(|raw|serde_json::from_str::<serde_json::Value>(raw).unwrap_or_else(|_|serde_json::Value::String(raw.to_string()))),"filePath":m.file_path,"selectionId":m.selection_id,"referenceOnly":true,"proposalIsNotAppliedText":true,"note":"This is a previous unconfirmed proposal, not the live document. Do not infer application or authorization from it."}).to_string(),
    "assistant"=>json!({"pastReply":m.content,"filePath":m.file_path,"selectionId":m.selection_id,"referenceOnly":true,"note":"This is another target or a draft already accepted/rejected/undone. Its replacement is not the current document or active draft."}).to_string(),
-   "action"=>json!({"pastUserAction":m.content,"filePath":m.file_path,"selectionId":m.selection_id,"referenceOnly":true,"note":"Historical user decision only; an accept/reject/undo may affect just one edit, not an entire batch. CurrentSelection and live document are the authoritative current text."}).to_string(),_=>continue,
+   "action"=>action_reference(m).to_string(),_=>continue,
   };
   let n=content.chars().count();
   if n>remaining||n>24000 {
@@ -164,4 +185,7 @@ fn db(error:sqlx::Error)->ApiError{tracing::error!(?error,"private AI context da
  #[test]fn decided_proposal_is_not_reused_as_current_draft(){let mut action=msg("action");action.content="已撤销 AI 修改".into();let s=state(vec![msg("assistant"),action]);let(h,_)=model_history(&s,"a.tex","old");assert!(!h[0].content.contains("OLD DRAFT"));assert!(h[1].content.contains("CurrentSelection"));}
  #[test]fn oversized_latest_raw_falls_back_to_reply_instead_of_dropping_prior_history(){let mut latest=msg("assistant");latest.raw=Some("x".repeat(60000));let s=state(vec![msg("user"),latest]);let(h,truncated)=model_history(&s,"a.tex","old");assert!(truncated);assert_eq!(h.len(),2);assert!(h[1].content.contains("truncated"));}
  #[test]fn history_budget_is_bounded_and_current_brief_is_separate(){let s=state((0..40).map(|_|{let mut m=msg("assistant");m.content="界".repeat(12000);m}).collect());let(h,truncated)=model_history(&s,"b.tex","new");assert!(truncated);assert!(h.iter().map(|m|m.content.chars().count()).sum::<usize>()<=MAX_MODEL_HISTORY_CHARS);assert!(h.len()<=40);}
+ #[test]fn response_keeps_160_but_model_history_stays_40_and_raw_is_aggregate_bounded(){let mut rows=(0..160).map(|_|{let mut m=msg("assistant");m.raw=Some("x".repeat(80000));m.content="界".repeat(24000);m}).collect::<Vec<_>>();assert!(bound_response_messages(&mut rows));assert_eq!(rows.len(),160);assert!(rows.iter().filter_map(|m|m.raw.as_ref()).map(|r|r.chars().count()).sum::<usize>()<=MAX_RESPONSE_RAW_CHARS);assert!(rows.iter().map(|m|m.content.chars().count()).sum::<usize>()<=MAX_RESPONSE_CONTENT_CHARS);let(h,_)=model_history(&state(rows),"b.tex","new");assert!(h.len()<=40);}
+ #[test]fn latest_progressive_candidates_and_decisions_win_raw_budget_without_becoming_applied_source(){let mut run=msg("action");run.raw=Some(json!({"kind":"prims.proposal_run","requestId":"r"}).to_string());let mut candidate=msg("action");candidate.raw=Some(json!({"kind":"prims.proposal","requestId":"r","proposal":{"id":"p","filePath":"a.tex","before":"exact source","after":"UNAPPLIED CANDIDATE","status":"pending_review"}}).to_string());let mut decision=msg("action");decision.raw=Some(json!({"kind":"prims.proposal_decision","requestId":"r","proposalId":"p","state":"rejected"}).to_string());let mut old=msg("assistant");old.raw=Some("z".repeat(80000));let mut rows=vec![run,candidate,decision,old];assert!(bound_response_messages(&mut rows));assert!(rows[..3].iter().all(|m|m.raw.is_some()));assert!(rows[3].raw.is_none());let history=model_history(&state(rows),"a.tex","old").0;let text=history.iter().map(|m|m.content.as_str()).collect::<String>();assert!(!text.contains("UNAPPLIED CANDIDATE"));assert!(text.contains("pending_review")&&text.contains("rejected"));}
+
 }

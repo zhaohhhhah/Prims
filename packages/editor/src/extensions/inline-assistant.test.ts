@@ -1,6 +1,6 @@
 import { EditorState } from '@codemirror/state';
 import { describe,expect,it } from 'vitest';
-import { mapInlineAnchor } from './inline-assistant';
+import { inlineReviewViewport, mapInlineAnchor } from './inline-assistant';
 
 describe('selection anchor safety',()=>{
   const original={from:6,to:12,text:'target',conflict:false};
@@ -44,7 +44,7 @@ describe('request-snapshot multi edit planning',()=>{
   expect(locateInlineEdits('same same',[{before:'same',after:'x'}])).toHaveProperty('message');
   expect(locateInlineEdits('abcdef',[{before:'abc',after:'A'},{before:'bcd',after:'B'}])).toHaveProperty('message');
   expect(locateInlineEdits('abcdef',[{before:'',after:'x'}])).toHaveProperty('message');
-  expect(locateInlineEdits('abcdef',Array.from({length:13},()=>({before:'a',after:'x'})))).toHaveProperty('message');
+  expect(locateInlineEdits('abcdef',Array.from({length:49},()=>({before:'a',after:'x'})))).toHaveProperty('message');
  });
  it('previews and hand-edits candidates without changing or autosaving the document',()=>{
   const e=editor(),request=token(e.controller);expect(e.controller.prepareEdits(request,[{before:'alpha',after:'ALPHA'},{before:'beta',after:'BETA'}]).ok).toBe(true);
@@ -121,3 +121,18 @@ describe('explicit diagnostic range capture',()=>{
  it('anchors exactly the requested current text without writing content',()=>{const e=editor();expect(e.controller.captureRange(8,12).ok).toBe(true);expect(e.controller.snapshot().target).toMatchObject({from:8,to:12,text:'beta',conflict:false});expect(e.writes()).toBe(0);e.controller.destroy();});
  it('rejects invalid and readonly ranges while preserving document content',()=>{const e=editor();for(const [from,to] of [[-1,4],[0,0],[0,999],[0.5,4]])expect(e.controller.captureRange(from!,to!).ok).toBe(false);expect(e.writes()).toBe(0);e.controller.destroy();const f=editor(undefined,true);expect(f.controller.captureRange(0,5).ok).toBe(false);expect(f.writes()).toBe(0);f.controller.destroy();});
 });
+
+
+describe('incremental committed edits preserve active review',()=>{
+ it('appends a new segment without rebuilding IDs or losing a hand-edited draft',()=>{const e=editor();e.controller.prepareEdits(token(e.controller),[{before:'alpha',after:'A'}]);const first=e.controller.snapshot().plannedEdits[0]!;e.controller.updatePreparedEdit(first.id,'Hand A');expect(e.controller.appendPreparedEdits([{before:'beta',after:'B'}]).ok).toBe(true);expect(e.controller.snapshot().plannedEdits[0]).toMatchObject({id:first.id,after:'Hand A'});expect(e.writes()).toBe(0);e.controller.applyPreparedEdit(first.id);expect(e.doc()).toBe('Hand A---beta---gamma');const second=e.controller.snapshot().plannedEdits[0]!;expect(e.controller.appendPreparedEdits([{before:'gamma',after:'G'}]).ok).toBe(true);expect(e.controller.snapshot().plannedEdits[0]!.id).toBe(second.id);expect(e.controller.undo().ok).toBe(true);expect(e.doc()).toBe('alpha---beta---gamma');expect(e.controller.snapshot().plannedEdits).toHaveLength(2);e.controller.destroy();});
+ it('rejects changed, ambiguous and overlapping new sources without clearing earlier complete candidates',()=>{const e=editor();e.controller.prepareEdits(token(e.controller),[{before:'alpha',after:'A'}]);const first=e.controller.snapshot().plannedEdits[0]!.id;for(const next of [{before:'alph',after:'x'},{before:'missing',after:'x'}])expect(e.controller.appendPreparedEdits([next]).ok).toBe(false);expect(e.controller.snapshot().plannedEdits[0]!.id).toBe(first);e.controller.applyPreparedEdit(first);expect(e.controller.appendPreparedEdits([{before:'alpha',after:'again'}]).ok).toBe(false);expect(e.doc()).toBe('A---beta---gamma');e.controller.destroy();});
+});
+
+
+describe('candidate review controls fit the editor scrollport',()=>{
+ it('uses visible scroll width rather than document long-line width, reserving gutters',()=>{expect(inlineReviewViewport(800,52,12)).toEqual({width:728,left:52});expect(inlineReviewViewport(240,44,8)).toEqual({width:180,left:44});});
+ it('never forces a minimum width beyond a narrow editor and handles unmeasured bounds',()=>{expect(inlineReviewViewport(40,36,8).width).toBe(0);expect(inlineReviewViewport(Number.NaN,-10,Infinity)).toEqual({width:0,left:0});});
+});
+
+
+describe('file-wide acceptance retains every segment undo',()=>{it('can accept 48 unique hunks individually and undo each LIFO',()=>{const parts=Array.from({length:48},(_,i)=>`[paragraph_${String(i).padStart(2,'0')}]`),source=parts.join('\n');const e=editor(source);expect(e.controller.prepareEdits(token(e.controller),parts.map(before=>({before,after:before.toUpperCase()}))).ok).toBe(true);for(const id of e.controller.snapshot().plannedEdits.map(edit=>edit.id))expect(e.controller.applyPreparedEdit(id).ok).toBe(true);expect(e.doc()).toBe(source.toUpperCase());for(let i=0;i<48;i++)expect(e.controller.undo().ok).toBe(true);expect(e.doc()).toBe(source);e.controller.destroy();});});

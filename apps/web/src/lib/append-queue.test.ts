@@ -1,0 +1,9 @@
+import {describe,expect,it,vi} from 'vitest';
+import {AppendQueue} from './append-queue';
+type Item={id:string};
+const tick=()=>new Promise<void>(resolve=>queueMicrotask(resolve));
+describe('serial candidate and decision persistence',()=>{
+ it('preserves arrivals during an in-flight append with bounded ordered batches',async()=>{let release!:()=>void;const calls:string[][]=[];const append=vi.fn(async(batch:Item[])=>{calls.push(batch.map(item=>item.id));if(calls.length===1)await new Promise<void>(resolve=>{release=resolve;});});const q=new AppendQueue(append,()=>{});const initial=q.enqueue([{id:'user'},{id:'run'}]);await tick();const tail=q.enqueue(Array.from({length:7},(_,i)=>({id:String(i)})));release();await Promise.all([initial,tail]);expect(calls.flat()).toEqual(['user','run','0','1','2','3','4','5','6']);expect(calls.every(batch=>batch.length<=4)).toBe(true);});
+ it('keeps failed messages until explicit retry and does not automatically spend repeated requests on new arrivals',async()=>{let fail=true;const saved:string[]=[];const append=vi.fn(async(batch:Item[])=>{if(fail)throw new Error('offline');saved.push(...batch.map(item=>item.id));});let error='';const q=new AppendQueue(append,state=>{error=state.error;});await q.enqueue([{id:'candidate'}]);expect(error).toBe('offline');await q.enqueue([{id:'decision'}]);expect(append).toHaveBeenCalledTimes(1);fail=false;await q.retry();expect(saved).toEqual(['candidate','decision']);});
+ it('deduplicates stable message IDs and stops old-owner callbacks after disposal',async()=>{const calls:string[][]=[];const q=new AppendQueue<Item>(async batch=>{calls.push(batch.map(item=>item.id));},()=>{});await q.enqueue([{id:'a'},{id:'a'}]);await q.enqueue([{id:'a'}]);expect(calls.flat()).toEqual(['a']);q.dispose();await q.enqueue([{id:'b'}]);expect(calls.flat()).toEqual(['a']);});
+});

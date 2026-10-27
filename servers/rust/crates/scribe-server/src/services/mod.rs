@@ -43,3 +43,11 @@ pub mod version_diff;
 pub mod version_summaries;
 
 pub mod tex_proposal;
+
+pub mod context_compaction;
+
+pub mod agent_plan;
+
+pub mod agent_loop_guard;
+
+pub mod web_search;

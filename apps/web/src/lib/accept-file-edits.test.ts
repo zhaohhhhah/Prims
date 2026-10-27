@@ -1,0 +1,8 @@
+import {describe,expect,it,vi} from 'vitest';
+import {acceptFileEdits,type PendingFileEdit} from './accept-file-edits';
+const make=(id:string):PendingFileEdit=>({id,from:0,to:3,before:id,after:id.toUpperCase(),conflict:false});
+describe('accept current file one guarded hunk at a time',()=>{
+ it('retains individual acceptance order for per-hunk undo rather than one bulk transaction',()=>{let pending=[make('one'),make('two')];const applied:string[]=[];const result=acceptFileEdits({snapshot:()=>({plannedEdits:pending}),applyPreparedEdit:id=>{applied.push(id);pending=pending.filter(edit=>edit.id!==id);return {ok:true};}});expect(applied).toEqual(['one','two']);expect(result.accepted.map(edit=>edit.id)).toEqual(applied);expect(pending).toEqual([]);});
+ it('rechecks each live hunk and keeps conflicts caused during an earlier acceptance',()=>{let pending=[make('one'),make('two')];const apply=vi.fn((id:string)=>{pending=pending.filter(edit=>edit.id!==id).map(edit=>({...edit,conflict:true}));return {ok:true} as const;});const result=acceptFileEdits({snapshot:()=>({plannedEdits:pending}),applyPreparedEdit:apply});expect(apply).toHaveBeenCalledTimes(1);expect(result.accepted).toHaveLength(1);expect(result.kept[0]!.id).toBe('two');expect(pending[0]!.conflict).toBe(true);});
+ it('keeps failed or unchanged segments pending without treating them as accepted',()=>{const pending=[make('one'),{...make('same'),after:'same'}];const result=acceptFileEdits({snapshot:()=>({plannedEdits:pending}),applyPreparedEdit:()=>({ok:false,message:'changed'})});expect(result.accepted).toEqual([]);expect(result.kept).toHaveLength(2);});
+});

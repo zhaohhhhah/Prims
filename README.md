@@ -12,15 +12,17 @@ adds a browser-first workflow for writing with your own AI endpoint.
 - **One project assistant.** Keep it floating or docked, continue a discussion,
   start a new conversation, or return to a previous one.
 - **Editable suggestions inside the document.** A selection is a clue to the
-  task. The model can suggest several related changes in the current file.
+  task. The model can suggest precise changes across authorized project files.
   Review and edit each candidate, apply or reject paragraphs independently,
   and undo accepted changes. Accept/reject controls sit beside each Git-style
   red/green preview. Candidates do not become document content until
   accepted. Ambiguous or conflicting source text blocks application.
 - **Project context.** The assistant can list files, search filenames and text,
   and read relevant text windows or supported images through bounded,
-  project-authorized tools. A private conversation summary is updated within
-  the normal reply rather than a separate summarization request.
+  project-authorized tools. A private conversation summary carries writing goals between turns. Long
+  tool conversations use the pinned, Apache-licensed Codex local-compaction
+  prompt and history-rebuilding method; one bounded same-connection summary
+  request replaces old context only after complete success.
 - **Conversation without forced edits.** The model can explain uncertainty or
   ask a clarifying question. A useful answer without a proposed change is a
   successful response.
@@ -97,8 +99,10 @@ are not part of this repository.
 
 ## Scope and data
 
-Model tools are read-only; document writes happen through the editor after
-acceptance. Multi-part suggestions currently target the active file. Image
+Model tools inspect project references and submit pending proposals;
+document writes happen through the real editor after acceptance. Proposals
+can target multiple authorized text files. Exact anchors, overlapping ranges
+and concurrent edits are checked before acceptance. Image
 context supports PNG, JPEG and WebP; PDF, Office and HEIC extraction are not
 implemented by these tools. Project files sent to a model use the signed-in
 account's configured provider. Deployers should configure access, backups,
@@ -121,4 +125,32 @@ The upstream history and attribution are retained.
 
 ### Native agent tools and project history
 
-OpenAI-compatible and Anthropic connections use native read-only tools and return results in the matching wire format. Assistant replies render Markdown, while LaTeX proposals remain source code with format checks. Review and apply changes per file and per paragraph. Version history includes dates and reviewed text restoration; optional AI summaries receive bounded version differences only. Interface URLs are recognized when unambiguous, otherwise choose the protocol explicitly.
+OpenAI-compatible and Anthropic connections use native project tools and return results in the matching wire format. Assistant replies render Markdown, while LaTeX proposals remain source code with format checks. Review and apply changes per file and per paragraph. Version history includes dates and reviewed text restoration; optional AI summaries receive bounded version differences only. Interface URLs are recognized when unambiguous, otherwise choose the protocol explicitly.
+
+### Incremental proposals and agent controls
+
+Small, focused changes are submitted through a pending-proposal tool loop,
+following the Codex patch/feedback/continue workflow. Complete proposals
+survive later output limits or interruptions, are deduplicated, and remain
+individually editable, acceptable, rejectable and undoable. The current file
+also offers batch acceptance with source rechecks. Long-line review controls
+stay within the visible editor. Selection and docked-composer drafts are
+independent while sent messages retain shared conversation context.
+
+The assistant can update a bounded public task plan using the Codex
+`update_plan` argument shape. Repeated tool batches without new results or
+proposals stop automatically. Progress shows actual public actions and
+completed steps, not hidden reasoning. There is one unified assistant menu
+entry; handwriting/OCR entry points have been removed from the web UI.
+
+Official DeepSeek connections can optionally call the standalone Search API
+with the same signed-in user's key. Other endpoint keys are never forwarded
+to DeepSeek. Each request allows at most three search attempts, caches
+successful repeated queries and returns bounded, attributed public results.
+Search has separate provider billing; see the
+[DeepSeek Search API documentation](https://api-docs.deepseek.com/guides/search/).
+The search client follows the deployment's existing proxy settings and never
+fetches arbitrary result URLs from the application server.
+
+The pinned Codex source, adapted portions and Apache-2.0 notices are documented
+in [the compaction origin notice](servers/rust/crates/scribe-server/src/services/vendor/codex_compaction/ORIGIN.md).
