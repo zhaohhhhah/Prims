@@ -8,6 +8,8 @@ import { AISetupOnboarding } from '../components/Onboarding/AISetupOnboarding';
 import { NotificationBell } from '../components/Notifications/NotificationBell';
 import { useAuthStore } from '../stores/auth';
 
+import { UserAvatar } from '../components/UserAvatar';
+
 import { ProjectNavSlot } from './ProjectNavSlot';
 
 export function AppShell() {
@@ -40,7 +42,7 @@ export function AppShell() {
           </Link>
           <ProjectNavSlot />
           <div className="flex shrink-0 items-center gap-1">
-            <span className="hidden text-xs text-muted-foreground sm:inline">{displayName}</span>
+            <Link to="/settings" title={displayName} className="flex items-center gap-2 rounded-full focus-visible:ring-2 focus-visible:ring-ring">{user && <UserAvatar userId={user.id} name={displayName} className="h-7 w-7 text-xs" />}<span className="hidden max-w-32 truncate text-xs text-muted-foreground sm:inline">{displayName}</span></Link>
             <NotificationBell />
             <Button
               variant="ghost"

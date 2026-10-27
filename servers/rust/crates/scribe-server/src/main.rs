@@ -375,6 +375,7 @@ fn build_router(
         .merge(routes::whoami::router())
         .merge(routes::projects::router())
         .merge(routes::dashboard_summary::router())
+        .merge(routes::avatars::router())
         .merge(routes::files::router())
         .merge(routes::comments::router())
         .merge(routes::members::router())

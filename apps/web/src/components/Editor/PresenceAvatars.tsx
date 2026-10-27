@@ -1,6 +1,8 @@
-import { Avatar, AvatarFallback, AvatarImage } from '@scribe/ui';
+import { Avatar, AvatarFallback } from '@scribe/ui';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { UserAvatar } from '../UserAvatar';
 
 import type { PresenceUser } from '@scribe/yjs-provider';
 
@@ -10,16 +12,6 @@ interface PresenceAvatarsProps {
   /** Total avatars shown before collapsing into "+N". Counts the local
    *  user. Defaults to 3 (the conventional cap in Docs/Overleaf). */
   readonly maxVisible?: number;
-}
-
-function initialsFor(name: string): string {
-  return name
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((part) => part[0])
-    .slice(0, 2)
-    .join('')
-    .toUpperCase();
 }
 
 function PresenceDot({
@@ -39,19 +31,8 @@ function PresenceDot({
     : user.displayName;
   return (
     <div className="relative">
-      <Avatar
-        className="h-7 w-7 ring-2 ring-background"
-        style={{ borderColor: user.color }}
-        title={titleText}
-      >
-        <AvatarImage src="" alt="" />
-        <AvatarFallback
-          className="text-[10px] font-semibold"
-          style={{ backgroundColor: user.color, color: '#fff' }}
-        >
-          {initialsFor(user.displayName)}
-        </AvatarFallback>
-      </Avatar>
+      <UserAvatar userId={user.userId} name={user.displayName} title={titleText}
+        className="h-7 w-7 text-[10px] ring-2 ring-background" />
       {/* Tiny multi-tab indicator — a subtle dot on the corner, not a
           loud "(2)" pill. Reads as "this user has the doc open more
           than once" without being noisy. */}

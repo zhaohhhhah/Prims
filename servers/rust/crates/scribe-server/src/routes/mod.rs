@@ -31,3 +31,5 @@ pub mod version_summaries;
 pub mod archives;
 
 pub mod dashboard_summary;
+
+pub mod avatars;
