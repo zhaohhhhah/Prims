@@ -199,3 +199,9 @@ retain at least 4.5:1 contrast. Existing custom appearance choices are preserved
 A PDF theme dropdown and brightness control sit in the preview toolbar, with warm-yellow and
 light-green paper modes in addition to Original, Soft and Night. Filters are
 display-only and do not change exported/downloaded PDFs.
+
+
+Appearance now presents theme collections with both day and night previews.
+Choosing a collection applies its matching palette pair atomically, without
+changing personal fonts, icons or the independent light/dark/system color mode.
+Existing custom combinations are retained until a collection is chosen.
