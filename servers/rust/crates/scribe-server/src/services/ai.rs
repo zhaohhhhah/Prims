@@ -46,6 +46,8 @@ impl AIService {
         Ok(super::web_search::deepseek_search_available(&request))
     }
 
+    pub async fn search_max_calls(&self,user:UserId)->ApiResult<u32>{super::search_connections::SearchConnections::new(self.pool.clone(),self.crypto.clone()).max_calls(user).await}
+
     pub async fn resolve_search(&self,user:UserId,fallback:&CompleteRequest)->ApiResult<Option<super::search_connections::SearchConnection>>{
         let independent=super::search_connections::SearchConnections::new(self.pool.clone(),self.crypto.clone()).load(user).await?;
         Ok(independent.or_else(||super::search_connections::legacy_connection(fallback)))
@@ -215,9 +217,9 @@ impl AIService {
         }
         let selected_search=if inline{self.resolve_search(user,&req).await.ok().flatten()}else{None};
         let search_available=agent_preferences.search_enabled&&selected_search.is_some();
-        if inline{if let Some(message)=req.messages.iter_mut().rev().find(|message|message.role==ChatRole::User){message.content.push_str("\n\nServer search availability (configuration metadata only): ");message.content.push_str(&serde_json::json!({"tool":"web_search","available":search_available,"provider":selected_search.as_ref().map(|config|config.provider.name()),"queryMaxCharacters":if selected_search.as_ref().is_some_and(|config|config.provider==super::search_connections::SearchProvider::Doubao){100}else{128},"maxResults":5,"maxAttempts":3,"chatModelIndependent":true}).to_string());}}
+        if inline{if let Some(message)=req.messages.iter_mut().rev().find(|message|message.role==ChatRole::User){message.content.push_str("\n\nServer search availability (configuration metadata only): ");message.content.push_str(&serde_json::json!({"tool":"web_search","available":search_available,"provider":selected_search.as_ref().map(|config|config.provider.name()),"queryMaxCharacters":if selected_search.as_ref().is_some_and(|config|config.provider==super::search_connections::SearchProvider::Doubao){100}else{128},"maxResults":5,"maxCallsPerRequest":self.search_max_calls(user).await.unwrap_or(3),"chatModelIndependent":true}).to_string());}}
         if native_mode&&search_available{let mut schema=super::web_search::web_search_schema();if selected_search.as_ref().is_some_and(|config|config.provider==super::search_connections::SearchProvider::Doubao){schema["properties"]["query"]["maxLength"]=serde_json::json!(100);}
-            req.native_tools.push(scribe_ai::adapter::NativeToolDefinition{name:"web_search".into(),description:"Search public web references using this authenticated user's independent search connection. This is independent of the chat model/provider. Use minimal public keywords, never project paragraphs or credentials. Max5 results and3 attempts; cite actual supplied URLs. Cannot change endpoint/headers/key through tool arguments. Does not fetch whole pages or write files.".into(),parameters:schema});}
+            req.native_tools.push(scribe_ai::adapter::NativeToolDefinition{name:"web_search".into(),description:"Search public web references using this authenticated user's independent search connection. This is independent of the chat model/provider. Use minimal public keywords, never project paragraphs or credentials. Max5 results; follow the user-configured maxCallsPerRequest (0 means no separate search-count limit within the bounded agent run); cite actual supplied URLs. Cannot change endpoint/headers/key through tool arguments. Does not fetch whole pages or write files.".into(),parameters:schema});}
 
         Ok(req)
     }

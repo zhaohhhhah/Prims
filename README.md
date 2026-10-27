@@ -145,12 +145,13 @@ proposals stop automatically. Progress shows actual public actions and
 completed steps, not hidden reasoning. There is one unified assistant menu
 entry; handwriting/OCR entry points have been removed from the web UI.
 
-Each account can configure a separate Doubao or DeepSeek search connection
+Each account can configure a separate Doubao, DeepSeek or SearXNG search connection
 in Agent settings, with its own search endpoint and encrypted API key. Any
 configured chat model can call that connection; unrelated chat-model credentials
 are not sent to the search endpoint. Without an independent search configuration,
 the existing official DeepSeek model connection remains an optional fallback.
-Requests retain bounded attempts, attributed results and separate search-provider
+Requests use a personal per-request search-call setting (default 3; 0 disables
+that separate count limit), attributed results and separate search-provider
 billing. The client uses the configured search endpoint rather than fetching
 arbitrary result URLs from the application server.
 
@@ -231,7 +232,7 @@ licensed font resources as read-only mounts to disposable workers. These mounts
 are fixed operator configuration, not model-selected paths or host font installs;
 operator-supplied font binaries and private license files are not distributed here.
 See the [workbench guide](servers/workbench/README.md) and its generic examples.
-Health checks distinguish configured services from workers that are actually ready. Independent Doubao or DeepSeek search settings are shared
+Health checks distinguish configured services from workers that are actually ready. Independent Doubao, DeepSeek or SearXNG search settings are shared
 across the user's chat models and remain controlled by the personal search
 preference. No additional system permissions are granted.
 
@@ -256,9 +257,36 @@ font OFL licenses remain unchanged.
 
 To enable independent search settings, apply
 `supabase/migrations/20261027000002_search_connections.sql` after the Agent
-library migration. In Settings > Agent, select Doubao or DeepSeek, supply its
-complete HTTPS POST endpoint and a search-service API key, then save. Keys are
+library migration. Then apply `supabase/migrations/20261028000001_searxng_search.sql`.
+In Settings > Agent, choose the interface type and full HTTPS endpoint. Doubao
+and DeepSeek require their independent search keys. SearXNG uses its standard
+POST form q/format=json protocol; supply your own instance endpoint and enable
+JSON output in that instance. Its optional Bearer key authenticates a user
+gateway, rather than a native mandatory SearXNG key. No instance is deployed
+or public service selected automatically. Keys are
 never returned by the API. An empty password keeps an existing key only for the
-same provider and endpoint; changing either requires a new key. Clearing the
+same provider and endpoint. Switching to SearXNG with a blank key creates an
+unauthenticated connection without inheriting the old key; its explicit
+clear-key option removes a saved gateway key. Other providers still require
+a replacement key when the provider or endpoint changes. Clearing the
 independent configuration restores the model-connection fallback. No new
 server-wide search credential is required.
+
+### Webpage skills and detached project tabs
+
+Agent settings can import a bounded public HTTPS Markdown page or HTML page.
+HTML is converted to text with html2text; the user's own configured model can
+prepare a standard SKILL.md draft. Only an explicit final save adds the skill
+to the personal library. Fetched material remains untrusted data and grants no
+execution permissions. Public-target DNS checks, pinned addresses, byte limits
+and disabled redirects apply; private endpoints and credential-bearing URLs
+are rejected.
+
+The project assistant can be opened in an independent browser tab while sharing
+the project's conversation and review workflow. Proposed changes remain subject
+to explicit acceptance and current-file conflict checks.
+
+Search-call preferences are personal and independent of connection keys and
+the four Agent toggles. Zero removes only the separate search-call limit; the
+overall Agent round and time bounds remain. Changing the four toggles or
+deleting a search connection preserves the search-call preference.

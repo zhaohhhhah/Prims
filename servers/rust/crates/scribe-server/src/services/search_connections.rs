@@ -9,10 +9,10 @@ use sha2::{Digest,Sha256};
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 #[serde(rename_all="lowercase")]
-pub enum SearchProvider{Doubao,Deepseek}
+pub enum SearchProvider{Doubao,Deepseek,Searxng}
 impl SearchProvider{
- pub fn endpoint(self)->&'static str{match self{Self::Doubao=>"https://open.feedcoopapi.com/search_api/web_search",Self::Deepseek=>"https://api.deepseek.com/v1/tools/search"}}
- pub fn name(self)->&'static str{match self{Self::Doubao=>"doubao",Self::Deepseek=>"deepseek"}}
+ pub fn endpoint(self)->&'static str{match self{Self::Doubao=>"https://open.feedcoopapi.com/search_api/web_search",Self::Deepseek=>"https://api.deepseek.com/v1/tools/search",Self::Searxng=>""}}
+ pub fn name(self)->&'static str{match self{Self::Doubao=>"doubao",Self::Deepseek=>"deepseek",Self::Searxng=>"searxng"}}
 }
 /// Deliberately not Debug or Serialize: clear credentials are server-local only.
 #[derive(Clone)]pub struct SearchConnection{pub provider:SearchProvider,pub endpoint:String,pub api_key:String,pub revision:i64}
@@ -20,17 +20,27 @@ impl SearchConnection{
  pub fn cache_identity(&self)->String{let mut hash=Sha256::new();hash.update(self.provider.name());hash.update([0]);hash.update(&self.endpoint);hash.update([0]);hash.update(self.revision.to_le_bytes());hash.update(self.api_key.as_bytes());format!("{:x}",hash.finalize())}
 }
 #[derive(Deserialize)]#[serde(rename_all="camelCase",deny_unknown_fields)]
-pub struct SearchConfigInput{pub provider:SearchProvider,pub endpoint:Option<String>,pub api_key:String}
+pub struct SearchConfigInput{pub provider:SearchProvider,pub endpoint:Option<String>,pub api_key:String,#[serde(default)]pub clear_api_key:bool}
+#[derive(Deserialize)]#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct SearchOptionsInput{pub max_calls_per_request:u32}
 #[derive(Clone)]pub struct SearchConnections{pool:PgPool,crypto:Arc<CryptoBox>}
 impl SearchConnections{
  pub fn new(pool:PgPool,crypto:Arc<CryptoBox>)->Self{Self{pool,crypto}}
+ pub async fn max_calls(&self,user:UserId)->ApiResult<u32>{
+  let value:Option<i64>=sqlx::query_scalar("select max_calls_per_request from public.scribe_search_options where user_id=$1").bind(user.into_inner()).fetch_optional(&self.pool).await.map_err(db)?;
+  value.map(|value|u32::try_from(value).map_err(|_|ApiError::internal("搜索次数设置无效"))).transpose().map(|value|value.unwrap_or(3))
+ }
+ pub async fn set_options(&self,user:UserId,input:SearchOptionsInput)->ApiResult<()>{
+  sqlx::query("insert into public.scribe_search_options(user_id,max_calls_per_request) values($1,$2) on conflict(user_id) do update set max_calls_per_request=$2,updated_at=now()")
+   .bind(user.into_inner()).bind(i64::from(input.max_calls_per_request)).execute(&self.pool).await.map_err(db)?;Ok(())
+ }
  pub async fn public(&self,user:UserId)->ApiResult<Option<Value>>{
-  let row=sqlx::query("select provider,endpoint,api_key_cipher is not null as has_key,updated_at from public.scribe_search_connections where user_id=$1").bind(user.into_inner()).fetch_optional(&self.pool).await.map_err(db)?;
-  Ok(row.map(|row|json!({"provider":row.get::<String,_>("provider"),"endpoint":row.get::<String,_>("endpoint"),"hasApiKey":row.get::<bool,_>("has_key"),"updatedAt":row.get::<chrono::DateTime<chrono::Utc>,_>("updated_at")})))
+  let row=sqlx::query("select provider,endpoint,api_key_cipher,updated_at from public.scribe_search_connections where user_id=$1").bind(user.into_inner()).fetch_optional(&self.pool).await.map_err(db)?;
+  row.map(|row|{let cipher:String=row.get("api_key_cipher");let has_key=!decode_credential(&self.crypto,&cipher,row.get::<String,_>("provider").as_str())?.trim().is_empty();Ok(json!({"provider":row.get::<String,_>("provider"),"endpoint":row.get::<String,_>("endpoint"),"hasApiKey":has_key,"updatedAt":row.get::<chrono::DateTime<chrono::Utc>,_>("updated_at")}))}).transpose()
  }
  pub async fn load(&self,user:UserId)->ApiResult<Option<SearchConnection>>{
   let row=sqlx::query("select provider,endpoint,api_key_cipher,revision from public.scribe_search_connections where user_id=$1").bind(user.into_inner()).fetch_optional(&self.pool).await.map_err(db)?;
-  row.map(|row|{let name:String=row.get("provider");let provider=match name.as_str(){"doubao"=>SearchProvider::Doubao,"deepseek"=>SearchProvider::Deepseek,_=>return Err(ApiError::internal("搜索配置类型无效"))};let endpoint:String=row.get("endpoint");validate_endpoint(&endpoint)?;let cipher:String=row.get("api_key_cipher");let key=self.crypto.decrypt(&cipher).map_err(|_|ApiError::internal("搜索密钥无法解密，请重新配置"))?;Ok(SearchConnection{provider,endpoint,api_key:key,revision:row.get("revision")})}).transpose()
+  row.map(|row|{let name:String=row.get("provider");let provider=match name.as_str(){"doubao"=>SearchProvider::Doubao,"deepseek"=>SearchProvider::Deepseek,"searxng"=>SearchProvider::Searxng,_=>return Err(ApiError::internal("搜索配置类型无效"))};let endpoint:String=row.get("endpoint");validate_endpoint(&endpoint)?;let cipher:String=row.get("api_key_cipher");let key=decode_credential(&self.crypto,&cipher,provider.name())?;Ok(SearchConnection{provider,endpoint,api_key:key,revision:row.get("revision")})}).transpose()
  }
  pub async fn save(&self,user:UserId,input:SearchConfigInput)->ApiResult<()> {
   let endpoint=input.endpoint.as_deref().map(str::trim).filter(|url|!url.is_empty()).unwrap_or(input.provider.endpoint());let endpoint=validate_endpoint(endpoint)?.to_string();
@@ -40,16 +50,48 @@ impl SearchConnections{
   let key=input.api_key.trim();let mut tx=self.pool.begin().await.map_err(db)?;
   sqlx::query("select pg_advisory_xact_lock(hashtextextended($1,827301))").bind(user.to_string()).execute(&mut *tx).await.map_err(db)?;
   let old=sqlx::query("select provider,endpoint,api_key_cipher from public.scribe_search_connections where user_id=$1 for update").bind(user.into_inner()).fetch_optional(&mut *tx).await.map_err(db)?;
-  let cipher=if key.is_empty(){let old=old.ok_or_else(||ApiError::validation("请填写独立搜索API Key"))?;let old_provider:String=old.get("provider");let old_endpoint:String=old.get("endpoint");if old_provider!=input.provider.name()||old_endpoint!=endpoint{return Err(ApiError::validation("切换搜索服务或地址时必须填写新API Key"));}old.get::<String,_>("api_key_cipher")}else{self.crypto.encrypt(key).map_err(|_|ApiError::internal("搜索密钥加密失败"))?};
+  let same=old.as_ref().is_some_and(|old|old.get::<String,_>("provider")==input.provider.name()&&old.get::<String,_>("endpoint")==endpoint);
+  let cipher=match key_plan(input.provider,key,input.clear_api_key,same)?{
+   KeyPlan::Keep=>old.ok_or_else(||ApiError::validation("没有可保留的搜索配置"))?.get::<String,_>("api_key_cipher"),
+   KeyPlan::Replace(clear)=>encode_credential(&self.crypto,input.provider,&clear)?,
+  };
   sqlx::query("insert into public.scribe_search_connections(user_id,provider,endpoint,api_key_cipher) values($1,$2,$3,$4) on conflict(user_id) do update set provider=$2,endpoint=$3,api_key_cipher=$4,revision=scribe_search_connections.revision+1,updated_at=now()")
    .bind(user.into_inner()).bind(input.provider.name()).bind(endpoint).bind(cipher).execute(&mut *tx).await.map_err(db)?;
   tx.commit().await.map_err(db)?;Ok(())
  }
  pub async fn delete(&self,user:UserId)->ApiResult<()> {sqlx::query("delete from public.scribe_search_connections where user_id=$1").bind(user.into_inner()).execute(&self.pool).await.map_err(db)?;Ok(())}
 }
+// SearXNG's unauthenticated state needs an encrypted nonempty payload: the shared
+// legacy CryptoBox rejects a zero-length plaintext on decryption. Never change that codec.
+fn encode_credential(crypto:&CryptoBox,provider:SearchProvider,key:&str)->ApiResult<String>{
+ let plain=if provider==SearchProvider::Searxng{json!({"_primsSearchCredentialVersion":1,"key":key}).to_string()}else{key.to_string()};
+ crypto.encrypt(&plain).map_err(|_|ApiError::internal("搜索密钥加密失败"))
+}
+fn decode_credential(crypto:&CryptoBox,cipher:&str,provider:&str)->ApiResult<String>{
+ let plain=crypto.decrypt(cipher).map_err(|_|ApiError::internal("搜索密钥无法解密，请重新配置"))?;
+ if provider=="searxng"{if let Ok(value)=serde_json::from_str::<Value>(&plain){
+  if value.get("_primsSearchCredentialVersion").is_some(){
+   if value.get("_primsSearchCredentialVersion")==Some(&json!(1))&&value.as_object().is_some_and(|object|object.len()==2){
+    return value.get("key").and_then(Value::as_str).map(str::to_string).ok_or_else(||ApiError::internal("搜索密钥格式无效，请重新配置"));
+   }
+   return Err(ApiError::internal("搜索密钥格式无效，请重新配置"));
+  }
+ }}
+ Ok(plain)
+}
+enum KeyPlan{Keep,Replace(String)}
+fn key_plan(provider:SearchProvider,key:&str,clear:bool,same:bool)->ApiResult<KeyPlan>{
+ if clear&&!key.is_empty(){return Err(ApiError::validation("清空Key时请勿同时填写新Key"));}
+ if clear{return if provider==SearchProvider::Searxng{Ok(KeyPlan::Replace(String::new()))}else{Err(ApiError::validation("此搜索服务需要API Key，不能清空"))};}
+ if !key.is_empty(){return Ok(KeyPlan::Replace(key.to_string()));}
+ if same{return Ok(KeyPlan::Keep);}
+ if provider==SearchProvider::Searxng{return Ok(KeyPlan::Replace(String::new()));}
+ Err(ApiError::validation("新增或切换搜索服务、接口地址时必须填写新API Key"))
+}
 fn db(_:sqlx::Error)->ApiError{ApiError::internal("独立搜索配置暂不可用")}
 
 pub fn validate_endpoint(raw:&str)->ApiResult<url::Url>{
+ if raw.trim().is_empty(){return Err(ApiError::validation("请填写自己的完整HTTPS搜索接口地址"));}
  if raw.len()>2048||raw.chars().any(char::is_control){return Err(ApiError::validation("搜索地址格式无效"));}
  let url=url::Url::parse(raw).map_err(|_|ApiError::validation("搜索地址必须是HTTPS URL"))?;
  if url.scheme()!="https"||url.host_str().is_none()||!url.username().is_empty()||url.password().is_some()||url.query().is_some()||url.fragment().is_some(){return Err(ApiError::validation("搜索地址仅允许不带凭据、查询参数或片段的HTTPS URL"));}
@@ -94,4 +136,27 @@ pub fn legacy_connection(config:&CompleteRequest)->Option<SearchConnection>{supe
   for text in ["2606:4700:4700::1111","2001:4860:4860::8888","64:ff9b::808:808","2002:808:808::1","::ffff:8.8.8.8"]{assert!(public_ip(text.parse().unwrap()),"{text}");}
  }
  #[test]fn provider_endpoint_and_key_isolate_cache(){let a=SearchConnection{provider:SearchProvider::Doubao,endpoint:SearchProvider::Doubao.endpoint().into(),api_key:"fake-A".into(),revision:1};let mut b=a.clone();b.provider=SearchProvider::Deepseek;assert_ne!(a.cache_identity(),b.cache_identity());b=a.clone();b.api_key="fake-B".into();assert_ne!(a.cache_identity(),b.cache_identity());b=a.clone();b.revision+=1;assert_ne!(a.cache_identity(),b.cache_identity());}
+ #[test]fn searxng_versioned_credentials_roundtrip_empty_and_json_shaped_user_keys(){
+  let crypto=CryptoBox::from_env_value(Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")).unwrap();
+  for key in ["","normal-owned-gateway-key",r#"{"_primsSearchCredentialVersion":1,"key":"literal-user-key"}"#]{
+   let cipher=encode_credential(&crypto,SearchProvider::Searxng,key).unwrap();
+   assert_eq!(decode_credential(&crypto,&cipher,"searxng").unwrap(),key);
+  }
+  for provider in [SearchProvider::Doubao,SearchProvider::Deepseek]{let cipher=encode_credential(&crypto,provider,"legacy-raw-key").unwrap();assert_eq!(crypto.decrypt(&cipher).unwrap(),"legacy-raw-key");assert_eq!(decode_credential(&crypto,&cipher,provider.name()).unwrap(),"legacy-raw-key");}
+  let old=crypto.encrypt("previous-unwrapped-gateway-key").unwrap();assert_eq!(decode_credential(&crypto,&old,"searxng").unwrap(),"previous-unwrapped-gateway-key");
+  let malformed=crypto.encrypt(r#"{"_primsSearchCredentialVersion":2,"key":""}"#).unwrap();assert!(decode_credential(&crypto,&malformed,"searxng").is_err());
+ }
+ #[test]fn independent_search_budget_accepts_zero_and_u32_without_touching_four_bool_preferences(){
+  for limit in [0u32,1,3,u32::MAX]{let input:SearchOptionsInput=serde_json::from_value(json!({"maxCallsPerRequest":limit})).unwrap();assert_eq!(input.max_calls_per_request,limit);}
+  for value in [json!({"maxCallsPerRequest":-1}),json!({"maxCallsPerRequest":4294967296u64}),json!({"maxCallsPerRequest":1,"skillsEnabled":false})]{assert!(serde_json::from_value::<SearchOptionsInput>(value).is_err());}
+ }
+ #[test]fn searxng_has_no_public_default_and_key_clear_is_explicit(){
+  assert!(SearchProvider::Searxng.endpoint().is_empty());assert!(validate_endpoint(SearchProvider::Searxng.endpoint()).is_err());
+  assert!(matches!(key_plan(SearchProvider::Searxng,"",false,false).unwrap(),KeyPlan::Replace(value) if value.is_empty()));
+  assert!(matches!(key_plan(SearchProvider::Searxng,"",false,true).unwrap(),KeyPlan::Keep));
+  assert!(matches!(key_plan(SearchProvider::Searxng,"",true,true).unwrap(),KeyPlan::Replace(value) if value.is_empty()));
+  assert!(key_plan(SearchProvider::Doubao,"",false,false).is_err());assert!(key_plan(SearchProvider::Deepseek,"",true,true).is_err());assert!(key_plan(SearchProvider::Searxng,"new-key",true,true).is_err());
+  let input:SearchConfigInput=serde_json::from_value(json!({"provider":"searxng","endpoint":"https://search.example.com/search","apiKey":"","clearApiKey":true})).unwrap();assert!(input.clear_api_key);
+ }
+
 }

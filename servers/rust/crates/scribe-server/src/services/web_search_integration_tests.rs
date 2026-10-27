@@ -49,6 +49,7 @@ fn connection(provider: SearchProvider, revision: i64, key: &str) -> SearchConne
     let endpoint = match provider {
         SearchProvider::Doubao => "https://open.feedcoopapi.com/search_api/web_search",
         SearchProvider::Deepseek => "https://api.deepseek.com/v1/tools/search",
+        SearchProvider::Searxng => "https://search.example.com/search",
     };
     SearchConnection { provider, endpoint: endpoint.into(), api_key: key.into(), revision }
 }
@@ -185,4 +186,86 @@ async fn doubao_100_unicode_characters_and_deepseek_101_are_sent_unchanged() {
     let config = connection(SearchProvider::Deepseek, 1, "fake-fixture-key");
     SearchSession::default().search_connection_at(Some(&config), &json!({"query":query}), &url).await.unwrap();
     assert_eq!(payload(&worker.join().unwrap()[0])["query"], query);
+}
+
+#[tokio::test]
+async fn searxng_posts_standard_form_without_implicit_chat_or_search_key() {
+    let (url, worker) = mock(vec![(200, json!({"results":[{"title":"SearXNG reference","url":"https://example.com/docs","content":"Public result excerpt"}]}))]);
+    let config = connection(SearchProvider::Searxng, 1, "");
+    let mut session = SearchSession::default();
+    let result = session.search_connection_at(Some(&config), &json!({"query":"中文 a&b"}), &url).await.unwrap();
+    assert_eq!(result["provider"], "searxng_search");
+    assert_eq!(result["results"][0]["snippet"], "Public result excerpt");
+    let cached = session.search_connection_at(Some(&config), &json!({"query":"中文 a&b"}), &url).await.unwrap();
+    assert_eq!(cached["cached"], true);
+    let requests = worker.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert!(request.to_ascii_lowercase().contains("content-type: application/x-www-form-urlencoded"));
+    assert!(!request.to_ascii_lowercase().contains("authorization:"));
+    let pairs = url::form_urlencoded::parse(request.split_once("\r\n\r\n").unwrap().1.as_bytes()).collect::<Vec<_>>();
+    assert_eq!(pairs, vec![("q".into(), "中文 a&b".into()), ("format".into(), "json".into())]);
+}
+#[tokio::test]
+async fn searxng_optional_gateway_key_changes_cache_and_can_be_removed() {
+    let rows = json!({"results":[{"title":"reference","url":"https://example.com/docs","content":"excerpt"}]});
+    let (url, worker) = mock(vec![(200, rows.clone()), (200, rows)]);
+    let with_key = connection(SearchProvider::Searxng, 1, "fake-gateway-key");
+    let without_key = connection(SearchProvider::Searxng, 2, "");
+    let mut session = SearchSession::default();
+    session.search_connection_at(Some(&with_key), &json!({"query":"same query"}), &url).await.unwrap();
+    let result = session.search_connection_at(Some(&without_key), &json!({"query":"same query"}), &url).await.unwrap();
+    assert_eq!(result["cached"], false);
+    let requests = worker.join().unwrap();
+    assert!(requests[0].to_ascii_lowercase().contains("authorization: bearer fake-gateway-key"));
+    assert!(!requests[1].to_ascii_lowercase().contains("authorization:"));
+    assert!(!result.to_string().contains("fake-gateway-key"));
+}
+#[tokio::test]
+async fn searxng_403_explains_json_format_or_gateway_without_echoing_body() {
+    let (url, worker) = mock(vec![(403, json!({"error":"PRIVATE_UPSTREAM_BODY"}))]);
+    let config = connection(SearchProvider::Searxng, 1, "");
+    let error = SearchSession::default().search_connection_at(Some(&config), &json!({"query":"query"}), &url).await.unwrap_err();
+    assert!(error.contains("format=json"));
+    assert!(!error.contains("PRIVATE_UPSTREAM_BODY"));
+    assert_eq!(worker.join().unwrap().len(), 1);
+}
+#[test]
+fn searxng_results_remain_bounded_and_filter_private_source_links() {
+    let mut rows = vec![json!({"title":"private","url":"https://127.0.0.1/private","content":"no"})];
+    rows.extend((0..8).map(|n| json!({"title":"t".repeat(500),"url":format!("https://example.com/{n}"),"content":"c".repeat(5000)})));
+    let output = normalize_provider(json!({"results":rows}), "query", SearchProvider::Searxng).unwrap();
+    assert_eq!(output["results"].as_array().unwrap().len(), 5);
+    assert!(!output.to_string().contains("127.0.0.1"));
+    assert!(output["results"][0]["summary"].as_str().unwrap().len() <= 800);
+}
+
+#[tokio::test]
+async fn personal_budget_one_stops_new_calls_but_cache_does_not_spend_budget() {
+    let (url, worker) = mock(vec![(200, deepseek_result("first"))]);
+    let config = connection(SearchProvider::Deepseek, 1, "fake-key");
+    let mut session = SearchSession::default(); session.set_max_calls(1);
+    session.search_connection_at(Some(&config), &json!({"query":"first"}), &url).await.unwrap();
+    assert_eq!(session.search_connection_at(Some(&config), &json!({"query":"first"}), &url).await.unwrap()["cached"], true);
+    assert!(session.search_connection_at(Some(&config), &json!({"query":"second"}), &url).await.is_err());
+    assert_eq!(session.attempts(), 1);
+    assert_eq!(session.metadata()["configuredLimit"], 1);
+    assert_eq!(session.metadata()["remainingAttempts"], 0);
+    assert_eq!(worker.join().unwrap().len(), 1);
+}
+#[tokio::test]
+async fn zero_budget_means_no_separate_search_limit_and_changes_take_effect() {
+    let (url, worker) = mock(vec![(401, json!({"error":"static only"})); 5]);
+    let config = connection(SearchProvider::Deepseek, 1, "fake-key");
+    let mut session = SearchSession::default(); session.set_max_calls(0);
+    for _ in 0..4 { assert!(session.search_connection_at(Some(&config), &json!({"query":"query"}), &url).await.is_err()); }
+    assert_eq!(session.attempts(), 4);
+    assert!(session.metadata()["remainingAttempts"].is_null());
+    session.set_max_calls(1);
+    assert!(session.search_connection_at(Some(&config), &json!({"query":"query"}), &url).await.unwrap_err().contains("你设置"));
+    assert_eq!(session.attempts(), 4);
+    session.set_max_calls(5);
+    assert!(session.search_connection_at(Some(&config), &json!({"query":"query"}), &url).await.is_err());
+    assert_eq!(session.attempts(), 5);
+    assert_eq!(worker.join().unwrap().len(), 5);
 }

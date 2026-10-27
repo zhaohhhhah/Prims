@@ -11,6 +11,7 @@ name = "scribe-server"
 path = "src/main.rs"
 
 [dependencies]
+html2text = "=0.17.4"
 gray_matter = "=0.3.2"
 flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
 zip = { version = "=2.4.2", default-features = false, features = ["deflate-flate2", "flate2"] }

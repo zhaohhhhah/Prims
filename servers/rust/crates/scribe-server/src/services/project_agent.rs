@@ -147,6 +147,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
         if !preferences.search_enabled{round_results.push(json!({"toolCall":call,"toolResult":{"error":"公开搜索已关闭"}}));continue;}
         let config=ai.prepare_agent_request(user,input.clone()).await.map_err(AIStreamStartError::into_api_error)?;
         emit(&tx,json!({"status":"正在查找公开参考资料…"})).await?;
+        let max_calls=ai.search_max_calls(user).await?;search_session.set_max_calls(max_calls);
         let selected=ai.resolve_search(user,&config).await;
         let found=match selected{Ok(selected)=>tokio::select!{_=tx.closed()=>return Ok(()),result=search_session.search_selected(selected.as_ref(),call)=>result},Err(_)=>Err("[search_config] 独立搜索设置暂不可用，请检查配置")};
         match found{Ok(value)=>{input.options.as_mut().unwrap().insert("projectSearchSources".into(),search_session.metadata().to_string());let count=value.get("results").and_then(Value::as_array).map_or(0,Vec::len);emit(&tx,json!({"status":if value.get("cached")==Some(&Value::Bool(true)){format!("复用已有{}条公开参考来源",count)}else{format!("已找到{}条公开参考来源",count)}})).await?;Ok(value)},Err(message)=>Err(ApiError::validation(message))}

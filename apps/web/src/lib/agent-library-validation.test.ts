@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AgentValidationError, MEMORY_MAX_CHARACTERS, readSkillFile, refreshMemoryDraft, SEARCH_ENDPOINTS, SKILL_EXAMPLE, SKILL_MAX_BYTES, validateMemoryContent, validateSearchConfig, validateSkillContent } from './agent-library-validation';
+import { AgentValidationError, MEMORY_MAX_CHARACTERS, readSkillFile, refreshMemoryDraft, SEARCH_ENDPOINTS, SKILL_EXAMPLE, SKILL_MAX_BYTES, validateMemoryContent, validateSearchConfig, validateSearchLimit, validateSkillContent } from './agent-library-validation';
 describe('Agent library text boundaries and memory CAS draft preservation', () => {
   it('accepts the example YAML frontmatter and never interprets skill instructions', () => {
     expect(validateSkillContent(SKILL_EXAMPLE)).toBe(SKILL_EXAMPLE);
@@ -54,5 +54,32 @@ describe('independent search configuration', () => {
     for (const endpoint of ['api.example.test/search', 'http://api.example.test/search', 'https://name:pass@api.example.test/search', 'https://api.example.test/search#fragment', 'https://api.example.test/search?api_key=secret', 'https://api.example.test/search?region=global']) expect(() => validateSearchConfig('doubao', endpoint, 'new-key', null)).toThrow('searchEndpointInvalid');
     expect(validateSearchConfig('doubao', 'https://search.example.test/custom/full/path', 'new-key', null).endpoint).toBe('https://search.example.test/custom/full/path');
     expect(validateSearchConfig('doubao', '', 'new-key', null).endpoint).toBe(SEARCH_ENDPOINTS.doubao);
+  });
+});
+
+describe('SearXNG endpoint and optional gateway key', () => {
+  const endpoint = 'https://search.example.com/search';
+  it('requires an own endpoint, but not a key, for SearXNG', () => {
+    expect(SEARCH_ENDPOINTS.searxng).toBe('');
+    expect(() => validateSearchConfig('searxng', '', '', null)).toThrow('searchEndpointInvalid');
+    expect(validateSearchConfig('searxng', endpoint, '', null)).toEqual({ provider: 'searxng', endpoint, apiKey: '' });
+  });
+  it('preserves a same-target gateway key or explicitly removes it', () => {
+    const saved = { provider: 'searxng', endpoint, hasApiKey: true };
+    expect(validateSearchConfig('searxng', endpoint, '', saved)).not.toHaveProperty('clearApiKey');
+    expect(validateSearchConfig('searxng', endpoint, '', saved, true)).toHaveProperty('clearApiKey', true);
+    expect(() => validateSearchConfig('searxng', endpoint, 'new', saved, true)).toThrow('searchKeyInvalid');
+    expect(() => validateSearchConfig('deepseek', SEARCH_ENDPOINTS.deepseek, '', saved, true)).toThrow('searchKeyInvalid');
+  });
+  it('does not transmit a previous provider key when switching to unauthenticated SearXNG', () => {
+    expect(validateSearchConfig('searxng', endpoint, '', { provider: 'doubao', endpoint: SEARCH_ENDPOINTS.doubao, hasApiKey: true }).apiKey).toBe('');
+    expect(() => validateSearchConfig('searxng', endpoint, 'bad\nkey', null)).toThrow('searchKeyInvalid');
+  });
+});
+
+describe('personal search budget', () => {
+  it('allows zero, the old default, and the full u32 range', () => {
+    for (const value of ['0', '1', '3', '4294967295']) expect(validateSearchLimit(value)).toBe(Number(value));
+    for (const value of ['', '-1', '1.5', 'Infinity', '4294967296', '1e2']) expect(() => validateSearchLimit(value)).toThrow('searchLimitInvalid');
   });
 });

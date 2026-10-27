@@ -1,6 +1,6 @@
 export const SKILL_MAX_BYTES = 48 * 1024;
 export const MEMORY_MAX_CHARACTERS = 4000;
-export type AgentValidationCode = 'skillTooLarge' | 'skillFormat' | 'skillFileType' | 'skillReadFailed' | 'memoryTooLong' | 'searchProviderRequired' | 'searchEndpointInvalid' | 'searchKeyRequired';
+export type AgentValidationCode = 'skillTooLarge' | 'skillFormat' | 'skillFileType' | 'skillReadFailed' | 'memoryTooLong' | 'searchProviderRequired' | 'searchEndpointInvalid' | 'searchKeyRequired' | 'searchKeyInvalid' | 'searchLimitInvalid';
 export class AgentValidationError extends Error {
   constructor(readonly code: AgentValidationCode) { super(code); }
 }
@@ -28,20 +28,24 @@ export function refreshMemoryDraft(current: MemoryDraftState | undefined, latest
   if (current && latest.revision < current.revision) return current;
   return { content: keepDraft && current ? current.content : latest.content, savedContent: latest.content, revision: latest.revision, conflict: false };
 }
-export type SearchProvider = 'doubao' | 'deepseek';
+export type SearchProvider = 'doubao' | 'deepseek' | 'searxng';
 export const SEARCH_ENDPOINTS: Record<SearchProvider, string> = {
   doubao: 'https://open.feedcoopapi.com/search_api/web_search',
   deepseek: 'https://api.deepseek.com/v1/tools/search',
+  searxng: '',
 };
-export function validateSearchConfig(provider: string, endpoint: string, apiKey: string, saved: { provider: string; endpoint: string; hasApiKey: boolean } | null): { provider: SearchProvider; endpoint: string; apiKey: string } {
-  if (provider !== 'doubao' && provider !== 'deepseek') throw new AgentValidationError('searchProviderRequired');
+export function validateSearchConfig(provider: string, endpoint: string, apiKey: string, saved: { provider: string; endpoint: string; hasApiKey: boolean } | null, clearApiKey = false): { provider: SearchProvider; endpoint: string; apiKey: string; clearApiKey?: boolean } {
+  if (provider !== 'doubao' && provider !== 'deepseek' && provider !== 'searxng') throw new AgentValidationError('searchProviderRequired');
   const address = endpoint.trim() || SEARCH_ENDPOINTS[provider];
   let parsed: URL;
   try { parsed = new URL(address); } catch { throw new AgentValidationError('searchEndpointInvalid'); }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash || /[\x00-\x20\x7f]/.test(address) || parsed.search) throw new AgentValidationError('searchEndpointInvalid');
+  if (address.length > 2048 || parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.hash || /[\x00-\x20\x7f]/.test(address) || parsed.search) throw new AgentValidationError('searchEndpointInvalid');
+  if (apiKey.length > 16384 || /[\x00-\x1f\x7f]/.test(apiKey)) throw new AgentValidationError('searchKeyInvalid');
   const key = apiKey.trim();
-  if (!key && !(saved?.hasApiKey && saved.provider === provider && saved.endpoint === address)) throw new AgentValidationError('searchKeyRequired');
-  return { provider, endpoint: address, apiKey: key };
+  if (clearApiKey && (provider !== 'searxng' || key)) throw new AgentValidationError('searchKeyInvalid');
+  const canonical = parsed.toString();
+  if (provider !== 'searxng' && !key && !(saved?.hasApiKey && saved.provider === provider && saved.endpoint === canonical)) throw new AgentValidationError('searchKeyRequired');
+  return { provider, endpoint: canonical, apiKey: key, ...(clearApiKey ? { clearApiKey: true } : {}) };
 }
 export const SKILL_EXAMPLE = `---
 name: academic-writing
@@ -54,3 +58,10 @@ Read the relevant project text before suggesting edits.
 Preserve citations, equations, labels and LaTeX commands.
 Explain substantial changes briefly. Submit edits for the author's review.
 `;
+
+export function validateSearchLimit(value: string): number {
+  if (!/^\d+$/.test(value.trim())) throw new AgentValidationError('searchLimitInvalid');
+  const limit = Number(value);
+  if (!Number.isSafeInteger(limit) || limit < 0 || limit > 4294967295) throw new AgentValidationError('searchLimitInvalid');
+  return limit;
+}

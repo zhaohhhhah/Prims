@@ -1,4 +1,4 @@
-/* Project chrome only. Editor content, panel geometry and operations stay immediate. */
+/* Project chrome. Programmatic panel geometry is animated by PanelMotion; drags stay immediate. */
 .prims-editor-toolbar :where(button),
 .prims-editor-preview-tabs :where(button),
 .prims-project-sidebar-header :where(button) {
@@ -43,11 +43,8 @@
 }
 
 /* Only newly visible chrome fades. No keyed wrappers around the live editor. */
-.prims-editor-inspector > *,
-.prims-editor-preview[data-collapsed="false"],
 .prims-editor-preview-body > *,
-.prims-editor-assistant-host,
-.prims-project-sidebar:not([data-collapsed="true"]) > * {
+.prims-editor-assistant-host {
   animation: prims-editor-surface-in 160ms ease-out;
 }
 
@@ -149,4 +146,23 @@
   .prims-selection-popup .animate-spin {
     animation: none !important;
   }
+}
+
+/* Keep the stable inspector panel registered at size zero. Hide its resize
+   handle only after exit content has been released; the editor never remounts. */
+.prims-editor-workspace [data-panel-resize-handle-id]:has(+ .prims-editor-inspector[data-inspector-visible="false"]) {
+  display: none;
+}
+.prims-inspector-content[data-closing="true"] { pointer-events: none; }
+.prims-inspector-content { overflow: hidden; }
+/* Mobile project drawers differ from menus: a small directional entry, no bounce. */
+.prims-editor-sheet[data-state="open"] { animation: prims-editor-drawer-in 200ms cubic-bezier(0.2, 0.65, 0.3, 1); }
+.prims-editor-sheet[data-state="closed"] { animation: prims-editor-drawer-out 140ms ease-out; }
+@keyframes prims-editor-drawer-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes prims-editor-drawer-out {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(-6px); }
 }

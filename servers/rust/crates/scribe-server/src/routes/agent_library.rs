@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
             get(memory).put(set_memory),
         )
         .route("/api/agent/capabilities", get(capabilities))
+        .route("/api/agent/search-options",axum::routing::put(set_search_options))
         .route("/api/agent/search-config",get(search_config).put(set_search_config).delete(delete_search_config))
         .route(
             "/api/projects/:project_id/agent/check",
@@ -177,8 +178,11 @@ fn search_service(state:&AppState)->ApiResult<crate::services::search_connection
 async fn search_state(state:&AppState,user:scribe_shared::UserId)->ApiResult<Value>{
  let config=search_service(state)?.public(user).await?;
  let fallback=if let (Some(db),Some(crypto))=(state.db(),state.inner.ai_crypto.clone()){crate::services::ai::AIService::new(db.pool().clone(),crypto).official_search_available(user).await.unwrap_or(false)}else{false};
- Ok(json!({"config":config,"fallback":{"provider":"deepseek","available":fallback}}))
+ let max_calls=search_service(state)?.max_calls(user).await?;
+ Ok(json!({"limits":{"maxCallsPerRequest":max_calls},"config":config,"fallback":{"provider":"deepseek","available":fallback}}))
 }
 async fn search_config(State(state):State<AppState>,Authenticated(user):Authenticated)->ApiResult<Json<Value>>{Ok(Json(search_state(&state,user.id).await?))}
 async fn set_search_config(State(state):State<AppState>,Authenticated(user):Authenticated,Json(input):Json<crate::services::search_connections::SearchConfigInput>)->ApiResult<Json<Value>>{search_service(&state)?.save(user.id,input).await?;Ok(Json(search_state(&state,user.id).await?))}
 async fn delete_search_config(State(state):State<AppState>,Authenticated(user):Authenticated)->ApiResult<Json<Value>>{search_service(&state)?.delete(user.id).await?;Ok(Json(json!({"ok":true})))}
+
+async fn set_search_options(State(state):State<AppState>,Authenticated(user):Authenticated,Json(input):Json<crate::services::search_connections::SearchOptionsInput>)->ApiResult<Json<Value>>{search_service(&state)?.set_options(user.id,input).await?;Ok(Json(search_state(&state,user.id).await?))}

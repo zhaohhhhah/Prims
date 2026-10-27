@@ -34,10 +34,10 @@ import {
   Sigma,
   Sparkles,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { type ImperativePanelHandle, Panel, PanelGroup } from 'react-resizable-panels';
+import { type ImperativePanelHandle, type ImperativePanelGroupHandle, Panel, PanelGroup } from 'react-resizable-panels';
 import { toast } from 'sonner';
 
 import type { InlineAssistantController } from '@scribe/editor';
@@ -63,6 +63,8 @@ import { VersionHistory } from '../../components/VersionHistory/VersionHistory';
 import { VoiceControls } from '../../components/Voice/VoiceControls';
 import { useCompileSession } from '../../hooks/useCompileSession';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { usePanelMotion } from '../../hooks/usePanelMotion';
+import { previewPanelLayout } from '../../lib/panel-motion';
 import { lookup, lookupReverse, useSyncTeX } from '../../hooks/useSyncTeX';
 import { useYjsDoc } from '../../hooks/useYjsDoc';
 import { api, ApiError } from '../../lib/api';
@@ -81,6 +83,7 @@ import './editor-motion.css';
 import type { AutocompleteSources, HoverPreviewSources } from '@scribe/editor';
 
 interface ProjectWorkspaceProps {
+  readonly assistantOnly?: boolean;
   readonly project: Project;
   readonly files: readonly ProjectFile[];
   readonly selectedFile: ProjectFile | null;
@@ -179,6 +182,7 @@ function colorForUser(userId: string): string {
 }
 
 export function ProjectWorkspace({
+  assistantOnly = false,
   project,
   files,
   selectedFile,
@@ -198,17 +202,34 @@ export function ProjectWorkspace({
   const [cursorLine, setCursorLine] = useState<number>(1);
   const [cursorCol, setCursorCol] = useState<number>(1);
   const [rightPanel, setRightPanel] = useState<RightPanelId>(null);
+  const [renderedRightPanel, setRenderedRightPanel] = useState<RightPanelId>(null);
+  const rightPanelRef = useRef<RightPanelId>(null);
+  const inspectorPanelRef = useRef<ImperativePanelHandle>(null);
+  const inspectorSizeRef = useRef(25);
   const [assistantBinding,setAssistantBinding]=useState<{controller:InlineAssistantController;filePath:string}|null>(null);
   const assistantController=assistantBinding&&assistantBinding.filePath===selectedFile?.path?assistantBinding.controller:null;
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
+  const workspacePanelsRef = useRef<ImperativePanelGroupHandle>(null);
+  const previewSizeRef = useRef(50);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const animatePanels = usePanelMotion(workspaceRef);
   const [previewCollapsed, setPreviewCollapsed] = useState(false);
-  const togglePreview = useCallback(() => {
-    const panel = previewPanelRef.current;
-    if (panel === null) return;
-    if (panel.isCollapsed()) panel.expand();
-    else panel.collapse();
+  const setPreviewOpen = useCallback((open: boolean) => {
+    const group = workspacePanelsRef.current;
+    if (!group) return;
+    const current = group.getLayout();
+    if (!open && (current[1] ?? 0) > 0) previewSizeRef.current = current[1]!;
+    const next = previewPanelLayout(current, open, previewSizeRef.current);
+    if (next) group.setLayout(next);
   }, []);
+  const togglePreview = useCallback(() => {
+    const current = workspacePanelsRef.current?.getLayout();
+    if (!current || current.length !== 3) return;
+    const closing = (current[1] ?? 0) > 0;
+    animatePanels(() => setPreviewOpen(!closing),
+      { phase: closing ? 'close' : 'open', surface: '.prims-editor-preview-surface', edge: 'right' });
+  }, [animatePanels, setPreviewOpen]);
   // Auto-collapse the preview at mobile widths. Two columns at <=
   // 768px crushes both panels below usable width; folding the preview
   // gives the editor the full viewport. User can toggle it back on via
@@ -219,7 +240,7 @@ export function ProjectWorkspace({
   const lastNarrowRef = useRef<boolean>(isNarrowViewport);
   useEffect(() => {
     if (isNarrowViewport && !lastNarrowRef.current) {
-      previewPanelRef.current?.collapse();
+      setPreviewOpen(false);
     }
     lastNarrowRef.current = isNarrowViewport;
   }, [isNarrowViewport]);
@@ -231,7 +252,7 @@ export function ProjectWorkspace({
     if (isNarrowViewport) {
       // Defer one frame so the panel is mounted with its handle ready.
       const id = window.setTimeout(() => {
-        previewPanelRef.current?.collapse();
+        setPreviewOpen(false);
       }, 0);
       return () => {
         window.clearTimeout(id);
@@ -291,18 +312,36 @@ export function ProjectWorkspace({
     };
   }, [project, projectId]);
 
+  useLayoutEffect(() => { if (rightPanelRef.current === null) inspectorPanelRef.current?.collapse(); }, []);
+  function changeRightPanel(next: RightPanelId) {
+    const previous = rightPanelRef.current;
+    rightPanelRef.current = next;
+    if (next !== null) {
+      animatePanels(() => {
+        setRightPanel(next); setRenderedRightPanel(next);
+        inspectorPanelRef.current?.resize(inspectorSizeRef.current);
+      }, { phase: previous === null ? 'open' : 'switch', surface: '.prims-inspector-content', edge: 'right' });
+    } else {
+      animatePanels(() => { setRightPanel(null); inspectorPanelRef.current?.collapse(); },
+        { phase: 'close', surface: '.prims-inspector-content', edge: 'right',
+          after: () => { if (rightPanelRef.current === null) setRenderedRightPanel(null); } });
+    }
+  }
+  function closeRightPanel() { changeRightPanel(null); }
   function toggleRightPanel(id: NonNullable<RightPanelId>) {
-    setRightPanel((current) => (current === id ? null : id));
+    changeRightPanel(rightPanelRef.current === id ? null : id);
   }
   const compileSession = useCompileSession(projectId);
   const synctex = useSyncTeX(compileSession.synctexUrl);
   const editorRef = useRef<LatexEditorImperativeHandle>(null);
-  const workspaceRef=useRef<HTMLDivElement>(null);
   const [workspaceWidth,setWorkspaceWidth]=useState(window.innerWidth);
+  const [assistantAway,setAssistantAway]=useState(false);
+  const [assistantTabHost,setAssistantTabHost]=useState<HTMLDivElement|null>(null);
   const [assistantRightHost,setAssistantRightHost]=useState<HTMLDivElement|null>(null);
   const [assistantBottomHost,setAssistantBottomHost]=useState<HTMLDivElement|null>(null);
   const {layout:assistantLayout,updateLayout:updateAssistantLayout,viewport:assistantViewport}=useAssistantLayout(authUser?.id);
-  const assistantMode=effectiveAssistantMode(assistantLayout,workspaceWidth);
+  const assistantMode=assistantOnly?'right':effectiveAssistantMode(assistantLayout,workspaceWidth);
+  const shownAssistantLayout=assistantOnly?{...assistantLayout,mode:'right' as const,visible:true}:{...assistantLayout,visible:assistantLayout.visible&&!assistantAway};
   const resizeCleanup=useRef<(()=>void)|null>(null);
   const [compileAnchor,setCompileAnchor]=useState<{projectId:string;filePath:string;line:number}|null>(null);
   useEffect(()=>{const element=workspaceRef.current;if(!element)return;const observer=new ResizeObserver(()=>setWorkspaceWidth(element.clientWidth));setWorkspaceWidth(element.clientWidth);observer.observe(element);return()=>observer.disconnect();},[]);
@@ -330,7 +369,7 @@ export function ProjectWorkspace({
   // can intercept it — same trick Overleaf / VS-Code-Web use).
   useEffect(() => {
     function handler(e: KeyboardEvent) {
-      if (e.defaultPrevented) return;
+      if (assistantOnly || e.defaultPrevented) return;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
         e.preventDefault();
@@ -349,7 +388,7 @@ export function ProjectWorkspace({
     return () => {
       window.removeEventListener('keydown', handler);
     };
-  }, [projectId, selectedFile, onCloseFile]);
+  }, [assistantOnly, projectId, selectedFile, onCloseFile]);
 
   const openAIPalette = useCallback(() => {
     openProjectAssistant({projectId, dock:true});
@@ -1305,8 +1344,8 @@ export function ProjectWorkspace({
     return null;
   })();
 
-  const assistantBottomSlot=assistantLayout.visible&&assistantMode==='bottom'?<div data-testid="assistant-bottom-host" className="prims-editor-assistant-host relative min-h-0 shrink-0 border-t" style={{height:assistantLayout.bottomHeight}}><div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="调整助手高度" className="absolute -top-1 left-0 z-10 h-2 w-full cursor-row-resize" onPointerDown={event=>resizeAssistant('bottom',event)} onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();updateAssistantLayout({bottomHeight:assistantLayout.bottomHeight+(event.key==='ArrowUp'?20:-20)});}}}/><div ref={setAssistantBottomHost} className="h-full min-h-0"/></div>:null;
-  const assistantRightSlot=assistantLayout.visible&&assistantMode==='right'?<aside data-testid="assistant-right-host" className="prims-editor-assistant-host relative min-h-0 shrink-0 border-l" style={{width:assistantLayout.rightWidth}}><div role="separator" tabIndex={0} aria-orientation="vertical" aria-label="调整助手宽度" className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize" onPointerDown={event=>resizeAssistant('right',event)} onKeyDown={event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();updateAssistantLayout({rightWidth:assistantLayout.rightWidth+(event.key==='ArrowLeft'?20:-20)});}}}/><div ref={setAssistantRightHost} className="h-full min-h-0"/></aside>:null;
+  const assistantBottomSlot=!assistantOnly&&!assistantAway&&assistantLayout.visible&&assistantMode==='bottom'?<div data-testid="assistant-bottom-host" className="prims-editor-assistant-host relative min-h-0 shrink-0 border-t" style={{height:assistantLayout.bottomHeight}}><div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="调整助手高度" className="absolute -top-1 left-0 z-10 h-2 w-full cursor-row-resize" onPointerDown={event=>resizeAssistant('bottom',event)} onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();updateAssistantLayout({bottomHeight:assistantLayout.bottomHeight+(event.key==='ArrowUp'?20:-20)});}}}/><div ref={setAssistantBottomHost} className="h-full min-h-0"/></div>:null;
+  const assistantRightSlot=!assistantOnly&&!assistantAway&&assistantLayout.visible&&assistantMode==='right'?<aside data-testid="assistant-right-host" className="prims-editor-assistant-host relative min-h-0 shrink-0 border-l" style={{width:assistantLayout.rightWidth}}><div role="separator" tabIndex={0} aria-orientation="vertical" aria-label="调整助手宽度" className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize" onPointerDown={event=>resizeAssistant('right',event)} onKeyDown={event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();updateAssistantLayout({rightWidth:assistantLayout.rightWidth+(event.key==='ArrowLeft'?20:-20)});}}}/><div ref={setAssistantRightHost} className="h-full min-h-0"/></aside>:null;
 
   const editorPanel = (
     <div className="flex h-full flex-col">
@@ -1316,8 +1355,8 @@ export function ProjectWorkspace({
         onSelect={onSelectFile}
         onClose={onCloseFile}
       />
-      <div className="prims-editor-toolbar flex items-center justify-between gap-2 border-b bg-background px-3 py-1.5">
-        <div className="flex min-w-0 items-center gap-2">
+      <div className="prims-editor-toolbar flex min-w-0 items-center justify-between gap-2 border-b bg-background px-3 py-1.5">
+        <div className="flex min-w-0 max-w-[45%] shrink-0 items-center gap-2 overflow-hidden">
           {sidebarCollapsed && onExpandSidebar !== undefined ? (
             <Button
               variant="ghost"
@@ -1359,7 +1398,8 @@ export function ProjectWorkspace({
             </span>
           ) : null}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="ml-auto min-w-0 flex-1 overflow-x-auto overscroll-x-contain [scrollbar-width:thin]" data-testid="editor-toolbar-actions">
+        <div className="ml-auto flex w-max shrink-0 items-center gap-1.5">
           <PresenceAvatars peers={yjs.peers} localUser={localUser} />
           <div className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
           <VoiceControls projectId={projectId} />
@@ -1466,6 +1506,7 @@ export function ProjectWorkspace({
             <span className="hidden sm:inline">{t('compile.runButton')}</span>
           </Button>
         </div>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
         {selectedFile === null ? (
@@ -1539,8 +1580,8 @@ export function ProjectWorkspace({
 
   return (
     <div ref={workspaceRef} className="prims-editor-workspace flex h-full flex-col">
-      <div className="flex min-h-0 min-w-0 flex-1">
-      <PanelGroup direction="horizontal" autoSaveId="scribe:workspace" className="min-h-0 min-w-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1" style={assistantOnly?{display:'none'}:undefined} aria-hidden={assistantOnly||undefined}>
+      <PanelGroup ref={workspacePanelsRef} direction="horizontal" autoSaveId="scribe:workspace" className="min-h-0 min-w-0 flex-1">
         <Panel defaultSize={50} minSize={20}>
           <ErrorBoundary scope="editor">{editorPanel}</ErrorBoundary>
         </Panel>
@@ -1562,11 +1603,13 @@ export function ProjectWorkspace({
         >
           <ErrorBoundary scope="preview">{previewPanel}</ErrorBoundary>
         </Panel>
-        {rightPanel !== null ? (
-          <>
-            <Splitter orientation="vertical" />
-            <Panel className="prims-editor-inspector" defaultSize={25} minSize={15} maxSize={45}>
-              {rightPanel === 'outline' ? (
+        <Splitter orientation="vertical" />
+        <Panel ref={inspectorPanelRef} className="prims-editor-inspector" data-inspector-visible={renderedRightPanel !== null}
+          defaultSize={0} minSize={15} maxSize={45} collapsible collapsedSize={0}
+          onResize={size => { if (size > 0) inspectorSizeRef.current = size; }}
+          onCollapse={() => { if (inspectorPanelRef.current?.isCollapsed() && rightPanelRef.current !== null) { rightPanelRef.current = null; setRightPanel(null); setRenderedRightPanel(null); } }}>
+          <div className="prims-inspector-content h-full min-w-0" data-closing={rightPanel === null && renderedRightPanel !== null} aria-hidden={rightPanel === null}>
+              {renderedRightPanel === 'outline' ? (
                 <OutlinePanel
                   contents={outlineContents}
                   mainFile={project.mainFile}
@@ -1574,11 +1617,11 @@ export function ProjectWorkspace({
                     handleJumpTo(filePath, line);
                   }}
                   onClose={() => {
-                    setRightPanel(null);
+                    closeRightPanel();
                   }}
                 />
               ) : null}
-              {rightPanel === 'review' ? (
+              {renderedRightPanel === 'review' ? (
                 <ReviewPanel
                   projectId={projectId}
                   files={files}
@@ -1589,7 +1632,7 @@ export function ProjectWorkspace({
                     handleJumpToRange(filePath, from, to, snippet);
                   }}
                   onClose={() => {
-                    setRightPanel(null);
+                    closeRightPanel();
                   }}
                   currentUserId={authUser?.id ?? null}
                   isProjectOwner={myRole === 'owner'}
@@ -1606,17 +1649,17 @@ export function ProjectWorkspace({
                   }}
                 />
               ) : null}
-              {rightPanel === 'history' ? (
+              {renderedRightPanel === 'history' ? (
                 <VersionHistory
                   projectId={projectId}
                   readOnly={editorReadOnly}
                   beforeReview={flushAssistantEditor}
                   onClose={() => {
-                    setRightPanel(null);
+                    closeRightPanel();
                   }}
                 />
               ) : null}
-              {rightPanel === 'bibliography' ? (
+              {renderedRightPanel === 'bibliography' ? (
                 <BibliographyPanel
                   projectId={projectId}
                   files={files}
@@ -1625,11 +1668,11 @@ export function ProjectWorkspace({
                     editorRef.current?.insertAtCursor(`\\cite{${key}}`);
                   }}
                   onClose={() => {
-                    setRightPanel(null);
+                    closeRightPanel();
                   }}
                 />
               ) : null}
-              {rightPanel === 'citations' ? (
+              {renderedRightPanel === 'citations' ? (
                 <CitationLookup
                   projectId={projectId}
                   files={files}
@@ -1637,11 +1680,11 @@ export function ProjectWorkspace({
                     editorRef.current?.insertAtCursor(`\\cite{${key}}`);
                   }}
                   onClose={() => {
-                    setRightPanel(null);
+                    closeRightPanel();
                   }}
                 />
               ) : null}
-              {rightPanel === 'find' ? (
+              {renderedRightPanel === 'find' ? (
                 <SearchPanel
                   projectId={projectId}
                   files={files}
@@ -1651,33 +1694,34 @@ export function ProjectWorkspace({
                     handleJumpTo(file.path, line);
                   }}
                   onClose={() => {
-                    setRightPanel(null);
+                    closeRightPanel();
                   }}
                 />
               ) : null}
-              {rightPanel === 'math' ? (
+              {renderedRightPanel === 'math' ? (
                 <MathPalette
                   onInsert={(latex) => {
                     editorRef.current?.insertAtCursor(latex);
                   }}
                   onClose={() => {
-                    setRightPanel(null);
+                    closeRightPanel();
                   }}
                 />
               ) : null}
-            </Panel>
-          </>
-        ) : null}
+
+          </div>
+        </Panel>
       </PanelGroup>
       {assistantRightSlot}
       </div>
-      <InlineAssistant controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} layout={assistantLayout} effectiveMode={assistantMode} onLayoutChange={updateAssistantLayout} viewport={assistantViewport} rightHost={assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} />
+      {assistantOnly&&<div ref={setAssistantTabHost} className="min-h-0 flex-1" data-testid="assistant-tab-host"/>}
+      <InlineAssistant standalone={assistantOnly} fileId={selectedFile?.id} onDetachedChange={setAssistantAway} controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} layout={shownAssistantLayout} effectiveMode={assistantMode} onLayoutChange={assistantOnly?()=>{}:updateAssistantLayout} viewport={assistantViewport} rightHost={assistantOnly?assistantTabHost:assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} />
       <CommandPalette
         open={cmdPaletteOpen}
         onOpenChange={setCmdPaletteOpen}
         commands={commandList}
       />
-      <StatusBar
+      {!assistantOnly&&<StatusBar
         path={selectedFile?.path ?? null}
         line={cursorLine}
         column={cursorCol}
@@ -1688,7 +1732,7 @@ export function ProjectWorkspace({
         peerCount={yjs.peers.length}
         compileStatus={compileStatus}
         role={myRole}
-      />
+      />}
       {syncConflicts.length > 0 ? (
         <SyncConflictModal
           projectId={projectId}

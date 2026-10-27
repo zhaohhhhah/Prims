@@ -19,13 +19,14 @@ import { ChevronsLeft, Download, Loader2, Settings as SettingsIcon } from 'lucid
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type ImperativePanelHandle, Panel, PanelGroup } from 'react-resizable-panels';
-import { useParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 
 import { Splitter } from '../../components/Layout/Splitter';
 import { PageError } from '../../components/PageError/PageError';
 import { ExportMenuItems } from '../../components/ProjectActions/ExportMenuItems';
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { usePanelMotion } from '../../hooks/usePanelMotion';
 import { api, type ApiError } from '../../lib/api';
 import { type LocalFile, desktopDb } from '../../lib/desktopDb';
 import { isTauri } from '../../lib/tauri';
@@ -55,6 +56,8 @@ function localFileToProjectFile(f: LocalFile): ProjectFile {
 
 export function ProjectPage() {
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
+  const assistantOnly = searchParams.get('assistant') === 'tab';
   const { projectId: rawId } = useParams<{ projectId: string }>();
   const projectId = rawId !== undefined ? projectIdSchema.parse(rawId) : null;
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -79,6 +82,8 @@ export function ProjectPage() {
   });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const sidebarRef = useRef<ImperativePanelHandle>(null);
+  const pageHost = useRef<HTMLDivElement>(null);
+  const animateSidebar = usePanelMotion(pageHost);
   // Below this width the resizable sidebar steals too much of the
   // editor's real estate (18% of 500px is 90px — unusable). Hide the
   // panel and surface the same content through a slide-in drawer so
@@ -142,6 +147,7 @@ export function ProjectPage() {
     const files = filesQuery.data ?? [];
     if (files.length === 0) return;
     const mainFile =
+      files.find((f) => f.id === searchParams.get('file') || f.path === searchParams.get('filePath')) ??
       files.find((f) => f.path === project?.mainFile) ??
       files.find((f) => f.path.endsWith('.tex')) ??
       files[0];
@@ -225,11 +231,9 @@ export function ProjectPage() {
     }
     const panel = sidebarRef.current;
     if (panel === null) return;
-    if (panel.isCollapsed()) {
-      panel.expand();
-    } else {
-      panel.collapse();
-    }
+    const closing = !panel.isCollapsed();
+    animateSidebar(() => { if (closing) panel.collapse(); else panel.expand(); },
+      { phase: closing ? 'close' : 'open', surface: '.prims-project-sidebar', edge: 'left' });
   }
 
   if (isLoading) {
@@ -335,9 +339,9 @@ export function ProjectPage() {
   );
 
   return (
-    <div className="prims-project-page h-full">
+    <div ref={pageHost} className="prims-project-page h-full">
       <PanelGroup direction="horizontal" autoSaveId="scribe:project-layout" className="h-full">
-        {isMobileLayout ? null : (
+        {isMobileLayout || assistantOnly ? null : (
           <>
             <Panel
               ref={sidebarRef}
@@ -363,6 +367,7 @@ export function ProjectPage() {
         )}
         <Panel>
           <ProjectWorkspace
+            assistantOnly={assistantOnly}
             project={project}
             files={files}
             selectedFile={selectedFile}
@@ -389,7 +394,7 @@ export function ProjectPage() {
       {/* Mobile drawer for the sidebar. Mounted regardless of viewport
           state (cheap when closed) so a window resize while open
           doesn't strand it. */}
-      <Sheet open={isMobileLayout && mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
+      <Sheet open={!assistantOnly && isMobileLayout && mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
         <SheetContent side="left" hideCloseButton className="prims-editor-sheet flex w-72 max-w-[85vw] flex-col p-0">
           {sidebarHeader}
           {sidebarFileTree}

@@ -35,3 +35,5 @@ pub mod dashboard_summary;
 pub mod avatars;
 
 pub mod agent_library;
+
+pub mod skill_import;

@@ -389,6 +389,7 @@ fn build_router(
         .merge(routes::compiles::router())
         .merge(routes::ai::router())
         .merge(routes::agent_library::router())
+        .merge(routes::skill_import::router())
         .merge(routes::project_actions::router())
         .merge(routes::exports::router())
         .merge(routes::archives::router())
@@ -460,4 +461,3 @@ fn build_router(
         ))
         .layer(TraceLayer::new_for_http())
 }
-
