@@ -1,9 +1,9 @@
 import {appearancePalette,APPEARANCE_SERIES,BOOK_TITLE_STYLES,BRAND_STYLES,CODE_FONTS,ICON_STYLES,UI_FONTS,type AppearanceSeries} from './appearance-catalog';
 export interface AppearancePreferences {lightPalette:string;darkPalette:string;paletteSeries:AppearanceSeries;uiFont:(typeof UI_FONTS)[number];codeFont:(typeof CODE_FONTS)[number];brandStyle:(typeof BRAND_STYLES)[number];bookTitleStyle:(typeof BOOK_TITLE_STYLES)[number];iconStyle:(typeof ICON_STYLES)[number];presetId:string|null}
-export const DEFAULT_APPEARANCE:AppearancePreferences={lightPalette:'classic-light',darkPalette:'classic-dark',paletteSeries:'original',uiFont:'inherit',codeFont:'inherit',brandStyle:'calligraphy',bookTitleStyle:'inherit',iconStyle:'system',presetId:null};
+export const DEFAULT_APPEARANCE:AppearancePreferences={lightPalette:'classic-light',darkPalette:'classic-dark',paletteSeries:'original',uiFont:'inherit',codeFont:'inherit',brandStyle:'calligraphy',bookTitleStyle:'handwritten',iconStyle:'system',presetId:null};
 export type AppearancePresetId='classic'|'mist'|'impression'|'celadon'|'indigo'|'nocturne';
 export interface AppearancePreset {id:AppearancePresetId;mode:'system'|'light'|'dark';preferences:Omit<AppearancePreferences,'presetId'>}
-const classic={...DEFAULT_APPEARANCE,brandStyle:'classic' as const};
+const classic={...DEFAULT_APPEARANCE};
 export const APPEARANCE_PRESETS:readonly AppearancePreset[]=[
  {id:'classic',mode:'system',preferences:{...classic}},
  {id:'mist',mode:'system',preferences:{...classic,lightPalette:'mist',darkPalette:'nocturne',brandStyle:'calligraphy',iconStyle:'soft'}},
@@ -17,7 +17,7 @@ export function normalizeAppearance(value:unknown):AppearancePreferences{const r
  lightPalette:typeof raw.lightPalette==='string'&&appearancePalette(raw.lightPalette)?.period==='light'?raw.lightPalette:DEFAULT_APPEARANCE.lightPalette,
  darkPalette:typeof raw.darkPalette==='string'&&appearancePalette(raw.darkPalette)?.period==='dark'?raw.darkPalette:DEFAULT_APPEARANCE.darkPalette,
  paletteSeries:choice(raw.paletteSeries,APPEARANCE_SERIES.map(series=>series.id),'original'),
- uiFont:choice(raw.uiFont,UI_FONTS,'inherit'),codeFont:choice(raw.codeFont,CODE_FONTS,'inherit'),brandStyle:choice(raw.brandStyle,BRAND_STYLES,DEFAULT_APPEARANCE.brandStyle),bookTitleStyle:choice(raw.bookTitleStyle,BOOK_TITLE_STYLES,'inherit'),iconStyle:choice(raw.iconStyle,ICON_STYLES,'system'),
+ uiFont:choice(raw.uiFont,UI_FONTS,'inherit'),codeFont:choice(raw.codeFont,CODE_FONTS,'inherit'),brandStyle:choice(raw.brandStyle,BRAND_STYLES,DEFAULT_APPEARANCE.brandStyle),bookTitleStyle:choice(raw.bookTitleStyle,BOOK_TITLE_STYLES,DEFAULT_APPEARANCE.bookTitleStyle),iconStyle:choice(raw.iconStyle,ICON_STYLES,'system'),
  presetId:typeof raw.presetId==='string'&&APPEARANCE_PRESETS.some(preset=>preset.id===raw.presetId)?raw.presetId:null,
 };}
 export function updateAppearance<K extends keyof AppearancePreferences>(current:AppearancePreferences,key:K,value:AppearancePreferences[K]):AppearancePreferences{return normalizeAppearance({...current,[key]:value,presetId:key==='paletteSeries'?current.presetId:key==='presetId'?value:null});}
