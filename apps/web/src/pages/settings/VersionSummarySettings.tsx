@@ -1,0 +1,10 @@
+import {useQueryClient} from '@tanstack/react-query';
+import {useEffect,useRef,useState} from 'react';
+import {useVersionSummaryPreferences,versionSummariesApi,versionSummaryPreferencesKey} from '../../lib/version-summaries';
+import {useAuthStore} from '../../stores/auth';
+export function VersionSummarySettings(){
+ const userId=useAuthStore(state=>state.user?.id),query=useVersionSummaryPreferences(),cache=useQueryClient();const owner=useRef({userId});if(owner.current.userId!==userId)owner.current={userId};const [busy,setBusy]=useState(false),[error,setError]=useState('');
+ useEffect(()=>{setBusy(false);setError('');},[userId]);
+ async function toggle(){if(busy||!query.data)return;const scope=owner.current;setBusy(true);setError('');try{const result=await versionSummariesApi.setPreferences(!query.data.enabled,userId);if(owner.current===scope)cache.setQueryData(versionSummaryPreferencesKey(userId),result);}catch(failure){if(owner.current===scope)setError(failure instanceof Error?failure.message:'设置未保存');}finally{if(owner.current===scope)setBusy(false);}}
+ return <section className="rounded-lg border p-4" aria-label="版本改动摘要设置"><div className="flex items-center justify-between gap-4"><div><h3 className="text-sm font-medium">自动生成版本改动摘要</h3><p className="mt-1 text-xs text-muted-foreground">仅提交本次版本改动，使用你的默认模型。开启后只处理新版本。</p></div><button type="button" role="switch" aria-label="自动生成版本改动摘要" aria-checked={query.data?.enabled??false} disabled={query.isPending||query.isError||busy} onClick={()=>{void toggle();}} className={`relative inline-flex h-6 w-10 shrink-0 rounded-full border transition-colors disabled:opacity-50 ${query.data?.enabled?'bg-foreground':'bg-muted'}`}><span aria-hidden="true" className={`pointer-events-none mt-0.5 h-4 w-4 rounded-full bg-background shadow-sm transition-transform ${query.data?.enabled?'translate-x-5':'translate-x-0.5'}`}/></button></div>{(error||query.isError)&&<p role="alert" className="mt-2 text-xs text-destructive">{error||query.error?.message}<button type="button" className="ml-2 underline" onClick={()=>{setError('');void query.refetch();}}>重试加载</button></p>}</section>;
+}

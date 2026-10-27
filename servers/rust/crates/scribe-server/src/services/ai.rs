@@ -24,6 +24,7 @@ pub enum AIStreamStartError { Request(ApiError), Provider(AdapterError) }
 impl From<ApiError> for AIStreamStartError {fn from(error:ApiError)->Self{Self::Request(error)}}
 impl AIStreamStartError {
  pub fn into_api_error(self)->ApiError{match self{Self::Request(error)=>error,Self::Provider(AdapterError::OutputLimit)=>ApiError::validation(AdapterError::OutputLimit.to_string()),Self::Provider(_)=>ApiError::new(ErrorCode::ServiceUnavailable,"模型接口请求失败，请检查接口配置、模型权限及网络后重试")}}
+ pub fn is_tools_unsupported(&self)->bool{matches!(self,Self::Provider(error) if error.is_tools_unsupported())}
  pub fn is_image_unsupported(&self)->bool{matches!(self,Self::Provider(error) if error.is_image_unsupported())}
 }
 
@@ -71,6 +72,7 @@ impl AIService {
             base_url: stored.base_url.clone(),
             api_key,
             messages: Vec::new(),
+            native_tools:vec![],native_turns:vec![],
             image: None,
             project_images: Vec::new(),
             temperature: 0.0,
@@ -120,7 +122,8 @@ impl AIService {
         };
 
         let inline = super::inline_prompt::is_inline(&input);
-        let system = if inline && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") { super::project_context::AGENT_SYSTEM } else if inline { super::inline_prompt::INLINE_SYSTEM } else { system_prompt(input.feature) };
+        let native_mode=inline&&input.options.as_ref().is_some_and(|options|options.get("projectTools").is_some_and(|value|value=="enabled")&&options.get("projectNativeTools").is_some_and(|value|value=="true"))&&scribe_ai::adapter::supports_native_tools(stored.provider);
+        let system = if native_mode {super::project_context::native_system_prompt()}else if inline && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") { super::project_context::AGENT_SYSTEM.to_string() } else if inline { super::inline_prompt::INLINE_SYSTEM.to_string() } else { system_prompt(input.feature).to_string() };
         // Cap the history we forward to the upstream LLM. Long chat
         // sessions can otherwise drag many MB of context through every
         // request — costs money and risks hitting provider limits.
@@ -155,7 +158,7 @@ impl AIService {
 
         // Only project_agent sets this after stripping the client-supplied option. Keep
         // tool execution results after the original question, so this is a real continuation.
-        if inline && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") {
+        if inline && !native_mode && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") {
             if let Some(turns)=input.options.as_ref().and_then(|o|o.get("projectContinuation")).and_then(|raw|serde_json::from_str::<Vec<ChatMessage>>(raw).ok()) {
                 messages.extend(turns.into_iter().filter(|message|matches!(message.role,ChatRole::User|ChatRole::Assistant)).take(12));
             }
@@ -175,6 +178,8 @@ impl AIService {
             base_url: stored.base_url,
             api_key,
             messages,
+            native_tools:if native_mode{super::project_context::native_tool_definitions()}else{vec![]},
+            native_turns:if native_mode{input.options.as_ref().and_then(|options|options.get("projectNativeTurns")).and_then(|raw|serde_json::from_str::<Vec<scribe_ai::adapter::NativeToolTurn>>(raw).ok()).unwrap_or_default()}else{vec![]},
             image: input.image,
             project_images: input.project_images,
             temperature,

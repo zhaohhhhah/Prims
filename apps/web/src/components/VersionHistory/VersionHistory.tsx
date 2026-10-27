@@ -9,6 +9,8 @@ import { toast } from 'sonner';
 
 import { api, type ApiError } from '../../lib/api';
 import { projectActionsApi, type RestorePlan } from '../../lib/project-actions';
+import { VersionSummaryRow } from './VersionSummaryRow';
+import {useVersionSummaries} from '../../lib/version-summaries';
 import { openProjectAssistant } from '../../lib/assistant-events';
 
 function versionTimestamp(value:string):{label:string;title:string;valid:boolean}{
@@ -41,7 +43,12 @@ export function VersionHistory({ projectId, onClose,readOnly=false,beforeReview 
   const versionsQuery = useQuery<ProjectVersion[], ApiError>({
     queryKey: ['versions', projectId],
     queryFn: () => api.versions.list(projectId),
+    refetchInterval:15000,
   });
+
+  const summaries=useVersionSummaries(projectId);
+  const versionIds=versionsQuery.data?.map(version=>version.id).join(',')??'';
+  useEffect(()=>{if(versionIds)void summaries.refetch();},[versionIds]);
 
   const snapshotMutation = useMutation<ProjectVersion, ApiError>({
     mutationFn: () => api.versions.snapshot(projectId, {}),
@@ -123,6 +130,7 @@ export function VersionHistory({ projectId, onClose,readOnly=false,beforeReview 
           {t('history.snapshotNow')}
         </Button>
       </div>
+      {summaries.isError&&<p role="alert" className="border-b px-3 py-2 text-xs text-muted-foreground">摘要状态暂未加载。<button type="button" className="ml-2 underline" onClick={()=>{void summaries.refetch();}}>重试</button></p>}
       <div className="flex-1 overflow-auto">
         {versionsQuery.isLoading ? (
           <div className="p-3">
@@ -154,6 +162,7 @@ export function VersionHistory({ projectId, onClose,readOnly=false,beforeReview 
                       {v.authorDisplayName !== null ? ` · ${v.authorDisplayName}` : ''}
                     </div>
                   </button>
+                  <VersionSummaryRow projectId={projectId} versionId={v.id} item={summaries.data?.summaries.find(summary=>summary.versionId===v.id)} readOnly={readOnly}/>
                 </li>
               );
             })}

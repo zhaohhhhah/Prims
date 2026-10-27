@@ -173,6 +173,7 @@ async fn main() -> anyhow::Result<()> {
         ai_crypto,
         response_cache,
     );
+    services::version_summaries::start_worker(state.clone());
 
     let verifier = Arc::new(TokenVerifier::new(
         config.supabase_jwt_secret.as_deref(),
@@ -381,6 +382,7 @@ fn build_router(
         .merge(routes::shares::router())
         .merge(routes::notifications::router())
         .merge(routes::versions::router())
+        .merge(routes::version_summaries::router())
         .merge(routes::yjs::router())
         .merge(routes::compiles::router())
         .merge(routes::ai::router())

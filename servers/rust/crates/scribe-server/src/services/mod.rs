@@ -37,3 +37,9 @@ pub mod project_actions;
 pub mod ai_profiles;
 
 pub mod project_progress;
+
+pub mod version_diff;
+
+pub mod version_summaries;
+
+pub mod tex_proposal;

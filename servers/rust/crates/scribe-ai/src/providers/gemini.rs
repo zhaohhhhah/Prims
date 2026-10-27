@@ -179,7 +179,7 @@ impl Adapter for GeminiAdapter {
                 .into_iter()
                 .filter_map(|p| p.text)
                 .collect();
-            if text.is_empty() { None } else { Some(Ok(CompletionChunk { text })) }
+            if text.is_empty() { None } else { Some(Ok(CompletionChunk { text,tool_call_deltas:vec![] })) }
         });
         Ok(Box::pin(stream))
     }
@@ -242,6 +242,7 @@ mod tests {
             base_url: None,
             api_key: "k".into(),
             messages,
+            native_tools:vec![],native_turns:vec![],
             image,
             project_images: Vec::new(),
             temperature: 0.0,

@@ -118,3 +118,7 @@ Original author: **Sunny Shaban Ali**. Prims modifications are maintained by
 Prims remains **AGPL-3.0-or-later**. See [LICENSE](LICENSE), the preserved
 [upstream README](docs/UPSTREAM_README.md), and existing third-party notices.
 The upstream history and attribution are retained.
+
+### Native agent tools and project history
+
+OpenAI-compatible and Anthropic connections use native read-only tools and return results in the matching wire format. Assistant replies render Markdown, while LaTeX proposals remain source code with format checks. Review and apply changes per file and per paragraph. Version history includes dates and reviewed text restoration; optional AI summaries receive bounded version differences only. Interface URLs are recognized when unambiguous, otherwise choose the protocol explicitly.

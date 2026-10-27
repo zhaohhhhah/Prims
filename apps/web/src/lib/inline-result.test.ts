@@ -26,6 +26,11 @@ describe('inline proposal protocol',()=>{
     }
     expect(()=>parseInlineProposal(JSON.stringify({reply:'ok',replacement:null,edits:[{filePath:'main.tex',before:'old',after:'new'}]}))).toThrow();
   });
+  it('permits multiple authorized project text files without a selection but rejects unlisted or unsafe paths',()=>{
+    const edits=[{filePath:'main.tex',before:'one',after:'ONE'},{filePath:'sections/intro.tex',before:'two',after:'TWO'}];
+    expect(parseInlineProposal(JSON.stringify({reply:'两文件',replacement:null,edits}),undefined,['main.tex','sections/intro.tex']).edits).toEqual(edits);
+    for(const filePath of ['private.tex','image.png','../main.tex','.git/config','a//b.tex','C:main.tex'])expect(()=>parseInlineProposal(JSON.stringify({reply:'unsafe',replacement:null,edits:[{filePath,before:'old',after:'new'}]}),undefined,['main.tex','sections/intro.tex','.git/config','a//b.tex','C:main.tex'])).toThrow();
+  });
   it('keeps explicit file action proposals separate from current-file text edits',()=>{
     const actions=[{type:'create_file',path:'chapters/new.tex',content:'new text'},{type:'create_directory',path:'figures'}];
     const parsed=parseInlineProposal(JSON.stringify({reply:'等待确认',replacement:null,actions}));expect(parsed.actions).toEqual(actions);expect(parsed.edits).toEqual([]);expect(parsed.replacement).toBeNull();

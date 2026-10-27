@@ -16,6 +16,8 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use scribe_shared::{AIProvider, ChatMessage, ImageInput};
 use thiserror::Error;
+use serde::{Serialize,Deserialize};
+use serde_json::Value;
 
 pub use crate::providers::{anthropic, gemini, openai};
 
@@ -36,6 +38,17 @@ pub enum AdapterError {
 }
 
 impl AdapterError {
+    pub fn is_tools_unsupported(&self)->bool{
+        let Self::HttpStatus{status:400|422,message}=self else{return false};
+        fn metadata(v:&Value,depth:usize)->String{if depth>2{return String::new();}if let Some(text)=v.as_str(){return text.chars().take(4096).collect();}if let Some(object)=v.as_object(){return ["code","type","status","message","error"].iter().filter_map(|key|object.get(*key)).map(|value|if value.is_number(){value.to_string()}else{metadata(value,depth+1)}).collect::<Vec<_>>().join(" ");}String::new()}
+        let text=serde_json::from_str::<Value>(message).map(|v|metadata(&v,0)).unwrap_or_else(|_|message.chars().take(4096).collect()).to_lowercase();
+        if ["authentication","unauthorized","api key","api_key","forbidden","permission","rate limit","rate_limit","timeout"].iter().any(|s|text.contains(s)){return false;}
+        if text.split(|c:char|!c.is_ascii_digit()).any(|part|matches!(part,"401"|"403"|"408"|"429"|"500"|"502"|"503"|"504")){return false;}
+        let tool=["tools","tool_use","tool use","tool_calls","function calling","function_call","工具"].iter().any(|s|text.contains(s));
+        let unsupported=["not supported","does not support","unsupported","not support","unknown parameter","unrecognized request argument","not permitted","not allowed","不支持"].iter().any(|s|text.contains(s));
+        tool&&unsupported
+    }
+
     /// Capability fallback is intentionally narrow: never infer it from transport/auth/rate errors.
     pub fn is_image_unsupported(&self) -> bool {
         match self {
@@ -64,6 +77,17 @@ fn image_capability_message(raw: &str) -> bool {
     image&&explicit
 }
 
+#[derive(Debug,Clone,Serialize,Deserialize)]
+pub struct NativeToolDefinition{pub name:String,pub description:String,pub parameters:Value}
+#[derive(Debug,Clone,Default,Serialize,Deserialize)]
+pub struct NativeToolCall{pub id:String,pub name:String,pub arguments:String}
+#[derive(Debug,Clone,Default,Serialize,Deserialize)]
+pub struct NativeToolCallDelta{pub index:usize,pub id:Option<String>,pub name:Option<String>,pub arguments:Option<String>}
+#[derive(Debug,Clone,Serialize,Deserialize)]
+#[serde(tag="role",rename_all="snake_case")]
+pub enum NativeToolTurn{Assistant{content:Option<String>,tool_calls:Vec<NativeToolCall>},Tool{tool_call_id:String,content:String,is_error:bool}}
+pub fn supports_native_tools(provider:AIProvider)->bool{matches!(provider,AIProvider::Openai|AIProvider::OpenaiCompatible|AIProvider::Ollama|AIProvider::Lmstudio|AIProvider::Anthropic)}
+
 #[derive(Debug, Clone)]
 pub struct CompleteRequest {
     pub provider: AIProvider,
@@ -71,6 +95,8 @@ pub struct CompleteRequest {
     pub base_url: Option<String>,
     pub api_key: String,
     pub messages: Vec<ChatMessage>,
+    pub native_tools:Vec<NativeToolDefinition>,
+    pub native_turns:Vec<NativeToolTurn>,
     /// Optional inline image, attached to the last user message by
     /// vision-capable adapters. `None` for the text-only path.
     pub image: Option<ImageInput>,
@@ -100,6 +126,7 @@ impl CompleteRequest {
             base_url,
             api_key,
             messages,
+            native_tools:Vec::new(),native_turns:Vec::new(),
             image: None,
             project_images: Vec::new(),
             temperature: 0.4,
@@ -110,9 +137,10 @@ impl CompleteRequest {
 
 /// One token-stream chunk. We don't try to expose finish reason / token
 /// counts to clients — the SSE consumer just concatenates `text`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CompletionChunk {
     pub text: String,
+    pub tool_call_deltas:Vec<NativeToolCallDelta>,
 }
 
 #[async_trait]
@@ -150,6 +178,11 @@ pub fn chunks_to_sse_lines(
 
 #[cfg(test)]mod capability_tests{
  use super::*;
+ #[test]fn tool_capability_fallback_is_narrow_and_never_auth_or_transport(){
+  assert!(AdapterError::HttpStatus{status:400,message:"This model does not support tools".into()}.is_tools_unsupported());
+  for status in [401,403,408,429,500]{assert!(!AdapterError::HttpStatus{status,message:"tools not supported".into()}.is_tools_unsupported());}
+  for message in ["invalid tools argument","invalid API key; tools unsupported","timeout","model not found"]{assert!(!AdapterError::HttpStatus{status:400,message:message.into()}.is_tools_unsupported());}
+ }
  #[test]fn only_explicit_image_capability_errors_allow_retry(){for message in [r#"{"error":{"code":"unsupported_image","message":"This model does not support image inputs"}}"#,r#"{"error":{"message":"image_url is only supported by certain models"}}"#,"该模型不支持图片输入"]{assert!(AdapterError::HttpStatus{status:400,message:message.into()}.is_image_unsupported());assert!(AdapterError::Stream(message.into()).is_image_unsupported());}}
  #[test]fn auth_rate_transport_and_generic_validation_do_not_allow_retry(){for status in [401,403,408,429,500,502,503,504]{assert!(!AdapterError::HttpStatus{status,message:"model does not support images".into()}.is_image_unsupported());}for message in ["invalid image_url","invalid model","image too large",r#"{"code":"invalid_api_key","message":"unsupported image request without authentication"}"#,r#"{"status":429,"message":"images unsupported"}"#]{assert!(!AdapterError::HttpStatus{status:400,message:message.into()}.is_image_unsupported());assert!(!AdapterError::Stream(message.into()).is_image_unsupported());}assert!(!AdapterError::Stream("network connection reset".into()).is_image_unsupported());}
  #[tokio::test]async fn actual_network_error_never_allows_retry(){let error=reqwest::Client::builder().no_proxy().build().unwrap().get("http://127.0.0.1:0").send().await.unwrap_err();assert!(!AdapterError::Network(error).is_image_unsupported());}
