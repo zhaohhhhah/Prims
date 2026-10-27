@@ -3,8 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router-dom';
-import { agentLibraryApi, AgentLibraryError, agentQueryKey, type AgentPreferences } from '../../lib/agent-library';
-import { AgentValidationError, readSkillFile, refreshMemoryDraft, SKILL_EXAMPLE, validateMemoryContent, validateSkillContent, type MemoryDraftState } from '../../lib/agent-library-validation';
+import { agentLibraryApi, AgentLibraryError, agentQueryKey, type AgentPreferences, type AgentSearchState } from '../../lib/agent-library';
+import { AgentValidationError, readSkillFile, refreshMemoryDraft, SKILL_EXAMPLE, validateMemoryContent, validateSkillContent, type MemoryDraftState, SEARCH_ENDPOINTS, validateSearchConfig } from '../../lib/agent-library-validation';
 import { agentLibraryCopy } from '../../locales/agent-library-copy';
 import { useAuthStore } from '../../stores/auth';
 
@@ -33,11 +33,14 @@ function AgentLibraryPanel({ userId }: { userId: string }) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [searchDraft, setSearchDraft] = useState<{ provider: string; endpoint: string } | null>(null);
+  const [searchKey, setSearchKey] = useState('');
+  const [searchTouched, setSearchTouched] = useState(false);
   const upload = useRef<HTMLInputElement>(null);
   const scope = useRef({});
   useEffect(() => { const current = {}; scope.current = current; return () => { scope.current = {}; }; }, []);
   useEffect(() => { draftsByUser.set(userId, drafts); while (draftsByUser.size > 3) draftsByUser.delete(draftsByUser.keys().next().value!); }, [userId, drafts]);
-  const dirty = Object.values(drafts.skills).some(skillDirty) || Object.values(drafts.memories).some(memoryDirty);
+  const dirty = searchTouched || !!searchKey || Object.values(drafts.skills).some(skillDirty) || Object.values(drafts.memories).some(memoryDirty);
   useEffect(() => {
     if (!dirty) return;
     const handler = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
@@ -46,11 +49,14 @@ function AgentLibraryPanel({ userId }: { userId: string }) {
   }, [dirty]);
 
   const preferences = useQuery({ queryKey: agentQueryKey(userId, 'preferences'), queryFn: () => agentLibraryApi.preferences(userId), retry: false });
-  const capabilities = useQuery({ queryKey: agentQueryKey(userId, 'capabilities'), queryFn: () => agentLibraryApi.capabilities(userId), retry: false, staleTime: 10000 });
+  const searchConfiguration = useQuery({ queryKey: agentQueryKey(userId, 'search-config'), queryFn: () => agentLibraryApi.searchConfig(userId), retry: false });
   const skills = useQuery({ queryKey: agentQueryKey(userId, 'skills'), queryFn: () => agentLibraryApi.skills(userId), retry: false });
   const projects = useQuery({ queryKey: agentQueryKey(userId, 'projects'), queryFn: () => agentLibraryApi.projects(userId), retry: false });
   const skill = useQuery({ queryKey: agentQueryKey(userId, 'skill', drafts.skillId), queryFn: () => agentLibraryApi.skill(userId, drafts.skillId), enabled: drafts.skillId !== 'new', retry: false });
   const memory = useQuery({ queryKey: agentQueryKey(userId, 'memory', drafts.projectId), queryFn: () => agentLibraryApi.memory(userId, drafts.projectId), enabled: !!drafts.projectId, retry: false });
+
+  function searchFields(value: AgentSearchState) { const config = value.config; return { provider: config ? (config.provider === 'doubao' || config.provider === 'deepseek' ? config.provider : '') : 'doubao', endpoint: config?.endpoint ?? SEARCH_ENDPOINTS.doubao }; }
+  useEffect(() => { if (searchConfiguration.data && !searchTouched) setSearchDraft(searchFields(searchConfiguration.data)); }, [searchConfiguration.data, searchTouched]);
 
   useEffect(() => {
     if (!projects.data) return;
@@ -85,7 +91,7 @@ function AgentLibraryPanel({ userId }: { userId: string }) {
     if (busy || !preferences.data) return;
     const owner = scope.current, next = { ...preferences.data, [key]: !preferences.data[key] };
     setBusy('preferences'); feedbackReset();
-    try { const value = await agentLibraryApi.setPreferences(userId, next); if (scope.current === owner) { cache.setQueryData(agentQueryKey(userId, 'preferences'), value); setNotice(copy.settingsSaved); void capabilities.refetch(); } }
+    try { const value = await agentLibraryApi.setPreferences(userId, next); if (scope.current === owner) { cache.setQueryData(agentQueryKey(userId, 'preferences'), value); setNotice(copy.settingsSaved); } }
     catch (failure) { if (scope.current === owner) setError(failureMessage(failure)); }
     finally { if (scope.current === owner) setBusy(''); }
   }
@@ -142,22 +148,37 @@ function AgentLibraryPanel({ userId }: { userId: string }) {
     catch (failure) { if (scope.current === owner) setError(failureMessage(failure)); }
     finally { if (scope.current === owner) setBusy(''); }
   }
-  const capabilityText = (available: boolean | undefined) => capabilities.isPending ? copy.checking : available === true ? copy.ready : copy.unavailable;
+  async function saveSearch() {
+    if (busy || !searchDraft || !searchConfiguration.data) return;
+    const owner = scope.current; setBusy('search'); feedbackReset();
+    try { const body = validateSearchConfig(searchDraft.provider, searchDraft.endpoint, searchKey, searchConfiguration.data.config); const value = await agentLibraryApi.saveSearchConfig(userId, body); if (scope.current !== owner) return; cache.setQueryData(agentQueryKey(userId, 'search-config'), value); setSearchDraft(searchFields(value)); setSearchKey(''); setSearchTouched(false); setNotice(copy.searchSaved); }
+    catch (failure) { if (scope.current === owner) setError(failureMessage(failure)); }
+    finally { if (scope.current === owner) setBusy(''); }
+  }
+  async function clearSearch() {
+    if (busy || !searchConfiguration.data?.config || !window.confirm(copy.searchClearConfirm)) return;
+    const owner = scope.current, savedState = searchConfiguration.data; setBusy('search'); feedbackReset();
+    try { const result = await agentLibraryApi.clearSearchConfig(userId); if (!result.ok) throw new Error(copy.requestFailed); if (scope.current !== owner) return; const value = { ...savedState, config: null }; cache.setQueryData(agentQueryKey(userId, 'search-config'), value); setSearchDraft(searchFields(value)); setSearchKey(''); setSearchTouched(false); setNotice(copy.searchCleared); void searchConfiguration.refetch(); }
+    catch (failure) { if (scope.current === owner) setError(failureMessage(failure)); }
+    finally { if (scope.current === owner) setBusy(''); }
+  }
+  const retainedSearchKey = !!searchConfiguration.data?.config?.hasApiKey && searchDraft?.provider === searchConfiguration.data.config.provider && searchDraft?.endpoint.trim() === searchConfiguration.data.config.endpoint;
   const retryLine = (failure: Error | null, retry: () => void) => failure ? <p role="alert" className="text-sm text-destructive">{failure.message || copy.loadFailed} <button type="button" className="underline" onClick={retry}>{copy.retry}</button></p> : null;
   return <div className="space-y-6">
-    <section className="space-y-3" aria-label={copy.capabilities}>
-      <h3 className="text-sm font-medium">{copy.capabilities}</h3>
-      <p className="rounded-md border bg-muted/30 p-3 text-sm leading-relaxed">{copy.boundary}</p>
-      <p className="text-xs text-muted-foreground">{copy.defaultModel}</p>
-      <div className="grid gap-2 text-sm sm:grid-cols-2">
-        <p>{copy.worker} · <span className="font-medium">{capabilityText(capabilities.data?.diagnostics?.ready)}</span></p>
-        <p>{copy.search} · <span className="font-medium">{capabilityText(capabilities.data?.search?.available)}</span></p>
-      </div>
-      <p className="text-xs text-muted-foreground">{copy.diagnosticsScope}</p>
-      <p className="text-xs text-muted-foreground">{copy.searchScope}</p>
-      {retryLine(capabilities.error, () => { void capabilities.refetch(); })}
+    <section className="space-y-3" aria-label={copy.title}>
       <div className="space-y-2">{(['memoryEnabled', 'skillsEnabled', 'diagnosticsEnabled', 'searchEnabled'] as const).map(key => <label key={key} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"><span>{copy[key]}</span><input type="checkbox" checked={preferences.data?.[key] ?? false} disabled={!!busy || !preferences.data || preferences.isError} onChange={() => { void togglePreference(key); }} /></label>)}</div>
       {retryLine(preferences.error, () => { void preferences.refetch(); })}
+    </section>
+    <section className="space-y-3 border-t pt-5" aria-label={copy.search}>
+      <h3 className="text-sm font-medium">{copy.search}</h3>
+      {retryLine(searchConfiguration.error, () => { void searchConfiguration.refetch(); })}
+      {searchDraft && <>
+        <label className="block space-y-1 text-sm"><span>{copy.searchProvider}</span><select className={inputClass} disabled={!!busy} value={searchDraft.provider} onChange={event => { const provider = event.target.value; if (provider !== 'doubao' && provider !== 'deepseek') return; setSearchTouched(true); setSearchKey(''); setSearchDraft({ provider, endpoint: SEARCH_ENDPOINTS[provider] }); feedbackReset(); }}><option value="" disabled>{copy.searchProviderPlaceholder}</option><option value="doubao">{copy.providerDoubao}</option><option value="deepseek">DeepSeek</option></select></label>
+        <label className="block space-y-1 text-sm"><span>{copy.searchEndpoint}</span><input type="url" className={inputClass} disabled={!!busy} value={searchDraft.endpoint} placeholder="https://…" autoComplete="off" spellCheck={false} onChange={event => { setSearchTouched(true); setSearchDraft({ ...searchDraft, endpoint: event.target.value }); }} /></label>
+        <label className="block space-y-1 text-sm"><span>{copy.searchKey}</span><input type="password" className={inputClass} disabled={!!busy} value={searchKey} placeholder={retainedSearchKey ? copy.searchKeyRetained : copy.searchKeyPlaceholder} autoComplete="new-password" onChange={event => { setSearchTouched(true); setSearchKey(event.target.value); }} /></label>
+        <p className="text-xs text-muted-foreground">{copy.searchKeyHint}</p>
+        <div className="flex flex-wrap items-center gap-2"><Button type="button" size="sm" disabled={!!busy || !searchConfiguration.data} onClick={() => { void saveSearch(); }}>{busy === 'search' ? copy.saving : copy.save}</Button><Button type="button" size="sm" variant="outline" disabled={!!busy || !searchConfiguration.data?.config} onClick={() => { void clearSearch(); }}>{copy.searchClear}</Button>{(searchTouched || searchKey) && <span className="text-xs text-muted-foreground">{copy.unsaved}</span>}</div>
+      </>}
     </section>
     <section className="space-y-3 border-t pt-5" aria-label={copy.skills}>
       <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-medium">{copy.skills}</h3><div className="flex gap-2"><Button type="button" size="sm" variant="outline" disabled={!!busy} onClick={() => { feedbackReset(); setDrafts(current => ({ ...current, skillId: 'new', skills: { ...current.skills, new: current.skills.new ?? newSkillDraft() } })); }}>{copy.newSkill}</Button><Button type="button" size="sm" variant="outline" disabled={!!busy} onClick={() => upload.current?.click()}>{busy === 'file' ? copy.fileReading : copy.importSkill}</Button></div></div>

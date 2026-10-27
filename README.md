@@ -145,14 +145,14 @@ proposals stop automatically. Progress shows actual public actions and
 completed steps, not hidden reasoning. There is one unified assistant menu
 entry; handwriting/OCR entry points have been removed from the web UI.
 
-Official DeepSeek connections can optionally call the standalone Search API
-with the same signed-in user's key. Other endpoint keys are never forwarded
-to DeepSeek. Each request allows at most three search attempts, caches
-successful repeated queries and returns bounded, attributed public results.
-Search has separate provider billing; see the
-[DeepSeek Search API documentation](https://api-docs.deepseek.com/guides/search/).
-The search client follows the deployment's existing proxy settings and never
-fetches arbitrary result URLs from the application server.
+Each account can configure a separate Doubao or DeepSeek search connection
+in Agent settings, with its own search endpoint and encrypted API key. Any
+configured chat model can call that connection; unrelated chat-model credentials
+are not sent to the search endpoint. Without an independent search configuration,
+the existing official DeepSeek model connection remains an optional fallback.
+Requests retain bounded attempts, attributed results and separate search-provider
+billing. The client uses the configured search endpoint rather than fetching
+arbitrary result URLs from the application server.
 
 The pinned Codex source, adapted portions and Apache-2.0 notices are documented
 in [the compaction origin notice](servers/rust/crates/scribe-server/src/services/vendor/codex_compaction/ORIGIN.md).
@@ -213,17 +213,17 @@ text-only Agent Skills and account-and-project private memory. Import or edit
 SKILL.md with YAML name/description (up to 48 KiB), enable/disable skills, or
 archive them. Importing instructions does not execute bundled scripts or grant
 permissions. Memory is bounded to 4,000 characters; revision checks preserve
-unsaved drafts when another session changes it. Existing model/API connections
-remain the only provider settings.
+unsaved drafts when another session changes it. Existing chat-model connections remain unchanged;
+search credentials are managed separately.
 
 Project reads stay membership-scoped. Text and file changes require explicit
 acceptance. The assistant has no host-system tool or arbitrary shell/MCP setup.
 Optional diagnostics run fixed LaTeX/font tasks on a saved, authorized snapshot
 in a fresh resource-limited, network-disabled worker; this does not edit project
 files or install system fonts. Health checks distinguish configured services
-from workers that are actually ready. Search remains limited to each user's
-supported official DeepSeek connection; enabling a preference does not add
-search to unrelated providers.
+from workers that are actually ready. Independent Doubao or DeepSeek search settings are shared
+across the user's chat models and remain controlled by the personal search
+preference. No additional system permissions are granted.
 
 To deploy this addition, apply
 `supabase/migrations/20261027000001_agent_library.sql` after the existing Prims
@@ -242,3 +242,13 @@ without delaying operations or animating document layout. Assistant UI omits
 redundant tutorial labels while retaining file paths, actual progress, review
 controls and errors. The upstream AGPL attribution, adapted Codex notices and
 font OFL licenses remain unchanged.
+
+
+To enable independent search settings, apply
+`supabase/migrations/20261027000002_search_connections.sql` after the Agent
+library migration. In Settings > Agent, select Doubao or DeepSeek, supply its
+complete HTTPS POST endpoint and a search-service API key, then save. Keys are
+never returned by the API. An empty password keeps an existing key only for the
+same provider and endpoint; changing either requires a new key. Clearing the
+independent configuration restores the model-connection fallback. No new
+server-wide search credential is required.

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AgentValidationError, MEMORY_MAX_CHARACTERS, readSkillFile, refreshMemoryDraft, SKILL_EXAMPLE, SKILL_MAX_BYTES, validateMemoryContent, validateSkillContent } from './agent-library-validation';
+import { AgentValidationError, MEMORY_MAX_CHARACTERS, readSkillFile, refreshMemoryDraft, SEARCH_ENDPOINTS, SKILL_EXAMPLE, SKILL_MAX_BYTES, validateMemoryContent, validateSearchConfig, validateSkillContent } from './agent-library-validation';
 describe('Agent library text boundaries and memory CAS draft preservation', () => {
   it('accepts the example YAML frontmatter and never interprets skill instructions', () => {
     expect(validateSkillContent(SKILL_EXAMPLE)).toBe(SKILL_EXAMPLE);
@@ -36,5 +36,23 @@ describe('Agent library text boundaries and memory CAS draft preservation', () =
     const draft = { content: 'mine', savedContent: '', revision: 4, conflict: true };
     expect(refreshMemoryDraft(draft, { content: 'stale', revision: 2 })).toBe(draft);
     expect(() => refreshMemoryDraft(draft, { content: '', revision: -1 })).toThrow('Invalid memory revision');
+  });
+});
+describe('independent search configuration', () => {
+  it('accepts the two full default endpoints with a separately entered key', () => {
+    for (const provider of ['doubao', 'deepseek'] as const) expect(validateSearchConfig(provider, SEARCH_ENDPOINTS[provider], 'new-search-key', null)).toEqual({ provider, endpoint: SEARCH_ENDPOINTS[provider], apiKey: 'new-search-key' });
+    expect(() => validateSearchConfig('tavily', 'https://api.example.test/search', 'key', null)).toThrow('searchProviderRequired');
+  });
+  it('only preserves an empty key for the exact same saved provider and endpoint', () => {
+    const saved = { provider: 'doubao', endpoint: SEARCH_ENDPOINTS.doubao, hasApiKey: true };
+    expect(validateSearchConfig('doubao', saved.endpoint, '', saved).apiKey).toBe('');
+    expect(() => validateSearchConfig('deepseek', SEARCH_ENDPOINTS.deepseek, '', saved)).toThrow('searchKeyRequired');
+    expect(() => validateSearchConfig('doubao', 'https://search.example.test/full/path', '', saved)).toThrow('searchKeyRequired');
+    expect(() => validateSearchConfig('doubao', saved.endpoint, '', { ...saved, hasApiKey: false })).toThrow('searchKeyRequired');
+  });
+  it('rejects incomplete URLs, insecure protocols, credentials and fragments', () => {
+    for (const endpoint of ['api.example.test/search', 'http://api.example.test/search', 'https://name:pass@api.example.test/search', 'https://api.example.test/search#fragment', 'https://api.example.test/search?api_key=secret', 'https://api.example.test/search?region=global']) expect(() => validateSearchConfig('doubao', endpoint, 'new-key', null)).toThrow('searchEndpointInvalid');
+    expect(validateSearchConfig('doubao', 'https://search.example.test/custom/full/path', 'new-key', null).endpoint).toBe('https://search.example.test/custom/full/path');
+    expect(validateSearchConfig('doubao', '', 'new-key', null).endpoint).toBe(SEARCH_ENDPOINTS.doubao);
   });
 });

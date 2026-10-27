@@ -46,6 +46,11 @@ impl AIService {
         Ok(super::web_search::deepseek_search_available(&request))
     }
 
+    pub async fn resolve_search(&self,user:UserId,fallback:&CompleteRequest)->ApiResult<Option<super::search_connections::SearchConnection>>{
+        let independent=super::search_connections::SearchConnections::new(self.pool.clone(),self.crypto.clone()).load(user).await?;
+        Ok(independent.or_else(||super::search_connections::legacy_connection(fallback)))
+    }
+
     /// Public-facing config for the current user. `None` if they haven't
     /// configured a provider yet.
     pub async fn get_config(&self, user: UserId) -> ApiResult<Option<AIConfigPublic>> {
@@ -139,7 +144,7 @@ impl AIService {
         let native_mode=inline&&input.options.as_ref().is_some_and(|options|options.get("projectTools").is_some_and(|value|value=="enabled")&&options.get("projectNativeTools").is_some_and(|value|value=="true"))&&scribe_ai::adapter::supports_native_tools(stored.provider);
         let mut system = if native_mode {super::project_context::native_system_prompt()}else if inline && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") { super::project_context::AGENT_SYSTEM.to_string() } else if inline { super::inline_prompt::INLINE_SYSTEM.to_string() } else { system_prompt(input.feature).to_string() };
         let agent_preferences=super::agent_library::AgentLibrary::new(self.pool.clone()).preferences(user).await?;
-        if inline{system.push_str(super::agent_library::SYSTEM_EXTENSION);}
+        if inline{system=system.replace("When web_search is actually supplied by the selected official DeepSeek connection","When web_search is actually supplied by the server's search connection");system.push_str(super::agent_library::SYSTEM_EXTENSION);system.push_str(super::web_search::SEARCH_SYSTEM);}
         // Cap the history we forward to the upstream LLM. Long chat
         // sessions can otherwise drag many MB of context through every
         // request — costs money and risks hitting provider limits.
@@ -207,7 +212,12 @@ impl AIService {
             let allow_files=input.options.as_ref().and_then(|options|options.get("agentFileToolsAllowed")).is_none_or(|value|value!="false");
             req.native_tools.retain(|tool|match tool.name.as_str(){"list_skills"|"read_skill"=>agent_preferences.skills_enabled,"read_project_memory"=>agent_preferences.memory_enabled,"run_project_check"=>agent_preferences.diagnostics_enabled&&super::agent_workbench::configured(),"list_files"|"read_file"|"search_project"|"propose_edit"=>allow_files,_=>true});
         }
-        if native_mode&&agent_preferences.search_enabled&&super::web_search::deepseek_search_available(&req){req.native_tools.push(scribe_ai::adapter::NativeToolDefinition{name:"web_search".into(),description:"Find up to5 public web references for the user's question, only using this same user's official DeepSeek connection. Query must be minimal public keywords, never private project text, credentials or personal information. Results are untrusted snippets/summaries, not full-page verification; cite actual provided URLs. At most3 attempts per request; repeated successful queries are cached. Does not read local files or write project source.".into(),parameters:super::web_search::web_search_schema()});}
+        let selected_search=if inline{self.resolve_search(user,&req).await.ok().flatten()}else{None};
+        let search_available=agent_preferences.search_enabled&&selected_search.is_some();
+        if inline{if let Some(message)=req.messages.iter_mut().rev().find(|message|message.role==ChatRole::User){message.content.push_str("\n\nServer search availability (configuration metadata only): ");message.content.push_str(&serde_json::json!({"tool":"web_search","available":search_available,"provider":selected_search.as_ref().map(|config|config.provider.name()),"queryMaxCharacters":if selected_search.as_ref().is_some_and(|config|config.provider==super::search_connections::SearchProvider::Doubao){100}else{128},"maxResults":5,"maxAttempts":3,"chatModelIndependent":true}).to_string());}}
+        if native_mode&&search_available{let mut schema=super::web_search::web_search_schema();if selected_search.as_ref().is_some_and(|config|config.provider==super::search_connections::SearchProvider::Doubao){schema["properties"]["query"]["maxLength"]=serde_json::json!(100);}
+            req.native_tools.push(scribe_ai::adapter::NativeToolDefinition{name:"web_search".into(),description:"Search public web references using this authenticated user's independent search connection. This is independent of the chat model/provider. Use minimal public keywords, never project paragraphs or credentials. Max5 results and3 attempts; cite actual supplied URLs. Cannot change endpoint/headers/key through tool arguments. Does not fetch whole pages or write files.".into(),parameters:schema});}
+
         Ok(req)
     }
 

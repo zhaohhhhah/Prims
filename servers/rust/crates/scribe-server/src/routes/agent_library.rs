@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
             get(memory).put(set_memory),
         )
         .route("/api/agent/capabilities", get(capabilities))
+        .route("/api/agent/search-config",get(search_config).put(set_search_config).delete(delete_search_config))
         .route(
             "/api/projects/:project_id/agent/check",
             axum::routing::post(check),
@@ -132,16 +133,12 @@ async fn capabilities(
     let available = worker
         .as_ref()
         .is_some_and(|value| value.get("ok") == Some(&Value::Bool(true)));
-    let search = if let (Some(db), Some(crypto)) = (state.db(), state.inner.ai_crypto.clone()) {
-        crate::services::ai::AIService::new(db.pool().clone(), crypto)
-            .official_search_available(user.id)
-            .await
-            .unwrap_or(false)
-    } else {
-        false
-    };
+    let search_state=search_state(&state,user.id).await?;
+    let independent=search_state.get("config").filter(|config|!config.is_null());
+    let search=independent.is_some()||search_state["fallback"]["available"]==true;
+    let search_provider=independent.and_then(|config|config.get("provider").and_then(Value::as_str)).unwrap_or("deepseek");
     Ok(Json(
-        json!({"limits":{"modelRounds":32,"requestSeconds":600,"readCalls":12,"diagnosticCalls":3,"skills":32,"skillBytes":49152,"memoryCharacters":4000,"pendingProposals":48,"shellAllowed":false,"networkFromWorkbench":false,"automaticProjectWrites":false},"skills":{"available":true},"memory":{"available":true},"diagnostics":{"configured":configured,"available":available&&prefs.diagnostics_enabled,"ready":available&&prefs.diagnostics_enabled,"health":{"ready":available,"status":if available{"ready"}else if configured{"unavailable"}else{"not_configured"}},"tasks":["latex_check","font_check","list_fonts"],"reason":if !configured{"worker_not_configured"}else if !available{"worker_unavailable"}else if !prefs.diagnostics_enabled{"disabled"}else{"ready"}},"search":{"available":search&&prefs.search_enabled,"provider":"deepseek","scope":"official_deepseek_connection_only","reason":if !prefs.search_enabled{"disabled"}else if search{"ready"}else{"default_connection_is_not_official_deepseek_or_missing_key"}},"preferences":prefs}),
+        json!({"limits":{"modelRounds":32,"requestSeconds":600,"readCalls":12,"diagnosticCalls":3,"skills":32,"skillBytes":49152,"memoryCharacters":4000,"pendingProposals":48,"shellAllowed":false,"networkFromWorkbench":false,"automaticProjectWrites":false},"skills":{"available":true},"memory":{"available":true},"diagnostics":{"configured":configured,"available":available&&prefs.diagnostics_enabled,"ready":available&&prefs.diagnostics_enabled,"health":{"ready":available,"status":if available{"ready"}else if configured{"unavailable"}else{"not_configured"}},"tasks":["latex_check","font_check","list_fonts"],"reason":if !configured{"worker_not_configured"}else if !available{"worker_unavailable"}else if !prefs.diagnostics_enabled{"disabled"}else{"ready"}},"search":{"available":search&&prefs.search_enabled,"provider":search_provider,"source":if independent.is_some(){"independent"}else{"chat_fallback"},"scope":"personal_search_connection","reason":if !prefs.search_enabled{"disabled"}else if search{"ready"}else{"search_connection_not_configured"}},"preferences":prefs}),
     ))
 }
 
@@ -175,3 +172,13 @@ async fn check(
     })??;
     Ok(Json(result))
 }
+
+fn search_service(state:&AppState)->ApiResult<crate::services::search_connections::SearchConnections>{let db=state.db().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"database unavailable"))?;let crypto=state.inner.ai_crypto.clone().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"search encryption unavailable"))?;Ok(crate::services::search_connections::SearchConnections::new(db.pool().clone(),crypto))}
+async fn search_state(state:&AppState,user:scribe_shared::UserId)->ApiResult<Value>{
+ let config=search_service(state)?.public(user).await?;
+ let fallback=if let (Some(db),Some(crypto))=(state.db(),state.inner.ai_crypto.clone()){crate::services::ai::AIService::new(db.pool().clone(),crypto).official_search_available(user).await.unwrap_or(false)}else{false};
+ Ok(json!({"config":config,"fallback":{"provider":"deepseek","available":fallback}}))
+}
+async fn search_config(State(state):State<AppState>,Authenticated(user):Authenticated)->ApiResult<Json<Value>>{Ok(Json(search_state(&state,user.id).await?))}
+async fn set_search_config(State(state):State<AppState>,Authenticated(user):Authenticated,Json(input):Json<crate::services::search_connections::SearchConfigInput>)->ApiResult<Json<Value>>{search_service(&state)?.save(user.id,input).await?;Ok(Json(search_state(&state,user.id).await?))}
+async fn delete_search_config(State(state):State<AppState>,Authenticated(user):Authenticated)->ApiResult<Json<Value>>{search_service(&state)?.delete(user.id).await?;Ok(Json(json!({"ok":true})))}

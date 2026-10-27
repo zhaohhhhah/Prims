@@ -57,3 +57,5 @@ pub mod archive_import;
 pub mod agent_library;
 
 pub mod agent_workbench;
+
+pub mod search_connections;

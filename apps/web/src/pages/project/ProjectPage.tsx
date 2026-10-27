@@ -278,7 +278,7 @@ export function ProjectPage() {
               <Download className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[15rem]">
+          <DropdownMenuContent align="end" className="prims-editor-menu min-w-[15rem]">
             <ExportMenuItems />
           </DropdownMenuContent>
         </DropdownMenu>

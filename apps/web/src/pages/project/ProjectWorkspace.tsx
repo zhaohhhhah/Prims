@@ -1396,7 +1396,7 @@ export function ProjectWorkspace({
                 <MoreHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-[12rem]">
+            <DropdownMenuContent align="end" className="prims-editor-menu min-w-[12rem]">
               {PANEL_TOGGLES.map((toggle) => (
                 <DropdownMenuItem
                   key={toggle.id}

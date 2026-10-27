@@ -6,6 +6,8 @@ export interface AgentPreferences { memoryEnabled: boolean; skillsEnabled: boole
 export interface AgentSkill { id: string; name: string; description: string; enabled: boolean; updatedAt: string }
 export interface AgentSkillDetail extends AgentSkill { content: string; untrusted: boolean; permissionsGranted: boolean }
 export interface AgentMemory { content: string; revision: number }
+export interface AgentSearchConfig { provider: 'doubao' | 'deepseek'; endpoint: string; hasApiKey: boolean; updatedAt: string }
+export interface AgentSearchState { config: AgentSearchConfig | null; fallback: { provider: 'deepseek'; available: boolean } }
 export interface AgentCapabilities {
   limits?: { modelRounds?: number; requestSeconds?: number; readCalls?: number; diagnosticCalls?: number };
   skills?: { available: boolean }; memory?: { available: boolean };
@@ -30,6 +32,9 @@ async function request<T>(userId: string, path: string, method = 'GET', body?: u
   return value as T;
 }
 export const agentLibraryApi = {
+  searchConfig: (userId: string) => request<AgentSearchState>(userId, '/api/agent/search-config'),
+  saveSearchConfig: (userId: string, body: { provider: 'doubao' | 'deepseek'; endpoint: string; apiKey: string }) => request<AgentSearchState>(userId, '/api/agent/search-config', 'PUT', body),
+  clearSearchConfig: (userId: string) => request<{ ok: boolean }>(userId, '/api/agent/search-config', 'DELETE'),
   preferences: (userId: string) => request<AgentPreferences>(userId, '/api/agent/preferences'),
   setPreferences: (userId: string, body: AgentPreferences) => request<AgentPreferences>(userId, '/api/agent/preferences', 'PUT', body),
   capabilities: (userId: string) => request<AgentCapabilities>(userId, '/api/agent/capabilities'),

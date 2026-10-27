@@ -87,6 +87,38 @@
   to { opacity: 1; }
 }
 
+/* Portal surfaces animate once when opened, never per token or editor update. */
+.prims-assistant-panel {
+  animation: prims-editor-popup-fade 160ms ease-out;
+}
+.prims-assistant-panel[data-layout="float"] {
+  transform-origin: center top;
+  animation: prims-editor-floating-in 160ms ease-out;
+}
+.prims-selection-popup {
+  transform-origin: left top;
+  animation: prims-selection-popup-in 160ms ease-out;
+}
+.prims-editor-menu[data-state="open"] {
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin, top right);
+  animation: prims-editor-floating-in 140ms ease-out;
+}
+.prims-editor-menu[data-state="closed"] {
+  animation: prims-editor-surface-out 100ms ease-out;
+}
+@keyframes prims-editor-popup-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes prims-editor-floating-in {
+  from { opacity: 0; transform: translateY(3px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes prims-selection-popup-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .prims-project-page button,
   .prims-project-page button::after,
@@ -104,9 +136,17 @@
     animation: none !important;
     transition: none !important;
   }
+  .prims-selection-popup,
+  .prims-assistant-panel,
+  .prims-editor-menu[data-state] {
+    animation: none !important;
+    transition: none !important;
+  }
   .prims-project-page .animate-spin,
   .prims-editor-workspace .animate-spin,
-  .prims-editor-sheet .animate-spin {
+  .prims-editor-sheet .animate-spin,
+  .prims-assistant-panel .animate-spin,
+  .prims-selection-popup .animate-spin {
     animation: none !important;
   }
 }
