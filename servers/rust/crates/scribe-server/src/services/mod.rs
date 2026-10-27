@@ -59,3 +59,5 @@ pub mod agent_library;
 pub mod agent_workbench;
 
 pub mod search_connections;
+
+pub mod skill_install;

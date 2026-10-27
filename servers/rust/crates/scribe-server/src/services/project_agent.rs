@@ -29,7 +29,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  for key in ["agentLibraryReference","agentFileToolsAllowed","agentPreferences","agentCapabilities","projectMemory","skillContent","skills","diagnosticsEnabled","skillsEnabled","memoryEnabled","searchEnabled"]{options.remove(key);}
  options.insert("agentFileToolsAllowed".into(),allow_files.to_string());
  options.insert("agentLibraryReference".into(),library.reference(user,project,&initial_preferences).await?.to_string());
- options.remove("projectTools");options.remove("projectContext");options.remove("projectContinuation");options.remove("projectEditsAllowed");options.remove("projectNativeTools");options.remove("projectNativeTurns");options.remove("projectCompaction");options.remove("projectPendingProposals");options.remove("contextCompaction");options.remove("projectCompacted");options.remove("projectPlan");options.remove("projectSearchSources");options.remove("webReferences");
+ options.remove("projectTools");options.remove("projectContext");options.remove("projectContinuation");options.remove("projectEditsAllowed");options.remove("projectNativeTools");options.remove("projectNativeTurns");options.remove("projectCompaction");options.remove("projectPendingProposals");options.remove("contextCompaction");options.remove("projectSkillInstalls");options.remove("projectCompacted");options.remove("projectPlan");options.remove("projectSearchSources");options.remove("webReferences");
  if !allow_files{options.remove("documentOutline");}
  let mut context_used=json!({"brief":!saved.brief.trim().is_empty(),"autoSummary":!saved.auto_summary.trim().is_empty(),"historyMessages":history_count,"historyTruncated":history_truncated,"fileTools":allow_files,"currentSection":options.get("currentSection"),"selectionStartLine":options.get("selectionStartLine"),"selectionEndLine":options.get("selectionEndLine"),"documentWindowStartLine":if allow_files{options.get("documentWindowStartLine")}else{None},"documentWindowEndLine":if allow_files{options.get("documentWindowEndLine")}else{None}});
  let storage=state.inner.storage.clone().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"storage unavailable"))?;
@@ -44,6 +44,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  let (tx,rx)=mpsc::channel::<Value>(16);
  tokio::spawn(async move{
   let mut pending=ProposalQueue::default();
+  let mut skill_installs=super::skill_install::SkillInstallQueue::default();
   let mut compaction_attempted=false;
   let mut search_session=super::web_search::SearchSession::default();
   let mut plan=super::agent_plan::AgentPlan::default();let mut loop_guard=super::agent_loop_guard::LoopGuard::default();let mut plan_updates=0usize;
@@ -68,6 +69,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
     if let Some(context)=context.as_ref(){context.sync(&mut input);}
     input.options.as_mut().unwrap().insert("projectPendingProposals".into(),pending.metadata().to_string());
     input.options.as_mut().unwrap().insert("projectPlan".into(),plan.metadata().to_string());
+    input.options.as_mut().unwrap().insert("projectSkillInstalls".into(),skill_installs.metadata().to_string());
     input.options.as_mut().unwrap().insert("projectSearchSources".into(),search_session.metadata().to_string());
     let request=ai.prepare_agent_request(user,input.clone()).await.map_err(AIStreamStartError::into_api_error)?;
     let actual_budget=actual_request_budget(&request);
@@ -118,11 +120,17 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
      let mut round_results=vec![];
      for call in &calls{
       let key=call.to_string();
-      if !matches!(call.get("tool").and_then(Value::as_str),Some("web_search"|"list_skills"|"read_skill"|"read_project_memory"|"run_project_check")){if let Some(previous)=completed.get(&key){round_results.push(json!({"toolCall":call,"toolResult":previous,"reused":true}));continue;}}
+      if !matches!(call.get("tool").and_then(Value::as_str),Some("web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check")){if let Some(previous)=completed.get(&key){round_results.push(json!({"toolCall":call,"toolResult":previous,"reused":true}));continue;}}
       let tool=call.get("tool").and_then(Value::as_str).ok_or_else(||ApiError::validation("读取工具缺少名称"))?;
       let preferences=library.preferences(user).await?;
       if let Err(error)=super::agent_library::gate_tool(tool,&preferences,writer,allow_files){round_results.push(json!({"toolCall":call,"toolResult":{"error":error.message}}));continue;}
       let result=match tool{
+       "install_skill"=>{
+        emit(&tx,json!({"status":"正在准备待确认的技能安装建议…"})).await?;
+        let text_bytes=pending.items.iter().map(|item|item.to_string().len()).sum();
+        let prepared=tokio::select!{_=tx.closed()=>return Ok(()),result=skill_installs.prepare(call,text_bytes)=>result};
+        match prepared{Ok((proposal,added))=>{pending.reserved_bytes=skill_installs.bytes();if added{emit(&tx,json!({"skillProposal":proposal,"status":"已准备技能建议，等待确认安装"})).await?;}Ok(json!({"ok":true,"proposalId":proposal["id"],"name":proposal["name"],"status":"pending_review","installed":false,"permissionsGranted":false,"note":"Only an installation preview was prepared. No skill was saved or enabled. The user must click Install; do not claim installation."}))},Err(error)=>Err(error)}
+       },
        "list_skills"|"read_skill"=>{
         if !preferences.skills_enabled{Err(ApiError::validation("个人技能已关闭"))}else if tool=="list_skills"{emit(&tx,json!({"status":"正在查看已启用的个人技能…"})).await?;library.list(user,true).await}else{emit(&tx,json!({"status":"正在读取相关个人技能…"})).await?;let id=call.get("id").and_then(Value::as_str).and_then(|id|Uuid::parse_str(id).ok()).ok_or_else(output_format_error)?;library.read(user,id,true).await}
        },
@@ -170,7 +178,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
       };
       let value=match result{Ok(value) if tool=="search_project"=>value,Ok(value)=>value,Err(err)=>json!({"tool":tool,"error":err.message})};
       let same_previous=completed.get(&key).is_some_and(|previous|previous==&value);
-      if !same_previous&&value.get("error").is_none()&&value.get("ok")!=Some(&Value::Bool(false))&&((matches!(tool,"list_files"|"search_project"|"read_file"|"compact_context"|"list_skills"|"read_skill"|"read_project_memory"|"run_project_check"))||(tool=="update_plan"&&value.get("changed")==Some(&Value::Bool(true)))||(tool=="web_search"&&value.get("cached")!=Some(&Value::Bool(true)))){new_results+=1;}
+      if !same_previous&&value.get("error").is_none()&&value.get("ok")!=Some(&Value::Bool(false))&&((matches!(tool,"list_files"|"search_project"|"read_file"|"compact_context"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"))||(tool=="update_plan"&&value.get("changed")==Some(&Value::Bool(true)))||(tool=="web_search"&&value.get("cached")!=Some(&Value::Bool(true)))){new_results+=1;}
       completed.insert(key,value.clone());round_results.push(json!({"toolCall":call,"toolResult":value}));
      }
      if loop_guard.observe(&calls,new_results,pending.items.len().saturating_sub(before_proposals)){return Err(ApiError::validation(super::agent_loop_guard::STOP_REPLY));}
@@ -201,7 +209,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
      for edit in output.get("edits").and_then(Value::as_array).cloned().unwrap_or_default(){
       if let Some(context)=context.as_ref(){match pending.submit(&edit,context,project_edits_allowed){Ok((proposal,is_new))=>{if is_new{emit(&tx,json!({"proposal":proposal,"status":"已提交一段待审修改"})).await?;}},Err(_)=>{emit(&tx,json!({"warning":{"code":"proposal_limit","message":"部分候选超过本轮有界额度，已保留此前完整候选，可继续分批处理。"}})).await?;}}}
      }
-     pending.merge(&mut output);
+     pending.merge(&mut output);skill_installs.merge(&mut output);
      if let Some(status)=public_status.as_ref(){emit(&tx,json!({"status":status})).await?;}
      let recovered=output.as_object_mut().and_then(|value|value.remove("_formatRecovery")).and_then(|value|value.as_bool()).unwrap_or(false);
      if recovered{emit(&tx,json!({"warning":{"code":"answer_only_recovered","message":"修改建议未完整生成，本轮只保留可读答复；没有任何修改已应用。"}})).await?;}
@@ -225,9 +233,9 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
   }).await;
   let error=match result{Ok(Err(err))=>Some(err.message),Err(_)=>Some("本轮对话超时，请重试".into()),_=>None};
   if let Some(error)=error{
-   if !pending.items.is_empty()&&!tx.is_closed(){
-    let message=format!("后续生成中断，已提交的 {} 处完整候选仍可逐段审阅。可继续提问处理剩余部分。",pending.items.len());
-    let mut output=json!({"reply":message,"replacement":null,"edits":[],"actions":[],"partial":true});pending.merge(&mut output);
+   if (!pending.items.is_empty()||!skill_installs.items.is_empty())&&!tx.is_closed(){
+    let message=format!("后续生成中断，已保留{}处文字建议与{}项待确认技能建议。",pending.items.len(),skill_installs.items.len());
+    let mut output=json!({"reply":message,"replacement":null,"edits":[],"actions":[],"partial":true});pending.merge(&mut output);skill_installs.merge(&mut output);
     let _=tx.send(json!({"warning":{"code":"partial_completion","message":message},"partial":true})).await;
     let _=tx.send(json!({"text":output.to_string(),"partial":true,"status":"已保留完整待审候选"})).await;
    }else{let _=tx.send(json!({"error":error})).await;}
@@ -282,7 +290,7 @@ async fn run_codex_compaction(ai:&AIService,user:UserId,input:&mut AICompleteInp
  *input=next;*turns=next_turns;continuation.clear();
  Ok(json!({"ok":true,"method":"codex_local_compaction","before":before,"after":after,"summaryChars":result.summary.chars().count(),"pendingProposals":pending.items.len(),"note":"User-level recap only. Original current request, read evidence and pending IDs/states remain authoritative; no candidate was applied."}))
 }
-#[derive(Default)]struct ProposalQueue{items:Vec<Value>,ranges:Vec<(String,(usize,usize),(usize,usize))>}
+#[derive(Default)]struct ProposalQueue{items:Vec<Value>,reserved_bytes:usize,ranges:Vec<(String,(usize,usize),(usize,usize))>}
 impl ProposalQueue{
  fn metadata(&self)->Value{json!(self.items.iter().map(|item|json!({"id":item["id"],"filePath":item["filePath"],"status":"pending_review","beforeChars":item["before"].as_str().map(|value|value.chars().count()),"afterChars":item["after"].as_str().map(|value|value.chars().count())})).collect::<Vec<_>>())}
  fn submit(&mut self,call:&Value,context:&ProjectContext,allowed:bool)->ApiResult<(Value,bool)>{
@@ -297,7 +305,7 @@ impl ProposalQueue{
   if self.ranges.iter().any(|(old_path,old_start,old_end)|old_path==path&&start<*old_end&&*old_start<end){return Err(ApiError::validation("这处精确修改与已有待审候选重叠，请缩小到未覆盖区域或先处理已有候选"));}
   if self.items.len()>=MAX_EDITS{return Err(ApiError::validation("本轮已提交48处完整候选，请先处理后继续分批修改"));}
   let proposal=json!({"id":Uuid::new_v4().to_string(),"filePath":path,"before":before,"after":after,"status":"pending_review"});
-  let bytes=self.items.iter().map(|item|item.to_string().len()).sum::<usize>()+proposal.to_string().len();if bytes>60000{return Err(ApiError::validation("本轮待审候选已达60KB，请先处理已有候选后继续分批修改"));}
+  let bytes=self.items.iter().map(|item|item.to_string().len()).sum::<usize>()+proposal.to_string().len();if bytes>60000usize.saturating_sub(self.reserved_bytes){return Err(ApiError::validation("本轮待审候选已达60KB，请先处理已有候选后继续分批修改"));}
   self.ranges.push((path.to_string(),start,end));self.items.push(proposal.clone());Ok((proposal,true))
  }
  fn merge(&self,output:&mut Value){if self.items.is_empty(){return;}output["edits"]=json!(self.items.iter().map(|item|json!({"filePath":item["filePath"],"before":item["before"],"after":item["after"]})).collect::<Vec<_>>());output["proposalIds"]=json!(self.items.iter().map(|item|item["id"].clone()).collect::<Vec<_>>());output["replacement"]=Value::Null;}
@@ -313,7 +321,7 @@ impl NativeCalls{
   if let Some(id)=delta.id{if call.id!=id{call.id.push_str(&id);}}
   if let Some(name)=delta.name{if call.name!=name{call.name.push_str(&name);}}
   if let Some(arguments)=delta.arguments{call.arguments.push_str(&arguments);}
-  if call.id.len()>256||call.name.len()>128||call.arguments.len()>32768{return Err(ApiError::validation("工具调用参数过长，请缩小读取范围"));}
+  if call.id.len()>256||call.name.len()>128||call.arguments.len()>(if call.name=="install_skill"{110000}else{32768}){return Err(ApiError::validation("工具调用参数过长，请缩小读取范围"));}
   Ok(())
  }
  fn finish(self)->ApiResult<Vec<NativeToolCall>>{
@@ -325,7 +333,7 @@ impl NativeCalls{
 fn native_calls_output(calls:&[NativeToolCall])->ApiResult<Value>{
  if calls.is_empty()||calls.len()>MAX_TOOL_CALLS{return Err(output_format_error());}let mut normalized=vec![];
  for call in calls{
-  let allowed:&[&str]=match call.name.as_str(){"list_files"|"compact_context"|"list_skills"|"read_project_memory"=>&[],"search_project"=>&["query"],"read_file"=>&["path","startLine","endLine"],"propose_edit"=>&["filePath","before","after"],"update_plan"=>&["explanation","plan"],"web_search"=>&["query","count"],"read_skill"=>&["id"],"run_project_check"=>&["task","path"],_=>return Err(ApiError::validation("模型请求了未授权工具，只允许列目录、查找和读取项目文件"))};
+  let allowed:&[&str]=match call.name.as_str(){"list_files"|"compact_context"|"list_skills"|"read_project_memory"=>&[],"search_project"=>&["query"],"read_file"=>&["path","startLine","endLine"],"propose_edit"=>&["filePath","before","after"],"update_plan"=>&["explanation","plan"],"web_search"=>&["query","count"],"read_skill"=>&["id"],"install_skill"=>&["content","url"],"run_project_check"=>&["task","path"],_=>return Err(ApiError::validation("模型请求了未授权工具，只允许列目录、查找和读取项目文件"))};
   let args:Value=serde_json::from_str(if call.arguments.trim().is_empty()&&matches!(call.name.as_str(),"list_files"|"compact_context"|"list_skills"|"read_project_memory"){"{}"}else{&call.arguments}).map_err(|_|ApiError::validation("原生工具参数未完整生成，本轮未执行"))?;
   let args=args.as_object().filter(|args|args.keys().all(|key|allowed.contains(&key.as_str()))).ok_or_else(||ApiError::validation("原生工具参数必须是白名单字段组成的完整对象"))?;
   let mut value=Value::Object(args.clone());value["tool"]=json!(call.name);normalized.push(value);
@@ -354,10 +362,10 @@ fn parse_read_tool_sequence(raw:&str)->ApiResult<Option<Value>>{
   let status=super::project_progress::take_public_status(&mut value);if public_status.is_none(){public_status=status;}
   let item=value.as_object().ok_or_else(||ApiError::validation("读取工具批次必须由完整 JSON 对象组成"))?;
   if let Some(name)=item.get("tool").filter(|value|!value.is_null()){
-   let name=name.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"read_project_memory"|"run_project_check")).ok_or_else(||ApiError::validation("工具批次只允许 list_files、search_project、read_file"))?;
+   let name=name.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check")).ok_or_else(||ApiError::validation("工具批次只允许 list_files、search_project、read_file"))?;
    let mut call=json!({"tool":name});
    match name{
-    "list_skills"|"read_skill"|"read_project_memory"|"run_project_check"=>{super::agent_library::validate_tool(&value)?;for key in ["id","task","path"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
+    "list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"=>{super::agent_library::validate_tool(&value)?;for key in ["id","task","path","content","url"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "web_search"=>{for key in ["query","count"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "update_plan"=>{for key in ["explanation","plan"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "propose_edit"=>{for key in ["filePath","before","after"]{call[key]=item.get(key).filter(|value|value.is_string()).cloned().ok_or_else(||ApiError::validation("propose_edit需要完整filePath、before、after字符串"))?;}},
@@ -406,9 +414,9 @@ fn normalize_model_value_without_status(value:Value,trusted:bool)->ApiResult<Val
  let object=value.as_object().ok_or_else(output_format_error)?;
  if let Some(tool)=object.get("tool").filter(|tool|!tool.is_null()){
   if !trusted{return Err(output_format_error());}
-  let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"read_project_memory"|"run_project_check")).ok_or_else(output_format_error)?;
-  if matches!(name,"list_skills"|"read_skill"|"read_project_memory"|"run_project_check"){super::agent_library::validate_tool(&value)?;}
-  let mut output=json!({"tool":name});for key in ["id","task","path","query","startLine","endLine","filePath","before","after","explanation","plan","count"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
+  let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check")).ok_or_else(output_format_error)?;
+  if matches!(name,"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"){super::agent_library::validate_tool(&value)?;}
+  let mut output=json!({"tool":name});for key in ["id","task","path","content","url","query","startLine","endLine","filePath","before","after","explanation","plan","count"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
   if name=="read_file"{let path=output.get("path").and_then(Value::as_str).ok_or_else(output_format_error)?;super::project_context::validate_path(path)?;for key in ["startLine","endLine"]{if output.get(key).is_some_and(|value|!value.is_u64()){return Err(output_format_error());}}}
   if name=="search_project"&&!output.get("query").and_then(Value::as_str).is_some_and(|query|!query.trim().is_empty()&&query.chars().count()<=200){return Err(output_format_error());}
   return Ok(output);
@@ -612,4 +620,6 @@ fn validate_project_edit_targets(output:&Value,context:Option<&ProjectContext>)-
  #[test]fn multi_edit_can_reference_current_file_beyond_selection_and_disables_legacy_path(){let mut value=json!({"reply":"preview","replacement":"legacy duplicate","edits":[edit("main.tex","an exact paragraph outside the small selection","improved paragraph"),edit("main.tex","second exact sentence","")]});validate_edit_output(&mut value,"main.tex",true).unwrap();assert!(value["replacement"].is_null());assert_eq!(value["edits"].as_array().unwrap().len(),2);}
  #[test]fn rejects_unsafe_empty_and_malformed_edits(){for edits in [json!([edit("main.tex"," ","replacement")]),json!([{"filePath":"main.tex","before":"original"}]),json!("not an array")]{let mut value=json!({"reply":"preview","replacement":null,"edits":edits});assert!(validate_edit_output(&mut value,"main.tex",true).is_err());}let mut value=json!({"reply":"preview","replacement":null,"edits":[edit("../private","original","replacement")]});assert!(validate_edit_output(&mut value,"../private",true).is_err());}
  #[test]fn enforces_edit_count_and_character_budgets(){let mut value=json!({"reply":"preview","replacement":null,"edits":(0..49).map(|n|edit("main.tex",&format!("original {n}"),"replacement")).collect::<Vec<_>>()});assert!(validate_edit_output(&mut value,"main.tex",true).is_err());value["edits"]=json!([edit("main.tex",&"界".repeat(16001),"replacement")]);assert!(validate_edit_output(&mut value,"main.tex",true).is_err());value["edits"]=json!([edit("main.tex","original",&"界".repeat(24001))]);assert!(validate_edit_output(&mut value,"main.tex",true).is_err());value["edits"]=json!((0..3).map(|_|edit("main.tex",&"b".repeat(15000),&"a".repeat(15000))).collect::<Vec<_>>());assert!(validate_edit_output(&mut value,"main.tex",true).is_err());}
+ #[test]fn skill_install_uses_both_tool_protocols_but_cannot_grant_permissions(){let content="---\nname: proposed-skill\ndescription: Workflow reference.\n---\nPreserve citations.";let value=json!({"tool":"install_skill","content":content});assert_eq!(parse_model_output(&value.to_string()).unwrap()["tool"],"install_skill");let native=NativeToolCall{id:"skill-call".into(),name:"install_skill".into(),arguments:json!({"content":content}).to_string()};assert_eq!(native_calls_output(&[native]).unwrap()["calls"][0]["tool"],"install_skill");for bad in [json!({"tool":"install_skill","content":content,"enabled":true}),json!({"tool":"install_skill","content":content,"userId":"other"}),json!({"tool":"install_skill","command":"install.sh"})]{assert!(parse_model_output(&bad.to_string()).is_err());}}
+
 }

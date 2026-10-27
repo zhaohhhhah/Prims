@@ -211,8 +211,14 @@ Existing custom combinations are retained until a collection is chosen.
 Settings now has an independent Agent section for personal tool preferences,
 text-only Agent Skills and account-and-project private memory. Import or edit
 SKILL.md with YAML name/description (up to 48 KiB), enable/disable skills, or
-archive them. Importing instructions does not execute bundled scripts or grant
-permissions. Memory is bounded to 4,000 characters; revision checks preserve
+archive them. The Agent can also prepare an install_skill suggestion from complete
+SKILL.md text or a bounded public GitHub SKILL.md URL. This prepares a text-only,
+pending-review card: it does not save or enable a skill. Only the user's Install
+click writes to their personal library; Reject does not write, and same-name
+conflicts never overwrite an existing skill. Scripts are never executed and
+allowed-tools metadata grants no permissions. Completed cards persist in the
+conversation without becoming installation authorization on refresh.
+Memory is bounded to 4,000 characters; revision checks preserve
 unsaved drafts when another session changes it. Existing chat-model connections remain unchanged;
 search credentials are managed separately.
 
@@ -220,8 +226,12 @@ Project reads stay membership-scoped. Text and file changes require explicit
 acceptance. The assistant has no host-system tool or arbitrary shell/MCP setup.
 Optional diagnostics run fixed LaTeX/font tasks on a saved, authorized snapshot
 in a fresh resource-limited, network-disabled worker; this does not edit project
-files or install system fonts. Health checks distinguish configured services
-from workers that are actually ready. Independent Doubao or DeepSeek search settings are shared
+files or install system fonts. Operators can optionally supply appropriately
+licensed font resources as read-only mounts to disposable workers. These mounts
+are fixed operator configuration, not model-selected paths or host font installs;
+operator-supplied font binaries and private license files are not distributed here.
+See the [workbench guide](servers/workbench/README.md) and its generic examples.
+Health checks distinguish configured services from workers that are actually ready. Independent Doubao or DeepSeek search settings are shared
 across the user's chat models and remain controlled by the personal search
 preference. No additional system permissions are granted.
 

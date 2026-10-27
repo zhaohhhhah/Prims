@@ -20,6 +20,8 @@ DOCKER = ['/usr/bin/docker', '-H', DOCKER_HOST]
 IMAGE = os.environ.get('PRIMS_WORKBENCH_IMAGE', '')
 CACHE = os.environ.get('PRIMS_WORKBENCH_TEX_CACHE', '')
 SECRET_FILE = os.environ.get('PRIMS_WORKBENCH_TOKEN_FILE', '')
+FONT_DIR = os.environ.get('PRIMS_WORKBENCH_FONT_DIR', '')
+FONT_CACHE = os.environ.get('PRIMS_WORKBENCH_FONT_CACHE', '')
 SLOTS = threading.BoundedSemaphore(2)
 LOCK = threading.Lock()
 RUNS = {}
@@ -38,16 +40,31 @@ def remove(name):
         pass
 
 
+def optional_font_mounts():
+    """Operator-only fixed resources. No request body can alter mounts."""
+    if not FONT_DIR and not FONT_CACHE:
+        return []
+    if not FONT_DIR or not FONT_CACHE:
+        raise ValueError('Configure PRIMS_WORKBENCH_FONT_DIR and PRIMS_WORKBENCH_FONT_CACHE together')
+    for value in (FONT_DIR, FONT_CACHE):
+        if not Path(value).is_absolute() or ',' in value or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError('Font resource paths must be absolute and contain no comma or control character')
+    return [
+        '--mount', f'type=bind,source={FONT_DIR},target=/usr/local/share/fonts/prims-import,readonly,bind-propagation=rprivate',
+        '--mount', f'type=bind,source={FONT_CACHE},target=/var/cache/fontconfig,readonly,bind-propagation=rprivate',
+    ]
+
+
 def container_options(name):
-    return ['create', '--pull', 'never', '-i', '--name', name, '--label', 'prims.workbench=true',
+    options = ['create', '--pull', 'never', '-i', '--name', name, '--label', 'prims.workbench=true',
             '--network', 'none', '--user', '10001:10001', '--read-only',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
             '--memory', '512m', '--memory-swap', '512m', '--cpus', '1', '--pids-limit', '64',
             '--ulimit', 'nofile=256:256', '--ulimit', 'fsize=67108864:67108864',
             '--tmpfs', '/workspace:rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001',
             '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=10001,gid=10001',
-            '--mount', f'type=bind,source={CACHE},target=/cache,readonly,bind-propagation=rprivate',
-            IMAGE]
+            '--mount', f'type=bind,source={CACHE},target=/cache,readonly,bind-propagation=rprivate']
+    return options + optional_font_mounts() + [IMAGE]
 
 
 def execute_job(job, raw, run):
@@ -231,6 +248,10 @@ def main():
         raise SystemExit('Pin PRIMS_WORKBENCH_IMAGE to the approved worker image ID')
     if not CACHE or not Path(CACHE).is_absolute() or ',' in CACHE or any(ord(c)<32 for c in CACHE):
         raise SystemExit('Configure the trusted public TeX cache directory')
+    try:
+        optional_font_mounts()
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
     secret_path = Path(SECRET_FILE)
     if not SECRET_FILE or not secret_path.is_file() or stat.S_IMODE(secret_path.stat().st_mode) & 0o077:
         raise SystemExit('A private mode-0600 token file is required')

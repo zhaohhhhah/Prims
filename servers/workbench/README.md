@@ -53,3 +53,25 @@ Do not claim that this service installed system fonts or examined unsaved editor
 - Python: https://github.com/docker-library/python (official image packaging), Python Software Foundation License for interpreter.
 - Debian bookworm fontconfig/fonts-dejavu: packaged upstream licenses retained in worker `/usr/share/doc/*/copyright`.
 - Thin adapter files follow this repository's existing license; no OpenCode SDK or full agent distribution is vendored.
+
+## Optional shared public font resources
+
+Operators may set **both** `PRIMS_WORKBENCH_FONT_DIR` and `PRIMS_WORKBENCH_FONT_CACHE`.
+Both paths must be absolute, without commas or control characters; half-configured pairs
+prevent broker startup. Empty values retain the previous worker behavior. These values
+come only from trusted deployment environment, never from HTTP/model/job fields.
+
+The daemon binds the font library readonly at `/usr/local/share/fonts/prims-import` and
+its prebuilt fontconfig cache readonly at `/var/cache/fontconfig` inside each disposable
+worker. The broker itself does not require either host directory to be mounted. Standard
+`/etc/fonts/fonts.conf`, already included by the worker's temporary project font configuration,
+discovers the additional default font directory. Project-specific uploaded fonts and their
+writable cache remain temporary and scoped to the individual job.
+
+Prepare caches with the compatible fontconfig version and these exact container target
+paths before deployment. Ensure UID10001 can traverse/read the public library/cache, keep
+both readonly at runtime, and test actual family availability/LaTeX use. Do not point them
+at user documents, private directories, socket paths or secrets. This does not install or
+write fonts on the NAS. Font licensing remains the operator's responsibility; font binaries,
+caches and NAS-specific paths must never be copied into the public GitHub repository.
+All original worker isolation flags and the fixed operator-pinned worker image remain intact.

@@ -21,6 +21,9 @@ services:
       PRIMS_WORKBENCH_IMAGE: ${WORKBENCH_WORKER_IMAGE:?pin worker SHA256 image ID}
       PRIMS_WORKBENCH_TEX_CACHE: ${WORKBENCH_PUBLIC_TEX_CACHE:?daemon-visible public cache path}
       PRIMS_WORKBENCH_TOKEN_FILE: /run/secrets/workbench-token
+      # Optional daemon-visible public resources. Set both or leave both empty.
+      PRIMS_WORKBENCH_FONT_DIR: ${WORKBENCH_PUBLIC_FONT_DIR:-}
+      PRIMS_WORKBENCH_FONT_CACHE: ${WORKBENCH_PUBLIC_FONT_CACHE:-}
     volumes:
       # Only this trusted broker receives the socket; never the app/model/worker.
       - type: bind
@@ -35,3 +38,6 @@ services:
 # Each disposable worker separately has512MiB+CPU1+45s/90s limits.
 # No ports are published: the broker code binds127.0.0.1 only, using host networking.
 # The public TeX cache is mounted only into ephemeral workers, readonly, by the daemon.
+
+# Optional font library/cache are also mounted readonly only into ephemeral workers.
+# Do not put fonts or generated caches in this source tree or the public repository.
