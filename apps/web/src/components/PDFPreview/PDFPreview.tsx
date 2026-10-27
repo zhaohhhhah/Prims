@@ -144,6 +144,9 @@ export function PDFPreview({
       try {
         const loadingTask = pdfjs.getDocument({
           url,
+          cMapUrl: `${import.meta.env.BASE_URL}pdfjs/cmaps/`,
+          cMapPacked: true,
+          standardFontDataUrl: `${import.meta.env.BASE_URL}pdfjs/standard_fonts/`,
           // GPU-accelerated image and pattern decode where the
           // browser supports it. On modern Chrome / Edge / Firefox
           // this is a meaningful speedup for figure-heavy pages

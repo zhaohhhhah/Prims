@@ -1,137 +1,120 @@
-<div align="center">
+# Prims
 
-<img src="docs/logo.png" alt="Scribe logo" width="180" />
+**A self-hosted collaborative LaTeX editor with an AI writing partner.**
 
-# Scribe
+Prims is a personal fork of [Scribe](https://github.com/sunnyallana/Scribe),
+created by [Sunny Shaban Ali](https://github.com/sunnyallana). It keeps the
+upstream React, CodeMirror, Yjs, Rust, Supabase and Tectonic foundation, and
+adds a browser-first workflow for writing with your own AI endpoint.
 
-**The collaborative LaTeX editor you can actually own.**
+## What's different
 
-Real-time multi-author. Offline-first. Self-hostable in a single Rust binary.
+- **One project assistant.** Keep it floating or docked, continue a discussion,
+  start a new conversation, or return to a previous one.
+- **Editable suggestions inside the document.** A selection is a clue to the
+  task. The model can suggest several related changes in the current file.
+  Review and edit each candidate, apply or reject paragraphs independently,
+  and undo accepted changes. Accept/reject controls sit beside each Git-style
+  red/green preview. Candidates do not become document content until
+  accepted. Ambiguous or conflicting source text blocks application.
+- **Project context.** The assistant can list files, search filenames and text,
+  and read relevant text windows or supported images through bounded,
+  project-authorized tools. A private conversation summary is updated within
+  the normal reply rather than a separate summarization request.
+- **Conversation without forced edits.** The model can explain uncertainty or
+  ask a clarifying question. A useful answer without a proposed change is a
+  successful response.
+- **Appearance.** Light, dark and automatic system-following modes, with a
+  remembered preference.
+- **Bring your own API.** Each account configures its own endpoint, API key
+  and model. Stored credentials use the server's encryption key. Explicit
+  image-capability errors trigger one image-free retry with an optional hint;
+  unrelated network, authentication and rate-limit errors remain errors.
+- **Chinese UI and onboarding.** Language settings, first-use API setup and a
+  private, editable LaTeX welcome project with examples and a tutorial.
+- **Invitation administration.** Invite-only registration, an administrator
+  page, and private SMTP settings with QQ-compatible TLS presets. Personal
+  Outlook OAuth is an optional alternative; only one configured mail
+  transport is active at a time.
+- **Chinese PDF preview assets.** PDF.js CMaps and standard fonts are served
+  from the same application origin, with their license files preserved.
 
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
-[![Stack: React + Rust](https://img.shields.io/badge/stack-React%20%2B%20Rust-1f1f1f)](#tech-stack)
-[![Realtime: Yjs](https://img.shields.io/badge/realtime-Yjs%20CRDT-0a7e8c)](https://docs.yjs.dev)
-[![Desktop: Tauri 2](https://img.shields.io/badge/desktop-Tauri%202-24C8DB)](./apps/desktop/README.md)
-[![Self-hostable](https://img.shields.io/badge/self--hostable-yes-22c55e)](./docs/self-hosting.md)
+## Run it yourself
 
-[**Web app**](./apps/web/README.md) &nbsp;·&nbsp;
-[**Desktop app**](./apps/desktop/README.md) &nbsp;·&nbsp;
-[**Backend**](./servers/rust/README.md) &nbsp;·&nbsp;
-[**Self-host**](./docs/self-hosting.md) &nbsp;·&nbsp;
-[**Roadmap**](./PLAN.md)
+This fork needs the upstream application services **and the Prims database
+extensions**. Existing Scribe databases must be backed up before migration.
 
-</div>
+1. Follow the upstream [setup scripts](scripts/README.md) and
+   [self-hosting guide](docs/self-hosting.md) to prepare PostgreSQL/Supabase,
+   Auth, Storage, Redis, Tectonic and the application environment.
+2. Copy `.env.example` to a private `.env`, then fill in your own values.
+   Generate and keep a stable `AI_KEY_ENCRYPTION_KEY`; rotating it makes
+   existing encrypted provider credentials unreadable.
+3. Follow [Prims database setup](supabase/prims/README.md) for the additional
+   private tables, invitation gate and explicit administrator assignment.
+   Create the initial owner through trusted Supabase Auth administration before
+   installing the invitation gate; the Prims signup form already requires an
+   invitation. Complete this before normal use; the original migrations alone are not
+   enough for this fork.
+4. Build the web application and Rust server using the workspace commands
+   below. Serve the web application, API and `/supabase` gateway at the same
+   public origin. Configure HTTPS in your reverse proxy.
+5. Sign in and configure your own model endpoint in Settings. Mail delivery is
+   optional and remains off until an administrator configures it. See the
+   [optional mail controller](deploy/mail/README.md).
 
----
+```sh
+corepack enable
+pnpm install --frozen-lockfile
+pnpm exec turbo run build --filter=@scribe/web...
 
-## Quick start
-
-```bash
-# 1. Install the toolchain + build everything (Node, Rust, Redis, tectonic)
-./scripts/linux-macos/setup.sh                                         # Linux / macOS
-powershell -ExecutionPolicy Bypass -File scripts\windows\setup.ps1     # Windows
-
-# 2. Create a free Supabase project, then let the wizard fill in .env
-#    (say yes to the browser option: log into the dashboard and it captures
-#    the keys itself — every value validated live, DB host auto-discovered)
-node scripts/setup-env.mjs
-
-# 3. Apply the database migrations to that project
-pnpm exec supabase login
-pnpm exec supabase link --project-ref <your-project-ref>
-pnpm exec supabase db push
-
-# 4. Create your first login (fresh projects can't self-register without SMTP)
-node scripts/seed-user.mjs
-
-# 5. Run it — Redis + Rust API + web app
-./scripts/linux-macos/run.sh                                           # Linux / macOS
-powershell -ExecutionPolicy Bypass -File scripts\windows\run.ps1       # Windows
+cd servers/rust
+cargo test -p scribe-ai -p scribe-server
+cargo build --release -p scribe-server
 ```
 
-Open <http://localhost:5173>, log in with the account from step 4, and
-you're writing LaTeX. Full walkthrough in
-[`scripts/README.md`](./scripts/README.md); every variable explained in
-[`docs/env-vars.md`](./docs/env-vars.md).
+The package scope, crate names, storage keys and compatibility environment
+variables retain their upstream `scribe` identifiers. The visible application
+brand is **Prims**. The added workflow is tested in the web application;
+desktop packaging is inherited from upstream and has not been revalidated for
+all these additions.
 
-## Why it exists
+## Tests
 
-Collaborative LaTeX writing runs into the same persistent problems regardless of which tools a team reaches for, and most workflows leave at least one of them unsolved.
+```sh
+pnpm exec turbo run test --filter=@scribe/editor --filter=@scribe/web
+cd servers/rust
+cargo test -p scribe-ai -p scribe-server
+```
 
-Hosted services like Overleaf and Papeeria are pleasant within their pricing tiers, but the free plans cap how many collaborators a project can have, the paid plans bill per seat, and the document ends up living on infrastructure outside the team's control. Overleaf's Community Edition is open source, which sounds like the answer, except standing it up means running an eight-container Docker stack with MongoDB, Redis, an internal Node service mesh, and a multi-gigabyte TeX Live image: most of a weekend of work before anyone writes a single line. Local editors solve the lock-in by going the other way. TeXstudio, TeXmaker, and VS Code with the LaTeX Workshop extension are fast and entirely offline, but the moment a co-author wants to type into the same document in real time, the workflow regresses to emailed attachments and hand-resolved merge conflicts.
+Tests cover anchored edits, candidate changes without document writes,
+independent application and guarded undo, cross-target proposal rejection,
+bounded context, image-error classification and private context validation.
+The deployment used disposable-account integration tests for conversation
+isolation/history, read-only project search, image retry limits and mail
+permission checks. Those private deployment fixtures and their credentials
+are not part of this repository.
 
-Underneath all of that sits the LaTeX engine itself, which has never really been a single thing to install. TeX Live is gigabytes. MiKTeX downloads packages lazily and quietly fails when one of them cannot be fetched. A collaborator's `pdflatex` drifts a minor version and a `\bibliography{}` macro that resolved cleanly on one laptop yesterday resolves differently on another today.
+## Scope and data
 
-Scribe addresses each of those problems in a single stack. A single Rust binary runs the API, with no service mesh, no Mongo, and no container choreography. The desktop installer ships its own LaTeX engine inside the bundle, so a clean Windows machine compiles a paper on first launch without a separate MiKTeX setup. The same React codebase powers both the browser SPA and the Tauri shell, with a small `isTauri()` branch on each side handling the local-compile and offline-sync paths. Yjs gives every project the same multi-cursor feel as Google Docs, WebRTC opens a peer-to-peer voice channel between collaborators, and the AI features call out to whichever provider key is configured (OpenAI, Anthropic, Gemini, Ollama, LM Studio, or any OpenAI-compatible endpoint). The whole codebase ships under AGPL-3.0, which keeps a self-hosted instance entirely in the operator's hands.
+Model tools are read-only; document writes happen through the editor after
+acceptance. Multi-part suggestions currently target the active file. Image
+context supports PNG, JPEG and WebP; PDF, Office and HEIC extraction are not
+implemented by these tools. Project files sent to a model use the signed-in
+account's configured provider. Deployers should configure access, backups,
+retention and model-provider policies for their own installation.
 
-## How Scribe compares
+This repository contains source code and example configuration. It does not
+contain a production database, personal documents, provider credentials,
+mailbox authorization codes, certificates or private deployment addresses.
 
-|                                          |                **Scribe**                 |   Overleaf (cloud)    |    Overleaf Community    |  Papeeria   |     TeXstudio + git      |
-| ---------------------------------------- | :---------------------------------------: | :-------------------: | :----------------------: | :---------: | :----------------------: |
-| Real-time multi-cursor collaboration     |                    yes                    |       paid tier       |           yes            |     yes     |            no            |
-| Self-hostable                            |              one Rust binary              |          no           | 8-container Docker stack |     no      |           n/a            |
-| Native desktop installer                 |            MSI + NSIS, signed             |          no           |            no            |     no      | yes (manual TeX install) |
-| Offline-first                            |            yes (SQLite mirror)            |          no           |            no            |     no      |           yes            |
-| LaTeX engine in the installer            | tectonic bundled, MiKTeX via post-install |          n/a          |           n/a            |     n/a     |     separate install     |
-| Voice chat between collaborators         |                WebRTC mesh                |          no           |            no            |     no      |            no            |
-| AI assist with your own provider key     |     6 providers, AES-256-GCM at rest      | partial, Premium tier |            no            |     no      |     extensions only      |
-| Forward SyncTeX (PDF click jumps editor) |                    yes                    |          yes          |           yes            |   partial   |           yes            |
-| Auto-updater on the desktop              |        signed releases via GitHub         |          no           |            no            |     no      |    depends on distro     |
-| Source license                           |                 AGPL-3.0                  |      proprietary      |         AGPL-3.0         | proprietary |          varies          |
+## Upstream and license
 
-## Architecture
+Based on Scribe commit
+[`d68b1996e780d906670830bbb4584c2387125ddf`](https://github.com/sunnyallana/Scribe/commit/d68b1996e780d906670830bbb4584c2387125ddf).
+Original author: **Sunny Shaban Ali**. Prims modifications are maintained by
+[@zhaohhhhah](https://github.com/zhaohhhhah).
 
-<p align="center">
-  <img src="docs/architecture.png" alt="Scribe application architecture overview: Tauri 2 desktop and React + CodeMirror 6 browser SPA share a single codebase and talk to a central Rust API hub (Axum, JWT, Tower) that exposes REST routes, a Yjs realtime channel, a Redis-backed compile pipeline, and an AI proxy. The data tier holds Supabase (Postgres + RLS + Object Storage + Auth), Redis (job queue + pub/sub), and external AI providers (OpenAI, Anthropic, Gemini, Ollama, LM Studio, any OpenAI-compatible endpoint). A separate desktop-local cluster powers offline-first operation with a SQLite mirror, a 48 MB bundled tectonic binary, per-project workdirs, and a sync engine with three-way conflict resolution." width="100%" />
-  <br />
-  <sub><i>Clients, Rust API hub, data tier, and the desktop-local offline-first cluster: the four zones that make Scribe work in the browser, on the desktop, and offline from the same codebase.</i></sub>
-</p>
-
-Four layers, in flow order:
-
-- **Clients**: the same React SPA runs in a regular browser AND inside the Tauri desktop shell. `isTauri()` branches the few divergent paths (compile dispatch, sync engine, deep-link routing).
-- **Rust API**: Axum on `:3010`, hexagonal services, JWT auth, zod-validated DTOs. Hosts REST routes, a Yjs CRDT WebSocket hub, a Redis-backed compile queue with multi-worker fan-out, and an SSE-streamed AI proxy.
-- **Data + External**: Supabase Postgres (RLS-secured) + Object Storage (PDFs, SyncTeX, version snapshots) + Redis (queue, pub/sub for live log streaming), with user-keyed AI providers reached over HTTPS.
-- **Desktop-local**: the offline-first branch. SQLite mirror at `%LOCALAPPDATA%\io.scribe.desktop\`, the bundled tectonic binary (no TeX distribution required), per-project workdirs, and a sync engine that pushes/pulls on reconnect with a three-way conflict modal for hard collisions.
-
-## Components
-
-Per-folder READMEs cover everything specific to each piece. Top-level README stays as a landing page only.
-
-| Where                                            | What                                                                |
-| ------------------------------------------------ | ------------------------------------------------------------------- |
-| [`apps/web`](./apps/web/README.md)               | React + CodeMirror 6 SPA: the editor itself, runs in any browser    |
-| [`apps/desktop`](./apps/desktop/README.md)       | Tauri 2 native shell: offline-first SQLite mirror, bundled tectonic |
-| [`servers/rust`](./servers/rust/README.md)       | Axum API hub: REST, Yjs realtime, compile queue, AI proxy           |
-| [`scripts`](./scripts/README.md)                 | Cross-platform setup + run scripts (Linux / macOS / Windows)        |
-| [`docs/self-hosting.md`](./docs/self-hosting.md) | Docker compose recipe + reverse-proxy / TLS / backup notes          |
-| [`docs/env-vars.md`](./docs/env-vars.md)         | Every env var with the exact source for its value                   |
-| [`PLAN.md`](./PLAN.md)                           | Phase-by-phase roadmap, status, and design decisions                |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md)           | How to file issues, send patches, and run the test suite            |
-
-## Tech stack
-
-| Layer                  | Technology                                                                                            |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Frontend**           | React 18, TypeScript (`strict`), Vite, Tailwind, shadcn/ui, Zustand, TanStack Query, react-i18next    |
-| **Editor**             | CodeMirror 6 with a custom Lezer-based LaTeX grammar, custom Yjs binding                              |
-| **PDF viewer**         | pdf.js with HiDPI oversampling, GPU acceleration, OffscreenCanvas, SyncTeX                            |
-| **Realtime**           | Yjs (CRDT) + a Rust WebSocket fan-out (`scribe-yjs`) with per-doc broadcast and read-only enforcement |
-| **Backend**            | Rust, Axum 0.7, Tokio 1.40, sqlx 0.8, hyper, tower-http                                               |
-| **Auth**               | Supabase Auth (JWT, ES256 / RS256 via JWKS); response cache + circuit breaker                         |
-| **Database & storage** | Supabase Postgres + Storage                                                                           |
-| **Queue**              | Redis (BLPOP-based job queue, BullMQ-compatible naming)                                               |
-| **Compile**            | Tectonic by default; switch to latexmk-style multi-pass against TeX Live / MiKTeX                     |
-| **Export**             | Pandoc 3.x (LaTeX → Markdown / DOCX)                                                                  |
-| **AI**                 | OpenAI, Anthropic, Gemini, Ollama, LM Studio, any OpenAI-compatible endpoint                          |
-| **Build**              | Turborepo + pnpm workspaces; Cargo workspace for the Rust crates                                      |
-
-## License
-
-[AGPL-3.0-or-later](./LICENSE) is the same license family as Overleaf
-Community Edition. If you run a modified version as a network service,
-the modifications must be shared back.
-
-## Author
-
-Built by [**Sunny Shaban Ali**](https://github.com/sunnyallana). Issues, PRs, and feature requests are welcome.
+Prims remains **AGPL-3.0-or-later**. See [LICENSE](LICENSE), the preserved
+[upstream README](docs/UPSTREAM_README.md), and existing third-party notices.
+The upstream history and attribution are retained.

@@ -4,6 +4,7 @@ import { AppShell } from './layouts/AppShell';
 import { AuthGuard } from './layouts/AuthGuard';
 import { RootLayout } from './layouts/RootLayout';
 import { AuthCallbackPage } from './pages/auth/AuthCallbackPage';
+import { ResetPasswordPage } from './pages/auth/ResetPasswordPage';
 import { ForgotPasswordPage } from './pages/auth/ForgotPasswordPage';
 import { InviteAcceptPage } from './pages/auth/InviteAcceptPage';
 import { LoginPage } from './pages/auth/LoginPage';
@@ -24,6 +25,7 @@ export const router = createBrowserRouter([
       { path: '/signup', element: <SignupPage />, errorElement: <ErrorPage /> },
       { path: '/forgot', element: <ForgotPasswordPage />, errorElement: <ErrorPage /> },
       { path: '/auth/callback', element: <AuthCallbackPage />, errorElement: <ErrorPage /> },
+      { path: '/auth/reset-password', element: <ResetPasswordPage />, errorElement: <ErrorPage /> },
       { path: '/invite/:token', element: <InviteAcceptPage />, errorElement: <ErrorPage /> },
       { path: '/share/:token', element: <SharePage />, errorElement: <ErrorPage /> },
       {
@@ -41,6 +43,7 @@ export const router = createBrowserRouter([
                 element: <ProjectPage />,
                 errorElement: <ErrorPage />,
               },
+              { path: '/admin', element: <Navigate to="/settings?tab=admin" replace />, errorElement: <ErrorPage /> },
               { path: '/settings', element: <SettingsPage />, errorElement: <ErrorPage /> },
             ],
           },

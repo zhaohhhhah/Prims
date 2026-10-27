@@ -1,0 +1,9 @@
+operator.env
+app.env
+auth.env
+mail.env
+mail-settings.json
+mail-control-token
+smtp-password
+__pycache__/
+*.py[cod]

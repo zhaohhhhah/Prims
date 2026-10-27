@@ -2,7 +2,9 @@ import { createClient } from '@supabase/supabase-js';
 
 import type { Database } from '@scribe/shared';
 
-const url: string = import.meta.env.VITE_SUPABASE_URL;
+const url: string = typeof window !== 'undefined' && window.location.protocol.startsWith('http')
+  ? `${window.location.origin}/supabase`
+  : import.meta.env.VITE_SUPABASE_URL;
 const anonKey: string = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (url === '' || anonKey === '') {
@@ -43,6 +45,7 @@ function resolveApiUrl(): string {
     // SPA fetches its own index.html for every API call and the
     // JSON parser bombs with "<!doctype" tokens.
     const inTauri = '__TAURI_INTERNALS__' in window;
+    if (!inTauri && import.meta.env.PROD) return ''; // Same-origin deployment, including isolated previews.
     if (!inTauri) {
       const host = window.location.hostname;
       const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';

@@ -1,8 +1,7 @@
 {
-  "appName": "Scribe",
+  "appName": "Prims",
   "appTagline": "Collaborative LaTeX editing for everyone",
   "phase0Banner": "Phase 0: foundation only. Features land in subsequent phases — see PLAN.md.",
-
   "theme": {
     "label": "Theme",
     "light": "Light",
@@ -10,7 +9,6 @@
     "highContrast": "High contrast",
     "system": "System"
   },
-
   "common": {
     "cancel": "Cancel",
     "save": "Save",
@@ -33,7 +31,6 @@
     "loadFailed": "Couldn't load image: {{error}}",
     "fit": "Fit to pane"
   },
-
   "voice": {
     "joinAndSpeak": "Join voice",
     "leave": "Leave voice",
@@ -45,11 +42,9 @@
     "othersOnCall_one": "{{count}} person on the call",
     "othersOnCall_other": "{{count}} people on the call"
   },
-
   "collab": {
     "presenceLabel": "Connected collaborators"
   },
-
   "ai": {
     "palette": {
       "title": "AI assist",
@@ -93,7 +88,6 @@
       "bibDesc": "Propose BibTeX entries for the passage."
     }
   },
-
   "review": {
     "title": "Reviews",
     "empty": "No comments yet. Add one to start a thread.",
@@ -111,7 +105,6 @@
     "anchorPreviewLine": "Anchored to {{file}}:L{{line}}",
     "unknownAuthor": "Unknown author"
   },
-
   "command": {
     "title": "Command palette",
     "placeholder": "Type a command or filename…",
@@ -131,12 +124,10 @@
     "toggleAIChat": "Toggle AI chat",
     "toggleMath": "Toggle math symbols"
   },
-
   "outline": {
     "title": "Outline",
     "empty": "No \\section, \\subsection, or \\chapter found in this file."
   },
-
   "bibliography": {
     "title": "Bibliography",
     "searchPlaceholder": "Filter by key, author, title…",
@@ -148,7 +139,6 @@
     "save": "Save",
     "added": "Entry saved"
   },
-
   "history": {
     "title": "Version history",
     "empty": "No snapshots yet.",
@@ -161,7 +151,6 @@
     "restored": "Project restored",
     "selectFile": "Pick a file to view its contents."
   },
-
   "export": {
     "menuLabel": "Export & download",
     "downloadZip": "Download as .zip",
@@ -176,7 +165,6 @@
     "exportedAsMarkdown": "Exported as Markdown.",
     "exportedAsWord": "Exported as Word document."
   },
-
   "compile": {
     "runButton": "Compile",
     "running": "Compiling…",
@@ -219,7 +207,6 @@
       "cancelled": "Cancelled"
     }
   },
-
   "auth": {
     "signIn": "Sign in",
     "signOut": "Sign out",
@@ -229,7 +216,7 @@
     "password": "Password",
     "displayName": "Display name",
     "displayNameHint": "How collaborators will see you",
-    "newToScribe": "New to Scribe?",
+    "newToScribe": "New to Prims?",
     "alreadyHaveAccount": "Already have an account?",
     "forgotPassword": "Forgot password?",
     "useMagicLink": "Email me a magic link instead",
@@ -243,7 +230,6 @@
     "verifyingSession": "Verifying your session…",
     "callbackError": "Couldn't complete sign-in. {{message}}"
   },
-
   "dashboard": {
     "title": "Your projects",
     "subtitle": "Create, open, and manage your LaTeX projects.",
@@ -252,7 +238,6 @@
     "emptyDescription": "Create your first project to get started.",
     "loadError": "Couldn't load your projects."
   },
-
   "project": {
     "newTitle": "Create a project",
     "newDescription": "Give it a name and pick a starting template.",
@@ -314,7 +299,6 @@
     "hidePreview": "Hide preview",
     "downloadZip": "Download as ZIP",
     "downloadStarted": "Download started",
-    "newFile": "New file",
     "newFolder": "New folder",
     "renameFile": "Rename",
     "renameFolder": "Rename folder",
@@ -342,18 +326,15 @@
     "deleteProjectConfirm": "Permanently delete this project? This cannot be undone.",
     "deleteProjectInProgress": "Deleting…"
   },
-
   "mentions": {
     "popoverLabel": "Project members",
     "unknown": "Unknown user"
   },
-
   "math": {
     "title": "Math symbols",
     "searchPlaceholder": "Filter by name, symbol, or LaTeX…",
     "empty": "No symbols match your search."
   },
-
   "handwriting": {
     "title": "Handwriting to LaTeX",
     "description": "Draw or upload a handwritten equation and convert it to LaTeX with your configured AI model.",
@@ -371,7 +352,6 @@
     "insert": "Insert into editor",
     "empty": "Draw or upload an equation first."
   },
-
   "status": {
     "lineCol": "Ln {{line}}, Col {{column}}",
     "saving": "Saving…",
@@ -381,7 +361,6 @@
     "connected": "Online",
     "disconnected": "Offline"
   },
-
   "members": {
     "title": "Members",
     "subtitle": "Invite collaborators and manage their access.",
@@ -406,7 +385,6 @@
     "copyLinkFallback": "Copy this invite link:",
     "roleUpdated": "Role updated"
   },
-
   "invite": {
     "loading": "Loading invitation…",
     "title": "You've been invited",
@@ -419,7 +397,6 @@
     "notFound": "Invitation not found.",
     "alreadyAccepted": "You've already accepted this invitation."
   },
-
   "settings": {
     "title": "Settings",
     "comingSoon": "Full settings UI lands in Phase 5.",
@@ -455,7 +432,7 @@
       "provider": "Provider",
       "model": "Model",
       "modelHint": "Default: {{defaultModel}}. Override only if you know what you want.",
-      "baseUrl": "Base URL",
+      "baseUrl": "API address / Endpoint",
       "baseUrlRequired": "Base URL is required for local providers.",
       "apiKey": "API key",
       "apiKeyEmpty": "Paste your provider key. It is encrypted at rest.",
@@ -464,10 +441,25 @@
       "testConnection": "Test connection",
       "saved": "AI settings saved",
       "pingOk": "Connected ({{latency}}ms)",
-      "pingFailed": "Connection failed"
-    }
+      "pingFailed": "Connection failed",
+      "compatible": "OpenAI-compatible API",
+      "localProvider": "{{provider}} (local)"
+    },
+    "language": "Interface language",
+    "languageHint": "Changes apply immediately and are remembered in this browser.",
+    "admin": {
+      "title": "Site administration",
+      "description": "Manage registration invitations and accounts. Administrators only."
+    },
+    "appearance": {
+      "title": "Appearance",
+      "description": "Choose how Prims looks on this device.",
+      "hint": "Automatic follows your system appearance and updates immediately when it changes. Your choice is saved in this browser.",
+      "current": "Current appearance: {{theme}}"
+    },
+    "sourceCode": "Prims source code",
+    "basedOn": "Based on Scribe"
   },
-
   "errors": {
     "generic": "Something went wrong. Please try again.",
     "network": "Couldn't reach the server.",
@@ -477,7 +469,6 @@
     "couldntLoadDashboard": "Couldn't load your projects",
     "pageNotFound": "Page not found"
   },
-
   "error": {
     "title": "Something broke",
     "subtitle": "An unexpected error happened. Details below.",
@@ -486,12 +477,10 @@
     "showStack": "Show stack trace",
     "hideStack": "Hide stack trace"
   },
-
   "tabs": {
     "label": "Open files",
     "closeFile": "Close {{path}}"
   },
-
   "citations": {
     "title": "Citation search",
     "placeholder": "Title, author, DOI, or arXiv id…",
@@ -506,7 +495,6 @@
     "addFailed": "Couldn't add citation",
     "insertCite": "Insert \\cite{{{key}}} at cursor"
   },
-
   "suggestion": {
     "toggle": "Suggest edit",
     "toggleHint": "Propose a text replacement for the selected range instead of leaving a plain comment.",
@@ -522,7 +510,6 @@
     "applyFailed": "Couldn't apply suggestion.",
     "openFileFirst": "Open the suggestion's file first, then apply."
   },
-
   "notifications": {
     "title": "Notifications",
     "openInbox": "Open notifications",
@@ -535,7 +522,6 @@
     "acceptedInvite": "accepted your invite to {{project}}",
     "joinedViaShare": "joined {{project}} as {{role}} via a share link"
   },
-
   "search": {
     "title": "Project search",
     "placeholder": "Search across all files…",
@@ -557,7 +543,6 @@
     "replaceDone": "Replaced {{count}} matches across {{files}} files.",
     "replaceFailed": "Replace failed."
   },
-
   "share": {
     "title": "Share via link",
     "description": "Anyone with this link can join {{project}} as {{role}}.",
@@ -585,11 +570,23 @@
       "30d": "30 days"
     }
   },
-
   "updater": {
-    "available": "Scribe {{version}} is available",
+    "available": "Prims {{version}} is available",
     "installPrompt": "Install now to restart and apply the update.",
     "installAction": "Install & restart",
     "installFailed": "Update failed to install. Try again from the menu."
+  },
+  "onboarding": {
+    "title": "Connect your own AI",
+    "description": "Enter your API endpoint, key, and model to use selection chat. Settings belong only to your account.",
+    "privacy": "Keys are encrypted on the server and cannot be read by other users. Existing documents stay unchanged.",
+    "later": "Set up later",
+    "ready": "Start writing",
+    "save": "Save and start writing",
+    "hint": "You can change this any time in Settings → AI.",
+    "modelRequired": "Enter a model name",
+    "keyRequired": "Enter your own API key",
+    "urlInvalid": "Enter a valid HTTP/HTTPS API base URL without credentials, query parameters, or a fragment.",
+    "endpointHint": "Enter a base URL or paste a /v1/chat/completions URL; it will be normalized when saved."
   }
 }

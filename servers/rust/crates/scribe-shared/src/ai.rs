@@ -143,6 +143,9 @@ pub struct AICompleteInput {
     /// honoured by vision-capable models; ignored by the text path.
     #[serde(default)]
     pub image: Option<ImageInput>,
+    /// Server-resolved project images; never accepted from an untrusted request.
+    #[serde(skip)]
+    pub project_images: Vec<ImageInput>,
 }
 
 /// A single inline image attached to an AI request. `data` is the raw

@@ -1,6 +1,9 @@
 //! HTTP routes. Each submodule exposes a `router()` returning a
 //! `Router<AppState>` to compose into the main app.
 
+pub mod admin;
+pub mod outlook_mail;
+pub mod smtp_mail;
 pub mod ai;
 pub mod comments;
 pub mod compiles;
@@ -17,3 +20,7 @@ pub mod versions;
 pub mod voice;
 pub mod whoami;
 pub mod yjs;
+
+pub mod ai_context;
+
+pub mod ai_profiles;

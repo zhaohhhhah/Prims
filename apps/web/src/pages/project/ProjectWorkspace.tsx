@@ -40,8 +40,8 @@ import { useTranslation } from 'react-i18next';
 import { type ImperativePanelHandle, Panel, PanelGroup } from 'react-resizable-panels';
 import { toast } from 'sonner';
 
-import { AIChat } from '../../components/AIChat/AIChat';
-import { AICommandPalette } from '../../components/AICommandPalette/AICommandPalette';
+import type { InlineAssistantController } from '@scribe/editor';
+import { InlineAssistant, openProjectAssistant } from '../../components/InlineAssistant/InlineAssistant';
 import { BibliographyPanel } from '../../components/Bibliography/BibliographyPanel';
 import { CitationLookup } from '../../components/Citations/CitationLookup';
 import { CommandPalette, type CommandItem } from '../../components/CommandPalette/CommandPalette';
@@ -198,7 +198,7 @@ export function ProjectWorkspace({
   const [cursorLine, setCursorLine] = useState<number>(1);
   const [cursorCol, setCursorCol] = useState<number>(1);
   const [rightPanel, setRightPanel] = useState<RightPanelId>(null);
-  const [aiPaletteOpen, setAIPaletteOpen] = useState(false);
+  const [assistantController, setAssistantController] = useState<InlineAssistantController | null>(null);
   const [handwritingOpen, setHandwritingOpen] = useState(false);
   const [cmdPaletteOpen, setCmdPaletteOpen] = useState(false);
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
@@ -292,6 +292,7 @@ export function ProjectWorkspace({
   }, [project, projectId]);
 
   function toggleRightPanel(id: NonNullable<RightPanelId>) {
+    if (id === 'ai-chat') { openProjectAssistant({projectId, dock:true}); return; }
     setRightPanel((current) => (current === id ? null : id));
   }
   const compileSession = useCompileSession(projectId);
@@ -312,15 +313,11 @@ export function ProjectWorkspace({
   // can intercept it — same trick Overleaf / VS-Code-Web use).
   useEffect(() => {
     function handler(e: KeyboardEvent) {
+      if (e.defaultPrevented) return;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
         e.preventDefault();
-        if (aiPaletteOpen) {
-          setAIPaletteOpen(false);
-        } else {
-          setAISelection(editorRef.current?.getSelection() ?? '');
-          setAIPaletteOpen(true);
-        }
+        openProjectAssistant({projectId, dock:true});
       } else if (mod && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
         e.preventDefault();
         setCmdPaletteOpen((v) => !v);
@@ -335,18 +332,16 @@ export function ProjectWorkspace({
     return () => {
       window.removeEventListener('keydown', handler);
     };
-  }, [aiPaletteOpen, selectedFile, onCloseFile]);
+  }, [projectId, selectedFile, onCloseFile]);
 
-  const [aiSelection, setAISelection] = useState<string>('');
-
+  // OCR is collected by the existing image dialog; all writing uses the unified preview.
   const handleAIInsert = useCallback((text: string) => {
-    editorRef.current?.insertAtCursor(text);
-  }, []);
+    openProjectAssistant({projectId, ocrText:text});
+  }, [projectId]);
 
   const openAIPalette = useCallback(() => {
-    setAISelection(editorRef.current?.getSelection() ?? '');
-    setAIPaletteOpen(true);
-  }, []);
+    openProjectAssistant({projectId, dock:true});
+  }, [projectId]);
 
   const localUser = useMemo<PresenceUser | null>(() => {
     if (authUser === null) return null;
@@ -1156,8 +1151,7 @@ export function ProjectWorkspace({
         icon: Sparkles,
         hint: 'Ctrl+Shift+A',
         action: () => {
-          setAISelection(editorRef.current?.getSelection() ?? '');
-          setAIPaletteOpen(true);
+          openProjectAssistant({projectId, dock:true});
         },
       },
       {
@@ -1482,6 +1476,7 @@ export function ProjectWorkspace({
           </div>
         ) : (
           <LatexEditor
+            onAssistantController={setAssistantController}
             key={selectedFile.id}
             ref={editorRef}
             filePath={selectedFile.path}
@@ -1642,14 +1637,6 @@ export function ProjectWorkspace({
                   }}
                 />
               ) : null}
-              {rightPanel === 'ai-chat' ? (
-                <AIChat
-                  onInsert={handleAIInsert}
-                  onClose={() => {
-                    setRightPanel(null);
-                  }}
-                />
-              ) : null}
               {rightPanel === 'math' ? (
                 <MathPalette
                   onInsert={(latex) => {
@@ -1664,12 +1651,7 @@ export function ProjectWorkspace({
           </>
         ) : null}
       </PanelGroup>
-      <AICommandPalette
-        open={aiPaletteOpen}
-        onOpenChange={setAIPaletteOpen}
-        selection={aiSelection}
-        onInsert={handleAIInsert}
-      />
+      <InlineAssistant controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} />
       <HandwritingToLatex
         open={handwritingOpen}
         onOpenChange={setHandwritingOpen}

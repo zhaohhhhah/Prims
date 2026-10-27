@@ -24,6 +24,9 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
 import { api, type ApiError } from '../../lib/api';
+import { useAuthStore } from '../../stores/auth';
+import { normalizeEndpoint } from '../../lib/ai-setup';
+import { ModelProfilesSettings } from './ModelProfilesSettings';
 
 const PROVIDERS = aiProviderSchema.options;
 
@@ -36,15 +39,17 @@ const PROVIDER_LABEL: Record<AIProvider, string> = {
   'openai-compatible': 'OpenAI-compatible',
 };
 
-export function AISettingsTab() {
+export function AISettingsTab({ onSaved, onboarding = false }: { onSaved?: () => void; onboarding?: boolean } = {}) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const userId = useAuthStore((state) => state.user?.id);
   const configQuery = useQuery<AIConfigPublic | null, ApiError>({
-    queryKey: ['ai-config'],
+    queryKey: ['ai-config', userId],
     queryFn: () => api.ai.getConfig(),
+    enabled: !!userId,
   });
 
-  const [provider, setProvider] = useState<AIProvider>('openai');
+  const [provider, setProvider] = useState<AIProvider>('openai-compatible');
   const [model, setModel] = useState<string>('gpt-4o');
   const [baseUrl, setBaseUrl] = useState<string>('');
   const [apiKey, setApiKey] = useState<string>('');
@@ -69,10 +74,12 @@ export function AISettingsTab() {
 
   const saveMutation = useMutation<AIConfigPublic, ApiError, UpdateAIConfigInput>({
     mutationFn: (input) => api.ai.updateConfig(input),
-    onSuccess: async () => {
+    onSuccess: async (saved) => {
       setApiKey('');
       toast.success(t('settings.ai.saved'));
-      await queryClient.invalidateQueries({ queryKey: ['ai-config'] });
+      queryClient.setQueryData(['ai-config', userId], saved);
+      await queryClient.invalidateQueries({ queryKey: ['ai-config', userId] });
+      onSaved?.();
     },
     onError: (err) => {
       toast.error(err.body.message);
@@ -92,29 +99,23 @@ export function AISettingsTab() {
   });
 
   const needsBaseUrl = AI_PROVIDER_NEEDS_BASE_URL[provider];
-  const hasExistingKey =
-    configQuery.data?.apiKeyPreview !== null && configQuery.data?.apiKeyPreview !== undefined;
+  const hasExistingKey = Boolean(configQuery.data?.apiKeyPreview);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const input: UpdateAIConfigInput = { provider, model };
-    if (apiKey.length > 0) input.apiKey = apiKey;
-    if (needsBaseUrl) {
-      if (baseUrl.trim() === '') {
-        toast.error(t('settings.ai.baseUrlRequired'));
-        return;
-      }
-      input.baseUrl = baseUrl.trim();
-    } else if (baseUrl.trim() !== '') {
-      input.baseUrl = baseUrl.trim();
-    } else {
-      input.baseUrl = null;
-    }
+    if (!model.trim()) { toast.error(t('onboarding.modelRequired')); return; }
+    if (!apiKey.trim() && !hasExistingKey) { toast.error(t('onboarding.keyRequired')); return; }
+    let endpoint: string | null;
+    try { endpoint = normalizeEndpoint(baseUrl, provider === 'openai' || provider === 'openai-compatible'); }
+    catch { toast.error(t('onboarding.urlInvalid')); return; }
+    if (needsBaseUrl && !endpoint) { toast.error(t('settings.ai.baseUrlRequired')); return; }
+    const input: UpdateAIConfigInput = { provider, model: model.trim(), baseUrl: endpoint };
+    if (apiKey.trim()) input.apiKey = apiKey.trim();
     saveMutation.mutate(input);
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-5">
+    <div><form onSubmit={handleSubmit} className="space-y-5">
       <div className="space-y-2">
         <Label htmlFor="ai-provider">{t('settings.ai.provider')}</Label>
         <Select
@@ -129,7 +130,7 @@ export function AISettingsTab() {
           <SelectContent>
             {PROVIDERS.map((p) => (
               <SelectItem key={p} value={p}>
-                {PROVIDER_LABEL[p]}
+                {p === 'openai-compatible' ? t('settings.ai.compatible') : p === 'ollama' || p === 'lmstudio' ? t('settings.ai.localProvider', { provider: PROVIDER_LABEL[p].replace(' (local)', '') }) : PROVIDER_LABEL[p]}
               </SelectItem>
             ))}
           </SelectContent>
@@ -145,13 +146,14 @@ export function AISettingsTab() {
             setModel(e.target.value);
           }}
           placeholder={defaultModelForProvider}
+          required
         />
         <p className="text-xs text-muted-foreground">
           {t('settings.ai.modelHint', { defaultModel: defaultModelForProvider })}
         </p>
       </div>
 
-      {needsBaseUrl ? (
+      {true ? (
         <div className="space-y-2">
           <Label htmlFor="ai-baseurl">{t('settings.ai.baseUrl')}</Label>
           <Input
@@ -161,10 +163,12 @@ export function AISettingsTab() {
               setBaseUrl(e.target.value);
             }}
             placeholder={
-              provider === 'ollama' ? 'http://localhost:11434' : 'http://localhost:1234/v1'
+              provider === 'ollama' ? 'http://localhost:11434' : 'https://api.example.com/v1'
             }
             type="url"
+            required={needsBaseUrl}
           />
+          <p className="text-xs text-muted-foreground">{t('onboarding.endpointHint')}</p>
         </div>
       ) : null}
 
@@ -174,6 +178,7 @@ export function AISettingsTab() {
           id="ai-key"
           type="password"
           autoComplete="off"
+          required={!hasExistingKey}
           value={apiKey}
           onChange={(e) => {
             setApiKey(e.target.value);
@@ -194,7 +199,7 @@ export function AISettingsTab() {
           {saveMutation.isPending ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
           ) : null}
-          {t('common.save')}
+          {t(onboarding ? 'onboarding.save' : 'common.save')}
         </Button>
         <Button
           type="button"
@@ -225,6 +230,6 @@ export function AISettingsTab() {
           </span>
         ) : null}
       </div>
-    </form>
+    </form>{!onboarding&&<ModelProfilesSettings key={userId}/>}</div>
   );
 }

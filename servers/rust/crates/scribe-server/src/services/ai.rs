@@ -11,7 +11,7 @@
 //!      token stream straight back to the route handler.
 
 use chrono::Utc;
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream,StreamExt};
 use scribe_ai::{adapter_for, system_prompt, AdapterError, CompleteRequest, CompletionChunk, CryptoBox};
 use scribe_shared::{
     mask_api_key, AICompleteInput, AIConfigPublic, AIConfigStored, AIFeature, AIPingResult,
@@ -21,6 +21,13 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::warn;
+
+pub enum AIStreamStartError { Request(ApiError), Provider(AdapterError) }
+impl From<ApiError> for AIStreamStartError {fn from(error:ApiError)->Self{Self::Request(error)}}
+impl AIStreamStartError {
+ pub fn into_api_error(self)->ApiError{match self{Self::Request(error)=>error,Self::Provider(_)=>ApiError::new(ErrorCode::ServiceUnavailable,"模型接口请求失败，请检查接口配置、模型权限及网络后重试")}}
+ pub fn is_image_unsupported(&self)->bool{matches!(self,Self::Provider(error) if error.is_image_unsupported())}
+}
 
 #[derive(Clone)]
 pub struct AIService {
@@ -111,6 +118,7 @@ impl AIService {
             api_key,
             messages: Vec::new(),
             image: None,
+            project_images: Vec::new(),
             temperature: 0.0,
             max_tokens: Some(1),
         };
@@ -136,28 +144,50 @@ impl AIService {
         user: UserId,
         input: AICompleteInput,
     ) -> ApiResult<BoxStream<'static, Result<CompletionChunk, AdapterError>>> {
-        let stored = self
-            .load_stored(user)
-            .await?
-            .ok_or_else(|| ApiError::new(ErrorCode::Forbidden, "AI not configured"))?;
-        let api_key = self
-            .decrypt_key(&stored)?
-            .ok_or_else(|| ApiError::new(ErrorCode::Forbidden, "API key not set"))?;
+        let stream=self.complete_stream_for_agent(user,input).await.map_err(AIStreamStartError::into_api_error)?;
+        Ok(Box::pin(stream.map(|chunk|chunk.map_err(|_|AdapterError::Stream("模型接口返回错误，请检查接口配置、权限及网络后重试".into())))))
+    }
 
-        let system = system_prompt(input.feature);
+    pub async fn complete_stream_for_agent(
+        &self,
+        user: UserId,
+        input: AICompleteInput,
+    ) -> Result<BoxStream<'static, Result<CompletionChunk, AdapterError>>,AIStreamStartError> {
+        let profile_id=super::ai_profiles::selected_profile_id(&input)?;
+        let stored=if let Some(id)=profile_id{
+            super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).load(user,id,input.options.as_ref().and_then(|options|options.get("modelName")).map(String::as_str)).await?
+        }else{
+            self.load_stored(user).await?.ok_or_else(||ApiError::new(ErrorCode::Forbidden,"AI not configured"))?
+        };
+        let api_key=match self.decrypt_key(&stored)?{
+            Some(key)=>key,
+            None if profile_id.is_some()&&super::ai_profiles::profile_ready(stored.provider,false)=>String::new(),
+            None=>return Err(ApiError::new(ErrorCode::Forbidden,"所选模型尚未填写 API Key，请先在设置中完成配置").into()),
+        };
+
+        let inline = super::inline_prompt::is_inline(&input);
+        let system = if inline && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") { super::project_context::AGENT_SYSTEM } else if inline { super::inline_prompt::INLINE_SYSTEM } else { system_prompt(input.feature) };
         // Cap the history we forward to the upstream LLM. Long chat
         // sessions can otherwise drag many MB of context through every
         // request — costs money and risks hitting provider limits.
         // Keep the most recent N turns (trim from the front).
         const MAX_HISTORY_MESSAGES: usize = 40;
+        let inline_text = inline.then(|| super::inline_prompt::inline_message(&input));
         let history = input.history.unwrap_or_default();
         let history_skip = history.len().saturating_sub(MAX_HISTORY_MESSAGES);
         let mut messages: Vec<ChatMessage> =
             Vec::with_capacity(history.len().min(MAX_HISTORY_MESSAGES) + 2);
         messages.push(ChatMessage { role: ChatRole::System, content: system.to_string() });
-        messages.extend(history.into_iter().skip(history_skip));
-        if !input.selection.is_empty() {
-            messages.push(ChatMessage { role: ChatRole::User, content: input.selection });
+        messages.extend(history.into_iter().skip(history_skip).filter(|message| message.role != ChatRole::System));
+        let user_text = if inline {
+            inline_text.unwrap_or_default()
+        } else if !input.selection.is_empty() {
+            input.selection
+        } else {
+            input.options.as_ref().and_then(|o| o.get("message")).cloned().unwrap_or_default()
+        };
+        if !user_text.is_empty() {
+            messages.push(ChatMessage { role: ChatRole::User, content: user_text });
         } else if input.image.is_some() {
             // Vision features (e.g. handwriting OCR) may carry no text
             // selection. The adapters attach the image to the last user
@@ -173,6 +203,7 @@ impl AIService {
         // features keep the conversational defaults.
         let (temperature, max_tokens) = match input.feature {
             AIFeature::RecognizeEquation => (0.0, Some(512)),
+            _ if inline => (0.3, Some(4096)),
             _ => (0.4, Some(2048)),
         };
 
@@ -183,6 +214,7 @@ impl AIService {
             api_key,
             messages,
             image: input.image,
+            project_images: input.project_images,
             temperature,
             max_tokens,
         };
@@ -190,7 +222,7 @@ impl AIService {
         adapter
             .stream(req)
             .await
-            .map_err(|err| ApiError::new(ErrorCode::ServiceUnavailable, format!("ai stream: {err}")))
+            .map_err(AIStreamStartError::Provider)
     }
 
     async fn load_stored(&self, user: UserId) -> ApiResult<Option<AIConfigStored>> {

@@ -1,7 +1,6 @@
 {
-  "appName": "Scribe",
+  "appName": "Prims",
   "appTagline": "Gemeinsames LaTeX-Editieren für alle",
-
   "handwriting": {
     "title": "Handschrift zu LaTeX",
     "description": "Zeichne oder lade eine handschriftliche Gleichung hoch und wandle sie mit deinem konfigurierten KI-Modell in LaTeX um.",
@@ -19,14 +18,12 @@
     "insert": "In den Editor einfügen",
     "empty": "Zeichne oder lade zuerst eine Gleichung."
   },
-
   "theme": {
     "label": "Design",
     "light": "Hell",
     "dark": "Dunkel",
     "highContrast": "Hoher Kontrast"
   },
-
   "common": {
     "cancel": "Abbrechen",
     "save": "Speichern",
@@ -44,12 +41,10 @@
     "openProject": "Projekt öffnen",
     "download": "Herunterladen"
   },
-
   "collab": {
     "presenceLabel": "Anwesende Personen",
     "compile": "Kompilieren"
   },
-
   "command": {
     "title": "Befehlspalette",
     "placeholder": "Befehl eingeben…",
@@ -66,7 +61,6 @@
     "toggleAIChat": "KI-Chat umschalten",
     "toggleMath": "Mathe-Symbole umschalten"
   },
-
   "compile": {
     "runButton": "Kompilieren",
     "running": "Kompilieren…",
@@ -76,7 +70,6 @@
     "viewPdf": "PDF",
     "viewLog": "Protokoll"
   },
-
   "auth": {
     "signIn": "Anmelden",
     "signOut": "Abmelden",
@@ -86,7 +79,6 @@
     "forgotPassword": "Passwort vergessen?",
     "magicLinkSent": "Wir haben einen Magic-Link an Ihre E-Mail gesendet."
   },
-
   "dashboard": {
     "title": "Ihre Projekte",
     "subtitle": "Erstellen, öffnen und verwalten Sie Ihre LaTeX-Projekte.",
@@ -94,7 +86,6 @@
     "emptyTitle": "Noch keine Projekte",
     "loadError": "Projekte konnten nicht geladen werden."
   },
-
   "project": {
     "actions": "Projektaktionen",
     "rename": "Umbenennen",
@@ -107,7 +98,6 @@
     "showPreview": "Vorschau anzeigen",
     "hidePreview": "Vorschau ausblenden"
   },
-
   "export": {
     "menuLabel": "Exportieren & Herunterladen",
     "downloadZip": "Als .zip herunterladen",
@@ -115,12 +105,10 @@
     "exportMarkdown": "Als Markdown (.md) exportieren",
     "exportWord": "Als Word (.docx) exportieren"
   },
-
   "image": {
     "loading": "Bild wird geladen…",
     "fit": "An Fenster anpassen"
   },
-
   "errors": {
     "generic": "Etwas ist schiefgelaufen. Bitte erneut versuchen.",
     "network": "Server nicht erreichbar.",
@@ -130,7 +118,6 @@
     "couldntLoadDashboard": "Projekte konnten nicht geladen werden",
     "pageNotFound": "Seite nicht gefunden"
   },
-
   "settings": {
     "title": "Einstellungen",
     "language": "Sprache",

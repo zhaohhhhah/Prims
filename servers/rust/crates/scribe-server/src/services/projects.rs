@@ -25,14 +25,19 @@ use crate::services::templates::files_for_template;
 pub struct ProjectService {
     pool: PgPool,
     files: FileService,
+    welcome_storage: Arc<SupabaseStorage>,
 }
 
 impl ProjectService {
     pub fn new(pool: PgPool, storage: Arc<SupabaseStorage>) -> Self {
-        Self { pool: pool.clone(), files: FileService::new(pool, storage) }
+        Self { pool: pool.clone(), files: FileService::new(pool, storage.clone()), welcome_storage: storage }
     }
 
     pub async fn list_for_user(&self, user: UserId) -> ApiResult<Vec<Project>> {
+        if let Err(error)=super::welcome::ensure(&self.pool,self.welcome_storage.as_ref(),user).await {
+            // Preserve access to existing projects even during a transient seed/storage failure.
+            warn!(?error,%user,"welcome initialization deferred");
+        }
         let rows = sqlx::query(
             r#"
             select p.id, p.name, p.description, p.owner_id, p.template, p.compiler,

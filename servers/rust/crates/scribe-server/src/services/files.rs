@@ -57,14 +57,21 @@ impl FileService {
         project: ProjectId,
         input: CreateFileInput,
     ) -> ApiResult<ProjectFile> {
-        debug!(content_bytes = input.content.as_deref().map(str::len).unwrap_or(0), "file create start");
-        assert_can_write(&self.pool, user, project).await?;
+        let bytes=Bytes::from(input.content.clone().unwrap_or_default().into_bytes());
+        self.create_bytes(user,project,input,bytes,"text/plain; charset=utf-8").await
+    }
 
-        let id = FileId::new(Uuid::new_v4());
-        let key = project_file_key(project, id);
-        let file_type = input.file_type.unwrap_or_else(|| infer_file_type(&input.path));
-        let content = input.content.unwrap_or_default();
-        let bytes = Bytes::from(content.into_bytes());
+    /// Preserve uploaded binary bytes exactly; text creation keeps its original API.
+    pub async fn create_uploaded(&self,user:UserId,project:ProjectId,input:CreateFileInput,bytes:Vec<u8>)->ApiResult<ProjectFile>{
+        let ext=input.path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let mime=match ext.as_str(){"png"=>"image/png","jpg"|"jpeg"=>"image/jpeg","webp"=>"image/webp","gif"=>"image/gif","pdf"=>"application/pdf",_=>"application/octet-stream"};
+        self.create_bytes(user,project,input,Bytes::from(bytes),mime).await
+    }
+
+    async fn create_bytes(&self,user:UserId,project:ProjectId,input:CreateFileInput,bytes:Bytes,content_type:&str)->ApiResult<ProjectFile>{
+        assert_can_write(&self.pool,user,project).await?;
+        let id=FileId::new(Uuid::new_v4());let key=project_file_key(project,id);
+        let file_type=input.file_type.unwrap_or_else(||infer_file_type(&input.path));
 
         // Upload first so we don't end up with a row pointing at no
         // object. If the DB insert fails afterwards we clean up.
@@ -73,7 +80,7 @@ impl FileService {
                 PROJECT_FILES_BUCKET,
                 &key,
                 bytes.clone(),
-                "text/plain; charset=utf-8",
+                content_type,
             )
             .await?;
 
@@ -228,6 +235,16 @@ impl FileService {
         assert_member(&self.pool, user, project).await?;
         let key = self.fetch_storage_key(project, file).await?;
         self.storage.signed_url(PROJECT_FILES_BUCKET, &key, 60).await
+    }
+
+    pub async fn read_reference_bytes(&self,user:UserId,project:ProjectId,file:FileId,max:usize)->ApiResult<Bytes>{
+        assert_member(&self.pool,user,project).await?;
+        let size:Option<i64>=sqlx::query_scalar("select size_bytes from public.project_files where project_id=$1 and id=$2").bind(project.into_inner()).bind(file.into_inner()).fetch_optional(&self.pool).await.map_err(internal)?;
+        let size=size.ok_or_else(||ApiError::not_found("File not found"))?;
+        if size<0||size as usize>max{return Err(ApiError::validation("文件超过读取限制"));}
+        let key=self.fetch_storage_key(project,file).await?;
+        let bytes=self.storage.download(PROJECT_FILES_BUCKET,&key).await?;
+        if bytes.len()>max{return Err(ApiError::validation("文件超过读取限制"));}Ok(bytes)
     }
 
     async fn fetch_storage_key(

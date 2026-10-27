@@ -3,6 +3,7 @@ import { LogOut, Settings as SettingsIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Link, Outlet, useNavigate } from 'react-router-dom';
 
+import { AISetupOnboarding } from '../components/Onboarding/AISetupOnboarding';
 import { NotificationBell } from '../components/Notifications/NotificationBell';
 import { useAuthStore } from '../stores/auth';
 
@@ -70,6 +71,7 @@ export function AppShell() {
       <main className="min-h-0 flex-1 overflow-auto">
         <Outlet />
       </main>
+      <AISetupOnboarding />
     </div>
   );
 }

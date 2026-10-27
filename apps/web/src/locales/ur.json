@@ -1,7 +1,6 @@
 {
-  "appName": "سکرائب",
+  "appName": "Prims",
   "appTagline": "سب کے لیے باہم مل کر LaTeX کی ترمیم",
-
   "handwriting": {
     "title": "ہاتھ کی تحریر سے LaTeX",
     "description": "ہاتھ سے لکھی ہوئی مساوات بنائیں یا اپ لوڈ کریں اور اسے اپنے مقرر کردہ AI ماڈل کی مدد سے LaTeX میں تبدیل کریں۔",
@@ -19,14 +18,12 @@
     "insert": "ایڈیٹر میں داخل کریں",
     "empty": "پہلے کوئی مساوات بنائیں یا اپ لوڈ کریں۔"
   },
-
   "theme": {
     "label": "تھیم",
     "light": "ہلکا",
     "dark": "گہرا",
     "highContrast": "اعلیٰ کنٹراسٹ"
   },
-
   "common": {
     "cancel": "منسوخ",
     "save": "محفوظ کریں",
@@ -44,12 +41,10 @@
     "openProject": "پروجیکٹ کھولیں",
     "download": "ڈاؤن لوڈ"
   },
-
   "collab": {
     "presenceLabel": "موجود لوگ",
     "compile": "کمپائل"
   },
-
   "command": {
     "title": "کمانڈ پیلیٹ",
     "placeholder": "کمانڈ لکھیں…",
@@ -66,7 +61,6 @@
     "toggleAIChat": "AI چیٹ دکھائیں/چھپائیں",
     "toggleMath": "ریاضی علامات دکھائیں/چھپائیں"
   },
-
   "compile": {
     "runButton": "کمپائل",
     "running": "کمپائل ہو رہا ہے…",
@@ -76,7 +70,6 @@
     "viewPdf": "PDF",
     "viewLog": "لاگ"
   },
-
   "auth": {
     "signIn": "لاگ اِن",
     "signOut": "لاگ آؤٹ",
@@ -86,7 +79,6 @@
     "forgotPassword": "پاس ورڈ بھول گئے؟",
     "magicLinkSent": "ہم نے آپ کی ای میل پر میجک لنک بھیج دیا ہے۔"
   },
-
   "dashboard": {
     "title": "آپ کے پروجیکٹس",
     "subtitle": "اپنے LaTeX پروجیکٹس بنائیں، کھولیں اور منظم کریں۔",
@@ -94,7 +86,6 @@
     "emptyTitle": "ابھی تک کوئی پروجیکٹ نہیں",
     "loadError": "پروجیکٹس لوڈ نہیں ہو سکے۔"
   },
-
   "project": {
     "actions": "پروجیکٹ کے اقدامات",
     "rename": "نام تبدیل کریں",
@@ -107,7 +98,6 @@
     "showPreview": "پیش منظر دکھائیں",
     "hidePreview": "پیش منظر چھپائیں"
   },
-
   "export": {
     "menuLabel": "ایکسپورٹ اور ڈاؤن لوڈ",
     "downloadZip": ".zip کے طور پر ڈاؤن لوڈ",
@@ -115,12 +105,10 @@
     "exportMarkdown": "Markdown (.md) کے طور پر ایکسپورٹ",
     "exportWord": "Word (.docx) کے طور پر ایکسپورٹ"
   },
-
   "image": {
     "loading": "تصویر لوڈ ہو رہی ہے…",
     "fit": "پین میں فٹ"
   },
-
   "errors": {
     "generic": "کچھ غلط ہو گیا۔ براہ کرم دوبارہ کوشش کریں۔",
     "network": "سرور تک نہیں پہنچا جا سکا۔",
@@ -130,7 +118,6 @@
     "couldntLoadDashboard": "آپ کے پروجیکٹس لوڈ نہیں ہو سکے",
     "pageNotFound": "صفحہ نہیں ملا"
   },
-
   "settings": {
     "title": "سیٹنگز",
     "language": "زبان",

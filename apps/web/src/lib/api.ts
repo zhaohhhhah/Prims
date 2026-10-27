@@ -224,7 +224,7 @@ export const api = {
       fetchJson(`/api/projects/${projectId}/versions/${versionId}/restore`, { method: 'POST' }),
   },
   ai: {
-    getConfig: (): Promise<AIConfigPublic | null> => fetchJson('/api/ai/config'),
+    getConfig: (): Promise<AIConfigPublic | null> => fetchJson<{ config: AIConfigPublic | null }>('/api/ai/config').then((result) => result.config),
     updateConfig: (input: UpdateAIConfigInput): Promise<AIConfigPublic> =>
       fetchJson('/api/ai/config', { method: 'PUT', body: JSON.stringify(input) }),
     ping: (): Promise<AIPingResult> => fetchJson('/api/ai/ping', { method: 'POST' }),

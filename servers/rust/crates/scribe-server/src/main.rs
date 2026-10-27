@@ -368,6 +368,9 @@ fn build_router(
     // populated the `AuthUser` extension (unauthenticated calls just
     // skip it and rely on the outer IP bucket).
     let api = Router::new()
+        .merge(routes::admin::router())
+        .merge(routes::outlook_mail::router())
+        .merge(routes::smtp_mail::router())
         .merge(routes::whoami::router())
         .merge(routes::projects::router())
         .merge(routes::files::router())

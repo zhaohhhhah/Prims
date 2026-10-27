@@ -16,7 +16,7 @@ use axum::{
 };
 use scribe_auth::{require_auth, Authenticated};
 use scribe_shared::{
-    infer_file_type, ApiError, ApiResult, CreateFileInput, ErrorCode, FileContentInput, FileId,
+     ApiError, ApiResult, CreateFileInput, ErrorCode, FileContentInput, FileId,
     FileType, ProjectFile, ProjectId, RenameFileInput, UserId,
 };
 use serde::Serialize; // used by ContentBody, WriteContentResponse, UrlBody
@@ -198,21 +198,9 @@ async fn create_from_multipart(
     let bytes = bytes
         .ok_or_else(|| ApiError::new(ErrorCode::ValidationFailed, "missing 'file' part"))?;
 
-    // For now we shove uploaded bytes through the same text-upload path
-    // as JSON creation. Binary files will round-trip as UTF-8-replaced
-    // strings — fine for the first integration, will revisit when we
-    // wire image previews. The Node server does the same.
-    let content = String::from_utf8_lossy(&bytes).into_owned();
-    let file_type: FileType = infer_file_type(&path);
-
-    let input = CreateFileInput {
-        path,
-        file_type: Some(file_type),
-        content: Some(content),
-    };
-
-    let service = files_service(&state)?;
-    let created = service.create(user.id, ProjectId::new(project_id), input).await?;
+    let input=CreateFileInput{path,file_type:None,content:None};
+    let service=files_service(&state)?;
+    let created=service.create_uploaded(user.id,ProjectId::new(project_id),input,bytes).await?;
     invalidate_list_and_all_content(&state, ProjectId::new(project_id)).await;
     Ok(Json(created))
 }

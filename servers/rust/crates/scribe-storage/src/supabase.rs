@@ -185,7 +185,8 @@ impl Storage for SupabaseStorage {
         let parsed: Resp = response.json().await.map_err(net_err)?;
         // Supabase returns a path like "/object/sign/..." — prefix with
         // the storage base so callers get a directly fetchable URL.
-        Ok(format!("{}/storage/v1{}", self.base_url, parsed.signed_url))
+        let public_base = std::env::var("SUPABASE_PUBLIC_URL").unwrap_or_else(|_| self.base_url.clone());
+        Ok(format!("{}/storage/v1{}", public_base.trim_end_matches('/'), parsed.signed_url))
     }
 
     async fn remove(&self, bucket: &str, keys: &[String]) -> ApiResult<()> {

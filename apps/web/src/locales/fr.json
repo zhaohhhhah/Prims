@@ -1,7 +1,6 @@
 {
-  "appName": "Scribe",
+  "appName": "Prims",
   "appTagline": "Édition LaTeX collaborative pour tous",
-
   "handwriting": {
     "title": "Manuscrit vers LaTeX",
     "description": "Dessinez ou importez une équation manuscrite et convertissez-la en LaTeX avec votre modèle d'IA configuré.",
@@ -19,14 +18,12 @@
     "insert": "Insérer dans l'éditeur",
     "empty": "Dessinez ou importez d'abord une équation."
   },
-
   "theme": {
     "label": "Thème",
     "light": "Clair",
     "dark": "Sombre",
     "highContrast": "Contraste élevé"
   },
-
   "common": {
     "cancel": "Annuler",
     "save": "Enregistrer",
@@ -44,12 +41,10 @@
     "openProject": "Ouvrir le projet",
     "download": "Télécharger"
   },
-
   "collab": {
     "presenceLabel": "Personnes présentes",
     "compile": "Compiler"
   },
-
   "command": {
     "title": "Palette de commandes",
     "placeholder": "Tapez une commande…",
@@ -66,7 +61,6 @@
     "toggleAIChat": "Afficher/masquer le chat IA",
     "toggleMath": "Afficher/masquer les symboles maths"
   },
-
   "compile": {
     "runButton": "Compiler",
     "running": "Compilation…",
@@ -76,7 +70,6 @@
     "viewPdf": "PDF",
     "viewLog": "Journal"
   },
-
   "auth": {
     "signIn": "Se connecter",
     "signOut": "Se déconnecter",
@@ -86,7 +79,6 @@
     "forgotPassword": "Mot de passe oublié ?",
     "magicLinkSent": "Un lien magique a été envoyé à votre e-mail."
   },
-
   "dashboard": {
     "title": "Vos projets",
     "subtitle": "Créez, ouvrez et gérez vos projets LaTeX.",
@@ -94,7 +86,6 @@
     "emptyTitle": "Aucun projet pour l'instant",
     "loadError": "Impossible de charger les projets."
   },
-
   "project": {
     "actions": "Actions du projet",
     "rename": "Renommer",
@@ -107,7 +98,6 @@
     "showPreview": "Afficher l'aperçu",
     "hidePreview": "Masquer l'aperçu"
   },
-
   "export": {
     "menuLabel": "Exporter et télécharger",
     "downloadZip": "Télécharger en .zip",
@@ -115,12 +105,10 @@
     "exportMarkdown": "Exporter en Markdown (.md)",
     "exportWord": "Exporter en Word (.docx)"
   },
-
   "image": {
     "loading": "Chargement de l'image…",
     "fit": "Adapter au volet"
   },
-
   "errors": {
     "generic": "Quelque chose a mal tourné. Veuillez réessayer.",
     "network": "Impossible de joindre le serveur.",
@@ -130,7 +118,6 @@
     "couldntLoadDashboard": "Impossible de charger vos projets",
     "pageNotFound": "Page introuvable"
   },
-
   "settings": {
     "title": "Paramètres",
     "language": "Langue",

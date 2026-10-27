@@ -10,12 +10,15 @@ import { Link } from 'react-router-dom';
 import { PageError } from '../components/PageError/PageError';
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
 import { api, type ApiError } from '../lib/api';
+import { useAuthStore } from '../stores/auth';
 
 import { NewProjectDialog } from './dashboard/NewProjectDialog';
 
 function useProjects() {
+  const userId = useAuthStore(state => state.user?.id);
   return useQuery<Project[], ApiError>({
-    queryKey: ['projects'],
+    queryKey: ['projects', userId],
+    enabled: !!userId,
     queryFn: () => api.projects.list(),
   });
 }

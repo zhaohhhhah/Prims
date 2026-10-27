@@ -5,6 +5,16 @@
 @layer base {
   :root,
   [data-theme='light'] {
+    --prims-inline-delete-bg: #fef2f2;
+    --prims-inline-delete-fg: #991b1b;
+    --prims-inline-delete-line: #dc2626;
+    --prims-inline-add-bg: #f0fdf4;
+    --prims-inline-add-fg: #14532d;
+    --prims-inline-add-border: #16a34a;
+    --prims-inline-add-title: #166534;
+    --prims-inline-conflict-bg: #fffbeb;
+    --prims-inline-conflict-border: #d97706;
+
     --background: 0 0% 100%;
     --foreground: 240 10% 3.9%;
 
@@ -67,6 +77,16 @@
   }
 
   [data-theme='dark'] {
+    --prims-inline-delete-bg: #450a0a;
+    --prims-inline-delete-fg: #fecaca;
+    --prims-inline-delete-line: #f87171;
+    --prims-inline-add-bg: #052e16;
+    --prims-inline-add-fg: #bbf7d0;
+    --prims-inline-add-border: #4ade80;
+    --prims-inline-add-title: #86efac;
+    --prims-inline-conflict-bg: #451a03;
+    --prims-inline-conflict-border: #fbbf24;
+
     --background: 240 10% 3.9%;
     --foreground: 0 0% 98%;
 
@@ -116,6 +136,16 @@
   }
 
   [data-theme='high-contrast'] {
+    --prims-inline-delete-bg: #270000;
+    --prims-inline-delete-fg: #ffd2d2;
+    --prims-inline-delete-line: #ff9090;
+    --prims-inline-add-bg: #002700;
+    --prims-inline-add-fg: #ccffcc;
+    --prims-inline-add-border: #80ff80;
+    --prims-inline-add-title: #ccffcc;
+    --prims-inline-conflict-bg: #332000;
+    --prims-inline-conflict-border: #ffdf80;
+
     --background: 0 0% 0%;
     --foreground: 0 0% 100%;
 

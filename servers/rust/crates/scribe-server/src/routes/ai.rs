@@ -27,6 +27,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/ai/config", get(get_config).put(update_config))
         .route("/api/ai/ping", post(ping))
         .route("/api/ai/complete", post(complete))
+        .merge(super::ai_context::router())
+        .merge(super::ai_profiles::router())
         .layer(from_fn(require_auth))
 }
 
@@ -67,6 +69,9 @@ async fn complete(
     Authenticated(user): Authenticated,
     JsonExtract(input): JsonExtract<AICompleteInput>,
 ) -> axum::response::Response {
+    if crate::services::inline_prompt::is_inline(&input) && input.options.as_ref().is_some_and(|o|o.contains_key("projectId")) {
+        return match crate::services::project_agent::start(state,user.id,input).await {Ok(response)=>response,Err(error)=>error.into_response()};
+    }
     let svc = match service(&state) {
         Ok(s) => s,
         Err(err) => return err.into_response(),
@@ -80,10 +85,10 @@ async fn complete(
     // `event: error` frame so the client can surface them in-line.
     let sse_stream = stream.map(|result| -> Result<Event, Infallible> {
         match result {
-            Ok(chunk) => Ok(Event::default().data(chunk.text)),
-            Err(err) => Ok(Event::default().event("error").data(err.to_string())),
+            Ok(chunk) => Ok(Event::default().data(serde_json::json!({"text":chunk.text}).to_string())),
+            Err(err) => Ok(Event::default().event("error").data(serde_json::json!({"error":err.to_string()}).to_string())),
         }
-    });
+    }).chain(futures::stream::once(async { Ok::<_, Infallible>(Event::default().data("[DONE]")) }));
 
     Sse::new(sse_stream)
         .keep_alive(KeepAlive::default())

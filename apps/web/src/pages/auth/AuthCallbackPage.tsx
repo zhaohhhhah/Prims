@@ -15,6 +15,8 @@ export function AuthCallbackPage() {
   useEffect(() => {
     const url = new URL(window.location.href);
     const code = url.searchParams.get('code');
+    // Only the fixed recovery destination is accepted; never redirect to arbitrary next URLs.
+    const recovery = url.searchParams.get('next') === '/auth/reset-password' || new URLSearchParams(url.hash.slice(1)).get('type') === 'recovery';
     const errorDescription = url.searchParams.get('error_description');
     if (errorDescription !== null) {
       setErrorMessage(errorDescription);
@@ -36,7 +38,7 @@ export function AuthCallbackPage() {
         setErrorMessage('Session not found');
         return;
       }
-      void navigate('/dashboard', { replace: true });
+      void navigate(recovery ? '/auth/reset-password' : '/dashboard', { replace: true });
     };
 
     void finalize();

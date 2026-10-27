@@ -53,7 +53,7 @@ impl Default for TectonicConfig {
             binary: "tectonic".to_string(),
             timeout: Duration::from_secs(120),
             cache_dir: None,
-            only_cached: true,
+            only_cached: false,
         }
     }
 }

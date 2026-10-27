@@ -4,6 +4,9 @@
 //! Route handlers translate HTTP into service calls and back.
 
 pub mod ai;
+pub mod inline_prompt;
+pub mod project_context;
+pub mod project_agent;
 pub mod comments;
 pub mod compiles;
 pub mod exports;
@@ -25,3 +28,9 @@ pub use notifications::NotificationService;
 pub use projects::ProjectService;
 pub use shares::ShareService;
 pub use versions::VersionService;
+
+pub mod welcome;
+
+pub mod ai_context;
+
+pub mod ai_profiles;

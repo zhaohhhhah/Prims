@@ -108,14 +108,9 @@ fn build_request<'a>(req: &'a CompleteRequest) -> GenerateRequest<'a> {
     }
     // Attach the image (if any) as an extra inline-data part on the most
     // recent user turn.
-    if let Some(img) = req.image.as_ref() {
-        if let Some(content) = contents.iter_mut().rev().find(|c| c.role == "user") {
-            content.parts.push(Part::InlineData {
-                inline_data: InlineData {
-                    mime_type: &img.media_type,
-                    data: &img.data,
-                },
-            });
+    for img in req.image.iter().chain(req.project_images.iter()) {
+        if let Some(content)=contents.iter_mut().rev().find(|c|c.role=="user") {
+            content.parts.push(Part::InlineData{inline_data:InlineData{mime_type:&img.media_type,data:&img.data}});
         }
     }
     GenerateRequest {
@@ -166,6 +161,11 @@ impl Adapter for GeminiAdapter {
                 Err(err) => return Some(Err(err)),
             };
             let payload = line.strip_prefix("data: ")?;
+            if let Ok(value)=serde_json::from_str::<serde_json::Value>(payload){
+                if let Some(error)=value.get("error").filter(|error|!error.is_null()){
+                    return Some(Err(AdapterError::Stream(error.to_string())));
+                }
+            }
             let frame: StreamFrame = match serde_json::from_str(payload) {
                 Ok(f) => f,
                 Err(_) => return None,
@@ -243,6 +243,7 @@ mod tests {
             api_key: "k".into(),
             messages,
             image,
+            project_images: Vec::new(),
             temperature: 0.0,
             max_tokens: Some(16),
         }
@@ -273,5 +274,13 @@ mod tests {
         assert_eq!(parts[0]["text"], "read it");
         assert_eq!(parts[1]["inline_data"]["mime_type"], "image/png");
         assert_eq!(parts[1]["inline_data"]["data"], "QUJD");
+    }
+
+    #[test]
+    fn multiple_project_images_preserve_text_and_order(){
+        let mut req=request(vec![ChatMessage{role:ChatRole::User,content:"read project".into()}],None);
+        req.project_images=vec![ImageInput{media_type:"image/png".into(),data:"QUJD".into()},ImageInput{media_type:"image/png".into(),data:"REVG".into()}];
+        let json=serde_json::to_value(build_request(&req)).unwrap();
+        let parts=&json["contents"][0]["parts"];assert_eq!(parts.as_array().unwrap().len(),3);assert_eq!(parts[0]["text"],"read project");assert_eq!(parts[2]["inline_data"]["data"],"REVG");
     }
 }

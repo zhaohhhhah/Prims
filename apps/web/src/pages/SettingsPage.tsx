@@ -1,134 +1,55 @@
 import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from '@scribe/ui';
-import { Sparkles, Type, UserCircle2, X } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Palette, ShieldCheck, Sparkles, Type, UserCircle2, X, type LucideIcon } from 'lucide-react';
+import { useCallback, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
-
+import { adminApi } from '../lib/admin';
+import { useAuthStore } from '../stores/auth';
+import { AdminPage } from './AdminPage';
+import { AppearanceSettingsTab } from './settings/AppearanceSettingsTab';
 import { AISettingsTab } from './settings/AISettingsTab';
 import { EditorSettingsTab } from './settings/EditorSettingsTab';
 import { ProfileSettingsTab } from './settings/ProfileSettingsTab';
 
-import type { LucideIcon } from 'lucide-react';
-
-type TabId = 'profile' | 'editor' | 'ai';
-
-interface TabDef {
-  readonly id: TabId;
-  readonly icon: LucideIcon;
-  readonly labelKey: string;
-  readonly descriptionKey: string;
-}
-
-const TABS: readonly TabDef[] = [
-  {
-    id: 'profile',
-    icon: UserCircle2,
-    labelKey: 'settings.profile.title',
-    descriptionKey: 'settings.profile.description',
-  },
-  {
-    id: 'editor',
-    icon: Type,
-    labelKey: 'settings.editor.title',
-    descriptionKey: 'settings.editor.description',
-  },
-  {
-    id: 'ai',
-    icon: Sparkles,
-    labelKey: 'settings.ai.title',
-    descriptionKey: 'settings.ai.description',
-  },
+type TabId='profile'|'appearance'|'editor'|'ai'|'admin';
+interface TabDef {id:TabId;icon:LucideIcon;labelKey:string;descriptionKey:string}
+const tabs:TabDef[]=[
+  {id:'profile',icon:UserCircle2,labelKey:'settings.profile.title',descriptionKey:'settings.profile.description'},
+  {id:'appearance',icon:Palette,labelKey:'settings.appearance.title',descriptionKey:'settings.appearance.description'},
+  {id:'editor',icon:Type,labelKey:'settings.editor.title',descriptionKey:'settings.editor.description'},
+  {id:'ai',icon:Sparkles,labelKey:'settings.ai.title',descriptionKey:'settings.ai.description'},
 ];
+const adminTab:TabDef={id:'admin',icon:ShieldCheck,labelKey:'settings.admin.title',descriptionKey:'settings.admin.description'};
+export function visibleSettingsTabs(isAdmin:boolean):TabDef[] {return isAdmin?[...tabs,adminTab]:tabs;}
 
 export function SettingsPage() {
-  const { t } = useTranslation();
-  useDocumentTitle(t('settings.title'));
-  const [active, setActive] = useState<TabId>('profile');
-  const navigate = useNavigate();
-  const close = useCallback(() => {
-    // Prefer "back" if the user landed here from another in-app
-    // route — feels natural and preserves their scroll position.
-    // Fall back to the dashboard for direct-URL entry / when
-    // history is empty (length 1 is just the current entry).
-    if (window.history.length > 1) {
-      void navigate(-1);
-    } else {
-      void navigate('/dashboard');
-    }
-  }, [navigate]);
-
-  // Escape key as the keyboard counterpart of the X. Power-user
-  // affordance that matches every modal / sheet in the app.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => {
-      window.removeEventListener('keydown', handler);
-    };
-  }, [close]);
-
-  const tab = TABS.find((tt) => tt.id === active) ?? TABS[0];
-  if (tab === undefined) return null;
-
-  return (
-    <div className="container max-w-3xl py-8">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{t('settings.title')}</h1>
-        <Button
-          variant="ghost"
-          size="icon"
-          aria-label={t('common.close')}
-          title={`${t('common.close')} · Esc`}
-          onClick={close}
-          className="h-8 w-8"
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
-        </Button>
-      </div>
-      <div className="grid grid-cols-[180px_1fr] gap-6">
-        <nav className="space-y-1">
-          {TABS.map((tt) => {
-            const Icon = tt.icon;
-            const isActive = active === tt.id;
-            return (
-              <button
-                key={tt.id}
-                type="button"
-                aria-pressed={isActive}
-                className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                  isActive
-                    ? 'bg-accent text-accent-foreground font-medium'
-                    : 'text-muted-foreground hover:bg-accent/60'
-                }`}
-                onClick={() => {
-                  setActive(tt.id);
-                }}
-              >
-                <Icon className="h-4 w-4" aria-hidden="true" />
-                {t(tt.labelKey)}
-              </button>
-            );
-          })}
-        </nav>
-        <Card>
-          <CardHeader>
-            <CardTitle>{t(tab.labelKey)}</CardTitle>
-            <CardDescription>{t(tab.descriptionKey)}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {active === 'profile' ? <ProfileSettingsTab /> : null}
-            {active === 'editor' ? <EditorSettingsTab /> : null}
-            {active === 'ai' ? <AISettingsTab /> : null}
-          </CardContent>
-        </Card>
-      </div>
+  const {t}=useTranslation();useDocumentTitle(t('settings.title'));
+  const userId=useAuthStore(state=>state.user?.id);
+  const access=useQuery({queryKey:['admin-access',userId],queryFn:adminApi.me,enabled:!!userId});
+  const [params,setParams]=useSearchParams();
+  const available=visibleSettingsTabs(access.data?.isAdmin===true);
+  const requested=params.get('tab')??'profile';
+  const tab=available.find(item=>item.id===requested)??tabs[0]!;
+  const active=tab.id;
+  const navigate=useNavigate();
+  const close=useCallback(()=>{if(window.history.length>1)void navigate(-1);else void navigate('/dashboard');},[navigate]);
+  useEffect(()=>{
+    const handler=(event:KeyboardEvent)=>{if(event.key==='Escape'&&!event.defaultPrevented){event.preventDefault();close();}};
+    window.addEventListener('keydown',handler);return()=>window.removeEventListener('keydown',handler);
+  },[close]);
+  return <div className={`container py-6 sm:py-8 ${active==='admin'?'max-w-6xl':'max-w-4xl'}`}>
+    <div className="mb-4 flex items-center justify-between"><h1 className="text-xl font-semibold">{t('settings.title')}</h1><Button variant="ghost" size="icon" aria-label={t('common.close')} title={`${t('common.close')} · Esc`} onClick={close} className="h-8 w-8"><X className="h-4 w-4"/></Button></div>
+    <div className="grid gap-4 md:grid-cols-[180px_minmax(0,1fr)] md:gap-6">
+      <nav className="flex flex-wrap gap-1 self-start md:flex-col">{available.map(item=>{const Icon=item.icon;return <button key={item.id} type="button" aria-pressed={active===item.id} className={`flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors md:w-full ${active===item.id?'bg-accent font-medium text-accent-foreground':'text-muted-foreground hover:bg-accent/60'}`} onClick={()=>setParams({tab:item.id},{replace:true})}><Icon className="h-4 w-4"/>{t(item.labelKey)}</button>;})}</nav>
+      <Card className="min-w-0"><CardHeader><CardTitle>{t(tab.labelKey)}</CardTitle><CardDescription>{t(tab.descriptionKey)}</CardDescription></CardHeader><CardContent>
+        {requested==='admin'&&access.isPending?<p>{t('common.loading')}…</p>:<>
+          {active==='profile'&&<ProfileSettingsTab/>}{active==='appearance'&&<AppearanceSettingsTab/>}{active==='editor'&&<EditorSettingsTab/>}{active==='ai'&&<AISettingsTab/>}{active==='admin'&&access.data?.isAdmin===true&&<AdminPage embedded/>}
+        </>}
+      </CardContent></Card>
     </div>
-  );
+    <footer className="mt-6 flex flex-wrap gap-x-4 gap-y-2 border-t pt-4 text-xs text-muted-foreground"><a href="https://github.com/zhaohhhhah/Prims" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">{t('settings.sourceCode')}</a><a href="https://github.com/sunnyallana/Scribe" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">{t('settings.basedOn')}</a></footer>
+  </div>;
 }

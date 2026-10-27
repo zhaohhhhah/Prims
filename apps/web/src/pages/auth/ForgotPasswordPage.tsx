@@ -17,16 +17,21 @@ type Values = z.infer<typeof schema>;
 export function ForgotPasswordPage() {
   const { t } = useTranslation();
   const [sent, setSent] = useState(false);
+  const [sendError, setSendError] = useState('');
   const form = useForm<Values>({
     resolver: zodResolver(schema),
     defaultValues: { email: '' },
   });
 
   const onSubmit = async (values: Values) => {
-    await supabase.auth.resetPasswordForEmail(values.email, {
-      redirectTo: `${window.location.origin}/auth/callback`,
-    });
-    setSent(true);
+    setSendError('');
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(values.email, {
+        redirectTo: `${window.location.origin}/auth/callback?next=/auth/reset-password`,
+      });
+      if (error) throw error;
+      setSent(true);
+    } catch (error) { setSendError(error instanceof Error ? error.message : '重置邮件发送失败，请稍后重试'); }
   };
 
   return (
@@ -38,6 +43,7 @@ export function ForgotPasswordPage() {
         </Link>
       }
     >
+      {sendError && <p role="alert" className="mb-4 text-sm text-destructive">{sendError}</p>}
       {sent ? (
         <p className="text-center text-sm text-muted-foreground">{t('auth.passwordResetSent')}</p>
       ) : (

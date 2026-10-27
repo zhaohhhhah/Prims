@@ -77,7 +77,7 @@ struct StreamDelta {
 fn base_url(req: &CompleteRequest) -> Result<String, AdapterError> {
     if let Some(b) = req.base_url.as_deref() {
         if !b.is_empty() {
-            return Ok(b.trim_end_matches('/').to_string());
+            return Ok(b.trim_end_matches('/').trim_end_matches("/v1").to_string());
         }
     }
     if req.provider == AIProvider::Openai {
@@ -101,22 +101,13 @@ fn build_request(req: &CompleteRequest) -> ChatRequest<'_> {
         .collect();
     // Attach the image (if any) to the most recent user message using the
     // OpenAI multimodal `image_url` part with an inline data URL.
-    if let Some(img) = req.image.as_ref() {
-        if let Some(msg) = messages.iter_mut().rev().find(|m| m.role == "user") {
-            let text = match msg.content {
-                MessageContent::Text(t) => t,
-                MessageContent::Parts(_) => "",
-            };
-            let mut parts: Vec<ContentPart<'_>> = Vec::new();
-            if !text.is_empty() {
-                parts.push(ContentPart::Text { text });
-            }
-            parts.push(ContentPart::ImageUrl {
-                image_url: ImageUrl {
-                    url: format!("data:{};base64,{}", img.media_type, img.data),
-                },
-            });
-            msg.content = MessageContent::Parts(parts);
+    let images=req.image.iter().chain(req.project_images.iter()).collect::<Vec<_>>();
+    if !images.is_empty() {
+        if let Some(msg)=messages.iter_mut().rev().find(|m|m.role=="user") {
+            let text=match &msg.content {MessageContent::Text(t)=>*t,_=>""};
+            let mut parts=vec![ContentPart::Text{text}];
+            for img in images {parts.push(ContentPart::ImageUrl{image_url:ImageUrl{url:format!("data:{};base64,{}",img.media_type,img.data)}});}
+            msg.content=MessageContent::Parts(parts);
         }
     }
     ChatRequest {
@@ -160,6 +151,11 @@ impl Adapter for OpenAIAdapter {
                 Err(err) => return Some(Err(err)),
             };
             let payload = line.strip_prefix("data: ")?;
+            if let Ok(value)=serde_json::from_str::<serde_json::Value>(payload){
+                if let Some(error)=value.get("error").filter(|error|!error.is_null()){
+                    return Some(Err(AdapterError::Stream(error.to_string())));
+                }
+            }
             if payload.trim() == "[DONE]" {
                 return None;
             }
@@ -262,6 +258,7 @@ mod tests {
             api_key: "k".into(),
             messages,
             image,
+            project_images: Vec::new(),
             temperature: 0.0,
             max_tokens: Some(16),
         }
@@ -293,5 +290,13 @@ mod tests {
         assert_eq!(content[0]["text"], "read it");
         assert_eq!(content[1]["type"], "image_url");
         assert_eq!(content[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+    }
+
+    #[test]
+    fn multiple_project_images_preserve_text_and_order(){
+        let mut req=request(vec![ChatMessage{role:ChatRole::User,content:"read project".into()}],None);
+        req.project_images=vec![ImageInput{media_type:"image/png".into(),data:"QUJD".into()},ImageInput{media_type:"image/png".into(),data:"REVG".into()}];
+        let json=serde_json::to_value(build_request(&req)).unwrap();
+        let parts=&json["messages"][0]["content"];assert_eq!(parts.as_array().unwrap().len(),3);assert_eq!(parts[0]["text"],"read project");assert_eq!(parts[2]["image_url"]["url"],"data:image/png;base64,REVG");
     }
 }

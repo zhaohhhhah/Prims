@@ -1,10 +1,22 @@
+import { cpSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), {
+    name: 'scribe-pdf-font-assets',
+    closeBundle() {
+      const source = resolve(import.meta.dirname, 'node_modules/pdfjs-dist');
+      const destination = resolve(import.meta.dirname, 'dist/pdfjs');
+      mkdirSync(destination, { recursive: true });
+      for (const directory of ['cmaps', 'standard_fonts']) {
+        cpSync(resolve(source, directory), resolve(destination, directory), { recursive: true });
+      }
+      cpSync(resolve(source, 'LICENSE'), resolve(destination, 'LICENSE'));
+    },
+  }],
   // Resolve VITE_* env vars from the monorepo root so a single .env serves
   // both server and web in dev.
   envDir: resolve(import.meta.dirname, '..', '..'),

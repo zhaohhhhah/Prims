@@ -2663,6 +2663,7 @@ dependencies = [
  "figment",
  "futures",
  "hyper",
+ "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
  "mimalloc",
@@ -2672,6 +2673,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "redis",
+ "reqwest",
  "scribe-ai",
  "scribe-auth",
  "scribe-compile",
@@ -2690,6 +2692,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 

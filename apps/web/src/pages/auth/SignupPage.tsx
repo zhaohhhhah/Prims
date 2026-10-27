@@ -4,7 +4,7 @@ import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { z } from 'zod';
 
@@ -15,9 +15,10 @@ import { AuthCardLayout } from './AuthCardLayout';
 import { OAuthButtons } from './OAuthButtons';
 
 const schema = z.object({
+  invitationCode: z.string().trim().min(1, '请输入邀请码').max(128),
   email: z.string().email(),
   password: z.string().min(8, { message: 'At least 8 characters' }),
-  displayName: z.string().trim().min(1).max(80).optional(),
+  displayName: z.string().trim().max(80).optional(),
 });
 type Values = z.infer<typeof schema>;
 
@@ -25,35 +26,38 @@ export function SignupPage() {
   const { t } = useTranslation();
   useDocumentTitle(t('auth.signUp'));
   const [sent, setSent] = useState(false);
+  const navigate = useNavigate();
 
   const form = useForm<Values>({
     resolver: zodResolver(schema),
-    defaultValues: { email: '', password: '', displayName: '' },
+    defaultValues: { email: '', password: '', displayName: '', invitationCode: '' },
   });
 
   const onSubmit = async (values: Values) => {
-    const options: { emailRedirectTo: string; data?: { display_name: string } } = {
+    const options: { emailRedirectTo: string; data: { display_name?: string; invitation_code: string } } = {
       emailRedirectTo: `${window.location.origin}/auth/callback`,
+      data: { invitation_code: values.invitationCode },
     };
     if (values.displayName !== undefined && values.displayName !== '') {
-      options.data = { display_name: values.displayName };
+      options.data.display_name = values.displayName;
     }
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email: values.email,
       password: values.password,
       options,
     });
     if (error !== null) {
-      toast.error(error.message);
+      toast.error(error.message.includes('Database error saving new user') ? '邀请码可能已失效，请联系管理员。' : error.message);
       return;
     }
+    if (data.session) { void navigate('/dashboard', { replace: true }); return; }
     setSent(true);
   };
 
   return (
     <AuthCardLayout
       title={t('auth.signUp')}
-      description={t('appTagline')}
+      description="使用管理员提供的邀请码注册"
       footer={
         <>
           {t('auth.alreadyHaveAccount')}{' '}
@@ -74,6 +78,11 @@ export function SignupPage() {
             className="space-y-4"
             noValidate
           >
+            <div className="space-y-2">
+              <Label htmlFor="invitationCode">邀请码</Label>
+              <Input id="invitationCode" autoComplete="off" placeholder="请向管理员获取邀请码" {...form.register('invitationCode')} />
+              {form.formState.errors.invitationCode && <p className="text-xs text-destructive">{form.formState.errors.invitationCode.message}</p>}
+            </div>
             <div className="space-y-2">
               <Label htmlFor="displayName">{t('auth.displayName')}</Label>
               <Input

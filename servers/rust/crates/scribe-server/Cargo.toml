@@ -67,3 +67,9 @@ tracing-opentelemetry = "0.28"
 parking_lot.workspace = true
 # Auto-cleaned scratch directories for the per-request pandoc workdir.
 tempfile = "3.13"
+
+reqwest.workspace = true
+
+url.workspace = true
+
+jsonwebtoken.workspace = true

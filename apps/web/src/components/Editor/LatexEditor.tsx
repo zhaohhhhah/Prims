@@ -2,6 +2,8 @@ import {
   applyCompileDiagnostics,
   type AutocompleteSources,
   createScribeEditor,
+  createInlineAssistant,
+  type InlineAssistantController,
   type HoverPreviewSources,
   type ScribeEditorCollab,
   type ScribeEditorHandle,
@@ -47,6 +49,7 @@ interface LatexEditorProps {
   readonly onSave: () => void;
   readonly onCursor?: (line: number, column: number) => void;
   readonly collab?: ScribeEditorCollab | null;
+  readonly onAssistantController?: (controller: InlineAssistantController | null) => void;
 }
 
 function toEditorTheme(resolved: 'light' | 'dark' | 'high-contrast'): ScribeEditorTheme {
@@ -66,12 +69,15 @@ export const LatexEditor = forwardRef<LatexEditorImperativeHandle, LatexEditorPr
       onCompile,
       onSave,
       onCursor,
+      onAssistantController,
       collab,
     },
     ref,
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
     const handleRef = useRef<ScribeEditorHandle | null>(null);
+    const onAssistantRef = useRef(onAssistantController);
+    onAssistantRef.current = onAssistantController;
     const { resolvedTheme } = useTheme();
 
     // Keep the latest callbacks in refs so the editor — which is only
@@ -132,7 +138,9 @@ export const LatexEditor = forwardRef<LatexEditorImperativeHandle, LatexEditorPr
         hasCollab,
         initialBytes: initialContent.length,
       });
+      const assistant = createInlineAssistant();
       const editor = createScribeEditor({
+        extraExtensions: [assistant.extension],
         parent: containerRef.current,
         initialContent,
         filePath,
@@ -158,8 +166,12 @@ export const LatexEditor = forwardRef<LatexEditorImperativeHandle, LatexEditorPr
         ...(hasCollab ? { collab } : {}),
       });
       handleRef.current = editor;
+      assistant.bind(editor.view);
+      onAssistantRef.current?.(assistant);
       return () => {
         log.editor('unmount editor', { filePath });
+        onAssistantRef.current?.(null);
+        assistant.destroy();
         editor.destroy();
         handleRef.current = null;
       };
@@ -187,6 +199,8 @@ export const LatexEditor = forwardRef<LatexEditorImperativeHandle, LatexEditorPr
       applyCompileDiagnostics(handle.view, logEntries, { filePath });
     }, [logEntries, filePath]);
 
-    return <div ref={containerRef} className="h-full overflow-hidden" />;
+    return <div className="relative h-full overflow-hidden">
+      <div ref={containerRef} className="h-full overflow-hidden" />
+    </div>;
   },
 );

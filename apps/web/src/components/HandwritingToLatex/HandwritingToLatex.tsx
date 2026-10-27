@@ -465,7 +465,7 @@ export function HandwritingToLatex({ open, onOpenChange, onInsert }: Handwriting
               className="gap-1.5"
             >
               <Check className="h-3.5 w-3.5" aria-hidden="true" />
-              {t('handwriting.insert')}
+              送到项目助手
             </Button>
           </div>
         </div>

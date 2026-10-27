@@ -6,6 +6,7 @@ import en from './locales/en.json';
 import es from './locales/es.json';
 import fr from './locales/fr.json';
 import ur from './locales/ur.json';
+import zhCN from './locales/zh-CN.json';
 
 /**
  * Languages we ship a bundle for. `en` is the canonical source —
@@ -25,6 +26,7 @@ export interface SupportedLanguage {
 }
 
 export const SUPPORTED_LANGUAGES: readonly SupportedLanguage[] = [
+  { code: 'zh-CN', label: '简体中文', dir: 'ltr' },
   { code: 'en', label: 'English', dir: 'ltr' },
   { code: 'fr', label: 'Français', dir: 'ltr' },
   { code: 'es', label: 'Español', dir: 'ltr' },
@@ -52,6 +54,7 @@ function resolveInitialLanguage(): string {
     // third-party context). Just fall through to detection.
   }
   const nav = (navigator.languages?.[0] ?? navigator.language ?? '').toLowerCase();
+  if (nav.startsWith('zh')) return 'zh-CN';
   const base = nav.split('-')[0] ?? '';
   const hit = SUPPORTED_LANGUAGES.find((l) => l.code === base);
   return hit?.code ?? 'en';
@@ -62,6 +65,7 @@ const initialLang = resolveInitialLanguage();
 void i18next.use(initReactI18next).init({
   resources: {
     en: { translation: en },
+    'zh-CN': { translation: zhCN },
     fr: { translation: fr },
     es: { translation: es },
     de: { translation: de },
