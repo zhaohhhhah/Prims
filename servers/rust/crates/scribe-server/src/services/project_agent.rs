@@ -86,6 +86,8 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
      if !output.get("reply").is_some_and(Value::is_string)||!output.get("replacement").is_some_and(|v|v.is_null()||v.is_string()){return Err(ApiError::validation("模型未返回有效答复或选区方案"));}
      // A model cannot manufacture an edit target when the assistant was opened without a selection.
      validate_edit_output(&mut output,&current,editing_allowed)?;
+     let recovered=output.as_object_mut().and_then(|value|value.remove("_formatRecovery")).and_then(|value|value.as_bool()).unwrap_or(false);
+     if recovered{emit(&tx,json!({"warning":{"code":"answer_only_recovered","message":"修改建议未完整生成，本轮只保留可读答复；没有任何修改已应用。"}})).await?;}
      let summary=take_generated_summary(&mut output);
      if output.to_string().chars().count()>MAX_RAW{return Err(ApiError::validation("修改方案过长，请减少修改范围后重试；正文未改动"));}
      let mut memory_updated=false;
@@ -109,44 +111,96 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
 }
 async fn emit(tx:&mpsc::Sender<Value>,value:Value)->ApiResult<()>{tx.send(value).await.map_err(|_|ApiError::validation("请求已取消"))}
 
-/// Tolerate ordinary answers without inventing an edit. Broken structured output and tools remain
-/// strict, and unknown/internal fields never become part of the user-visible response.
+const SUPPORT_FILE_ACTIONS:bool=false;
+/// Only exact valid protocol JSON can carry edits. Recovery retains a complete reply only.
 fn parse_model_output(raw:&str)->ApiResult<Value>{
- let fail=||ApiError::validation("模型答复格式不完整，请重试；正文未改动");
- let trimmed=raw.trim();if trimmed.is_empty(){return Err(fail());}
- let lower=trimmed.to_lowercase();
- if ["<think", "</think", "<analysis", "</analysis", "<reasoning", "</reasoning", "<|analysis|>", "<|channel|>analysis"].iter().any(|marker|lower.contains(marker)){return Err(fail());}
- let mut clean=trimmed.to_string();let mut structured_fence=false;
- if trimmed.starts_with("```"){
-  let opening=trimmed.lines().next().unwrap_or("").trim().to_lowercase();
-  let body=trimmed.lines().skip(1).collect::<Vec<_>>().join("\n");
-  structured_fence=opening=="```json"||(opening=="```"&&(body.trim_start().starts_with('{')||body.trim_start().starts_with('[')));
-  if structured_fence{
-   if !trimmed.ends_with("```")||body.trim()=="```"{return Err(fail());}
-   clean=body.trim_end().strip_suffix("```").ok_or_else(fail)?.trim().to_string();
+ let text=raw.trim();if text.is_empty()||contains_hidden_reasoning(text){return Err(output_format_error());}
+ let mut clean=text.to_string();let mut structured=false;let mut mixed=false;
+ if let Some(at)=text.to_ascii_lowercase().find("```json"){
+  structured=true;mixed=at>0;clean=text[at..].split_once('\n').map(|(_,body)|body).unwrap_or("").trim().strip_suffix("```").unwrap_or_else(||text[at..].split_once('\n').map(|(_,body)|body).unwrap_or("").trim()).trim().to_string();
+ }else if text.starts_with("```")&&text.split_once('\n').is_some_and(|(_,body)|body.trim_start().starts_with('{')){
+  structured=true;clean=text.split_once('\n').map(|(_,body)|body).unwrap_or("").trim().strip_suffix("```").unwrap_or("").trim().to_string();
+ }else if !text.starts_with('{'){
+  if let Some(at)=text.find("{\"reply\""){structured=true;mixed=true;clean=text[at..].trim().to_string();}
+ }
+ structured|=clean.starts_with('{')||clean.starts_with('[');
+ match serde_json::from_str::<Value>(&clean){
+  Ok(value)=>{
+   let original=value.get("reply").and_then(Value::as_str);
+   // JSON's \b/\f escapes may have swallowed an unescaped \begin/\frac in the reply.
+   if original.is_some_and(|reply|reply.chars().any(|c|c.is_control()&&!matches!(c,'\n'|'\r'|'\t'))){return recover_reply(&clean);}
+   normalize_model_value(value,!mixed)
+  },
+  Err(error)=>{
+   if structured{tracing::warn!(category=?error.classify(),line=error.line(),column=error.column(),raw_chars=raw.chars().count(),"AI response format metadata; no content recorded");return recover_reply(&clean);}
+   if text.to_ascii_lowercase().starts_with("tool:")||text.to_ascii_lowercase().starts_with("tool :"){return Err(output_format_error());}
+   answer_only(text,false)
   }
  }
- let value=match serde_json::from_str::<Value>(&clean){
-  Ok(value)=>value,
-  Err(_)=>{
-   if structured_fence||clean.trim_start().starts_with('{')||clean.trim_start().starts_with('[')||lower.starts_with("tool:")||lower.starts_with("tool :"){return Err(fail());}
-   return Ok(json!({"reply":trimmed,"replacement":null,"edits":[]}));
-  }
- };
- let object=value.as_object().ok_or_else(fail)?;
- if let Some(tool)=object.get("tool"){
-  let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file")).ok_or_else(fail)?;
-  let mut tool_output=json!({"tool":name});
-  for key in ["path","query","startLine","endLine"]{if let Some(value)=object.get(key){tool_output[key]=value.clone();}}
-  return Ok(tool_output);
+}
+fn output_format_error()->ApiError{ApiError::validation("本轮答复格式不完整，正文未改动。可以继续提问，或重试本轮。")}
+fn contains_hidden_reasoning(text:&str)->bool{let lower=text.to_ascii_lowercase();["<think","</think","<analysis","</analysis","<reasoning","</reasoning","<|analysis|>","<|channel|>analysis"].iter().any(|marker|lower.contains(marker))}
+fn answer_only(reply:&str,recovered:bool)->ApiResult<Value>{
+ let reply=reply.trim();if reply.is_empty()||contains_hidden_reasoning(reply)||(reply.starts_with('{')||reply.starts_with('['))||reply.chars().any(|c|c.is_control()&&!matches!(c,'\n'|'\r'|'\t')){return Err(output_format_error());}
+ let message=if recovered{format!("本轮仅保留说明文字；修改建议未完整生成，没有可应用的方案，正文未改动。\n\n{reply}")}else{reply.to_string()};
+ let mut output=json!({"reply":message,"replacement":null,"edits":[]});if SUPPORT_FILE_ACTIONS{output["actions"]=json!([]);}if recovered{output["_formatRecovery"]=json!(true);}Ok(output)
+}
+fn recover_reply(text:&str)->ApiResult<Value>{
+ // A malformed tool object never becomes a natural answer, and never executes.
+ if !text.starts_with('{')||text.contains("\"tool\""){return Err(output_format_error());}
+ let reply=complete_reply_from_object(text).ok_or_else(output_format_error)?;answer_only(&reply,true)
+}
+fn normalize_model_value(value:Value,trusted:bool)->ApiResult<Value>{
+ if let Some(reply)=value.as_str(){return answer_only(reply,false);}
+ let object=value.as_object().ok_or_else(output_format_error)?;
+ if let Some(tool)=object.get("tool").filter(|tool|!tool.is_null()){
+  if !trusted{return Err(output_format_error());}
+  let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file")).ok_or_else(output_format_error)?;
+  let mut output=json!({"tool":name});for key in ["path","query","startLine","endLine"]{if let Some(value)=object.get(key){output[key]=value.clone();}}return Ok(output);
  }
- let reply=object.get("reply").and_then(Value::as_str).filter(|reply|!reply.trim().is_empty()).ok_or_else(fail)?;
+ let reply=object.get("reply").and_then(Value::as_str).ok_or_else(output_format_error)?;
+ if !trusted{return answer_only(reply,true);}let _=answer_only(reply,false)?;
  let replacement=object.get("replacement").cloned().unwrap_or(Value::Null);
- if !replacement.is_null()&&!replacement.is_string(){return Err(fail());}
- let edits=object.get("edits").cloned().unwrap_or_else(||json!([]));if !edits.is_array(){return Err(fail());}
+ let edits=object.get("edits").filter(|value|!value.is_null()).cloned().unwrap_or_else(||json!([]));
+ if (!replacement.is_null()&&!replacement.is_string())||!edits.is_array(){return answer_only(reply,true);}
  let mut output=json!({"reply":reply,"replacement":replacement,"edits":edits});
- if let Some(summary)=object.get("contextSummary"){output["contextSummary"]=summary.clone();}
- Ok(output)
+ if SUPPORT_FILE_ACTIONS{let actions=object.get("actions").filter(|value|!value.is_null()).cloned().unwrap_or_else(||json!([]));if !actions.is_array(){return answer_only(reply,true);}output["actions"]=actions;}
+ if let Some(summary)=object.get("contextSummary").filter(|value|value.is_string()){output["contextSummary"]=summary.clone();}Ok(output)
+}
+/// Extract only a complete, root-level quoted reply when later edit JSON was truncated.
+/// No other field, summary or tool call is recovered from this path.
+fn complete_reply_from_object(text:&str)->Option<String>{
+ fn quote_end(bytes:&[u8],start:usize)->Option<usize>{let mut escaped=false;for i in start+1..bytes.len(){let c=bytes[i];if escaped{escaped=false;}else if c==b'\\'{escaped=true;}else if c==b'"'{return Some(i);}}None}
+ let bytes=text.as_bytes();let mut depth=0usize;let mut i=0usize;
+ while i<bytes.len(){match bytes[i]{
+  b'{'|b'['=>{depth+=1;i+=1;},b'}'|b']'=>{depth=depth.saturating_sub(1);i+=1;},
+  b'"'=>{let end=quote_end(bytes,i)?;let mut after=end+1;while bytes.get(after).is_some_and(u8::is_ascii_whitespace){after+=1;}
+   if depth==1&&bytes.get(after)==Some(&b':')&&serde_json::from_str::<String>(&text[i..=end]).ok().as_deref()==Some("reply"){
+    after+=1;while bytes.get(after).is_some_and(u8::is_ascii_whitespace){after+=1;}if bytes.get(after)!=Some(&b'"'){return None;}
+    let last=quote_end(bytes,after)?;let token=&text[after..=last];let fixed=repair_json_string_encoding(token)?;
+    let value=serde_json::from_str::<String>(&fixed).ok()?;return if contains_hidden_reasoning(&value){None}else{Some(value)};
+   }i=end+1;
+  },_=>i+=1,
+ }}None
+}
+/// Repair common invalid JSON *string encoding* only. Its parsed edits/summary are discarded.
+fn repair_json_string_encoding(text:&str)->Option<String>{
+ let chars=text.chars().collect::<Vec<_>>();let mut out=String::with_capacity(text.len());let mut i=0;let mut string=false;
+ while i<chars.len(){let c=chars[i];
+  if !string{out.push(c);if c=='"'{string=true;}i+=1;continue;}
+  if c=='"'{out.push(c);string=false;i+=1;continue;}
+  if c=='\\'{
+   let next=*chars.get(i+1)?;
+   let word=chars.iter().skip(i+1).take_while(|c|c.is_ascii_alphabetic()).collect::<String>();
+   let tex=matches!(word.as_str(),"begin"|"beta"|"bf"|"bfseries"|"frac"|"footnote"|"text"|"textbf"|"textit"|"textrm"|"theta"|"times"|"tau"|"tilde"|"title"|"tableofcontents"|"nabla"|"newcommand"|"newline"|"notin"|"neq"|"ref"|"right"|"rho"|"renewcommand"|"usepackage"|"underline"|"uparrow");
+   let valid_unicode=next=='u'&&chars.get(i+2..i+6).is_some_and(|digits|digits.iter().all(|c|c.is_ascii_hexdigit()));
+   if next=='u'&&!valid_unicode&&!tex{return None;}
+   if tex||!matches!(next,'"'|'\\'|'/'|'b'|'f'|'n'|'r'|'t'|'u'){out.push('\\');out.push('\\');i+=1;continue;}
+   out.push(c);out.push(next);i+=2;continue;
+  }
+  match c{'\n'=>out.push_str("\\n"),'\r'=>out.push_str("\\r"),'\t'=>out.push_str("\\t"),c if c.is_control()=>return None,_=>out.push(c)}i+=1;
+ }
+ if string{return None;}Some(out)
 }
 
 fn may_retry_without_images(input:&AICompleteInput,already_used:bool,error:&AIStreamStartError)->bool{!already_used&&(input.image.is_some()||!input.project_images.is_empty())&&error.is_image_unsupported()}
@@ -186,8 +240,12 @@ fn validate_edit_output(output:&mut Value,current_file:&str,editing_allowed:bool
 #[cfg(test)]mod tests{
  use super::*;
  fn edit(path:&str,before:&str,after:&str)->Value{json!({"filePath":path,"before":before,"after":after})}
+ #[test]fn truncated_edit_can_only_recover_complete_reply_with_no_preview_notice(){let mut value=parse_model_output(r#"{"reply":"我已拟好章节展开思路。","replacement":null,"edits":[{"filePath":"main.tex","before":"unfinished"#).unwrap();assert!(value["reply"].as_str().unwrap().contains("没有可应用的方案"));assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));assert!(take_generated_summary(&mut value).is_none());assert!(parse_model_output(r#"{"reply":"incomplete"#).is_err());}
+ #[test]fn optional_null_fields_allow_clarification_and_followup(){for raw in [r#"{"reply":"请先确认研究目标，我再提出修改。","tool":null,"replacement":null,"edits":null,"contextSummary":null}"#,r#"{"reply":"下一轮可以继续讨论。","replacement":null}"#]{let value=parse_model_output(raw).unwrap();assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));}}
+ #[test]fn latex_encoding_recovery_never_recovers_modifications_or_summary(){for raw in [r#"{"reply":"请确认 \input{methods} 与 \begin{document}。","replacement":"UNTRUSTED","edits":null,"contextSummary":"must not save repaired metadata"}"#,r#"{"reply":"使用 \begin{document} 即可。","replacement":"UNTRUSTED"}"#]{let mut value=parse_model_output(raw).unwrap();assert!(value["reply"].as_str().unwrap().contains('\\'));assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));assert!(take_generated_summary(&mut value).is_none());}}
+ #[test]fn mixed_prose_fences_and_closed_reasoning_recover_visible_answer_only(){for raw in ["我先说明需要你确认的内容。\n```json\n{\"reply\":\"请明确要保留的结论。\",\"replacement\":\"NO EDIT\"}\n```"]{let value=parse_model_output(raw).unwrap();assert!(!value["reply"].as_str().unwrap().contains("PRIVATE_REASONING"));assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));}for raw in [r#"{"reply":"incomplete"#,r#"{"reply":"bad unicode \uZZZZ"}"#,"<think>unfinished hidden reasoning",r#"{"tool":"unknown_write","reply":"no"}"#]{assert!(parse_model_output(raw).is_err());}}
  #[test]fn answer_only_json_and_normal_plaintext_never_create_edits(){for raw in [r#"{"reply":"我还不确定你希望保留哪个结论，可以先确认研究目标吗？"}"#,"目前证据不足，建议先确认研究目标；没有修改也没关系。","```latex\nE=mc^2\n```"]{let mut output=parse_model_output(raw).unwrap();assert!(!output["reply"].as_str().unwrap().is_empty());assert!(output["replacement"].is_null());assert_eq!(output["edits"],json!([]));assert!(take_generated_summary(&mut output).is_none());validate_edit_output(&mut output,"main.tex",true).unwrap();}}
- #[test]fn malformed_json_empty_hidden_analysis_and_unknown_tools_are_not_plain_answers(){for raw in [" ","{\"reply\":","[broken",r#"{"tool":"delete_file","reply":"pretend answer"}"#,r#"{"tool":null,"reply":"pretend answer"}"#,r#"{"reply":"","replacement":null}"#,"```json\n{bad}\n```","<think>private chain</think>answer",r#"{"reply":"<analysis>private chain</analysis>answer"}"#,"null"]{assert!(parse_model_output(raw).is_err(),"{raw}");}}
+ #[test]fn malformed_json_empty_hidden_analysis_and_unknown_tools_are_not_plain_answers(){for raw in [" ","{\"reply\":","[broken",r#"{"tool":"delete_file","reply":"pretend answer"}"#,r#"{"reply":"","replacement":null}"#,"```json\n{bad}\n```","null"]{assert!(parse_model_output(raw).is_err(),"{raw}");}}
  #[test]fn valid_structured_edits_tools_and_summary_remain_explicit(){let mut output=parse_model_output(r#"{"reply":"Here is one candidate","edits":[{"filePath":"main.tex","before":"original","after":"candidate"}],"contextSummary":"Goal confirmed; candidate pending","analysis":"private internal field"}"#).unwrap();assert!(output.get("analysis").is_none());assert_eq!(take_generated_summary(&mut output).as_deref(),Some("Goal confirmed; candidate pending"));validate_edit_output(&mut output,"main.tex",true).unwrap();assert_eq!(output["edits"][0]["after"],"candidate");let tool=parse_model_output(r#"{"tool":"search_project","query":"关键词","analysis":"internal"}"#).unwrap();assert_eq!(tool,json!({"tool":"search_project","query":"关键词"}));assert!(tool.get("reply").is_none());let fenced=parse_model_output("```json\n{\"reply\":\"No change needed\"}\n```").unwrap();assert_eq!(fenced["edits"],json!([]));}
  #[test]fn image_retry_is_once_and_only_for_explicit_capability_failure(){let mut input:AICompleteInput=serde_json::from_value(json!({"feature":"chat","selection":"exact source","options":{"mode":"inline-edit","message":"improve","filePath":"main.tex"},"history":[{"role":"user","content":"keep history"}],"image":{"mediaType":"image/png","data":"QUJD"}})).unwrap();input.project_images.push(scribe_shared::ImageInput{media_type:"image/png".into(),data:"REVG".into()});let error=AIStreamStartError::Provider(scribe_ai::AdapterError::HttpStatus{status:400,message:"model does not support images".into()});assert!(may_retry_without_images(&input,false,&error));assert!(!may_retry_without_images(&input,true,&error));let history=input.history.as_ref().unwrap()[0].content.clone();strip_image_inputs(&mut input);assert!(!may_retry_without_images(&input,false,&error));assert!(input.image.is_none()&&input.project_images.is_empty());assert_eq!(input.selection,"exact source");assert_eq!(input.options.as_ref().unwrap()["message"],"improve");assert_eq!(input.history.as_ref().unwrap()[0].content,history);assert_eq!(input.options.as_ref().unwrap()["imagesUnavailable"],"true");let mut result=json!({"reply":"text answer","replacement":null,"edits":[edit("main.tex","exact source","improved")]});validate_edit_output(&mut result,"main.tex",true).unwrap();assert_eq!(result["edits"][0]["after"],"improved");}
  #[test]fn answer_only_output_cannot_manufacture_a_replacement_or_edits(){let mut value=json!({"reply":"answer","replacement":"UNAUTHORIZED FULL FILE","edits":[edit("main.tex","any original","changed")]});validate_edit_output(&mut value,"main.tex",false).unwrap();assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));assert_eq!(value["reply"],"answer");}
