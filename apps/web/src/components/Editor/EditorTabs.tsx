@@ -63,7 +63,7 @@ export function EditorTabs({ tabs, activeFileId, onSelect, onClose }: EditorTabs
     <div
       ref={scrollerRef}
       onWheel={onWheel}
-      className="flex h-8 shrink-0 items-stretch overflow-x-auto border-b bg-muted/40 scrollbar-thin"
+      className="prims-editor-tabs flex h-8 shrink-0 items-stretch overflow-x-auto border-b bg-muted/40 scrollbar-thin"
       role="tablist"
       aria-label={t('tabs.label')}
     >
@@ -91,7 +91,7 @@ export function EditorTabs({ tabs, activeFileId, onSelect, onClose }: EditorTabs
             onClick={() => {
               onSelect(file);
             }}
-            className={`group relative flex min-w-0 items-center gap-1.5 border-r px-2.5 text-xs transition-colors ${
+            className={`prims-editor-tab group relative flex min-w-0 items-center gap-1.5 border-r px-2.5 text-xs transition-colors ${
               isActive
                 ? 'bg-background font-medium text-foreground'
                 : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'

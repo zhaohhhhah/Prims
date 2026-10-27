@@ -111,8 +111,8 @@ export function PreviewPanel({
   }, [hasErrors]);
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      <div className="flex flex-wrap items-center gap-x-1 gap-y-1 border-b px-2 py-1">
+    <div className="prims-editor-preview-surface flex h-full flex-col bg-background">
+      <div className="prims-editor-preview-tabs flex flex-wrap items-center gap-x-1 gap-y-1 border-b px-2 py-1">
         {onCollapse !== undefined ? (
           <Button
             variant="ghost"
@@ -176,7 +176,7 @@ export function PreviewPanel({
         </div>
         <PDFReadingAppearance appearance={appearance} onChange={setAppearance} />
       </div>
-      <div className="min-h-0 flex-1">
+      <div className="prims-editor-preview-body min-h-0 flex-1">
         {view === 'pdf' ? (
           <Suspense
             fallback={

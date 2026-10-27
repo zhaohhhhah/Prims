@@ -1,0 +1,14 @@
+[Unit]
+Description=Prims disposable workbench broker (user session)
+[Service]
+Type=simple
+EnvironmentFile=/REPLACE/private/workbench.env
+WorkingDirectory=/REPLACE/source/servers/workbench
+ExecStart=/usr/bin/python3 -B /REPLACE/source/servers/workbench/broker.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+[Install]
+WantedBy=default.target
+# With Linger=no this may stop after logout. Do not enable linger implicitly.

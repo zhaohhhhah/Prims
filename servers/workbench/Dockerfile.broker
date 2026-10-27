@@ -1,0 +1,10 @@
+# A trusted broker image, separate from both app and untrusted workers.
+ARG BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm
+FROM ${BASE_IMAGE}
+# Operator supplies the locally approved compatible Docker CLI binary.
+COPY --chmod=0555 docker /usr/bin/docker
+COPY --chmod=0444 broker.py worker.py /opt/prims-workbench/
+RUN /usr/bin/docker --version && mkdir -p /run/secrets && chmod 0555 /opt/prims-workbench && chmod 0755 /run/secrets
+USER 10001:10001
+WORKDIR /opt/prims-workbench
+ENTRYPOINT ["python3","-B","/opt/prims-workbench/broker.py"]

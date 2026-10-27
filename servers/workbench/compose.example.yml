@@ -1,0 +1,37 @@
+# Optional operator deployment. Real host paths/tokens belong in a private env file.
+services:
+  workbench-broker:
+    image: ${WORKBENCH_BROKER_IMAGE:?pin the approved broker image}
+    restart: unless-stopped
+    network_mode: host
+    user: "${WORKBENCH_BROKER_UID:?token-file owner UID}:${WORKBENCH_BROKER_GID:?token-file owner GID}"
+    group_add:
+      - "${WORKBENCH_DOCKER_SOCKET_GID:?socket GID}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      PRIMS_WORKBENCH_IMAGE: ${WORKBENCH_WORKER_IMAGE:?pin worker SHA256 image ID}
+      PRIMS_WORKBENCH_TEX_CACHE: ${WORKBENCH_PUBLIC_TEX_CACHE:?daemon-visible public cache path}
+      PRIMS_WORKBENCH_TOKEN_FILE: /run/secrets/workbench-token
+    volumes:
+      # Only this trusted broker receives the socket; never the app/model/worker.
+      - type: bind
+        source: ${WORKBENCH_DOCKER_SOCKET:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+      - type: bind
+        source: ${WORKBENCH_TOKEN_FILE:?new private mode0600 file}
+        target: /run/secrets/workbench-token
+        read_only: true
+    stop_grace_period: 20s
+# Broker512MiB accommodates two32MiB binary snapshots plus Base64/JSON parsing.
+# Each disposable worker separately has512MiB+CPU1+45s/90s limits.
+# No ports are published: the broker code binds127.0.0.1 only, using host networking.
+# The public TeX cache is mounted only into ephemeral workers, readonly, by the daemon.

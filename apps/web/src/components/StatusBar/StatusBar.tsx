@@ -70,7 +70,7 @@ export function StatusBar({
     );
 
   return (
-    <div className="flex h-6 items-center gap-3 border-t bg-muted/40 px-3 text-[10px] tabular-nums text-muted-foreground">
+    <div className="prims-editor-status flex h-6 items-center gap-3 border-t bg-muted/40 px-3 text-[10px] tabular-nums text-muted-foreground">
       <span className="truncate" title={path ?? undefined}>
         {path ?? t('compile.noFileSelected')}
       </span>
@@ -85,7 +85,7 @@ export function StatusBar({
       <span aria-hidden="true">·</span>
       <span>UTF-8</span>
       <span aria-hidden="true">·</span>
-      <span className="flex items-center gap-1">
+      <span className="prims-editor-save flex items-center gap-1" data-save-state={saving ? 'saving' : lastSavedAt !== null ? 'saved' : 'unsaved'}>
         {saving ? (
           <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
         ) : lastSavedAt !== null ? (
@@ -128,7 +128,7 @@ function CompileStatusBadge({ status }: { readonly status: CompileStatusKind }) 
   const { t } = useTranslation();
   if (status === 'idle') {
     return (
-      <span className="flex items-center gap-1">
+      <span data-compile-state={status} className="flex items-center gap-1">
         <CircleDashed className="h-3 w-3" aria-hidden="true" />
         {t('compile.idle')}
       </span>
@@ -136,7 +136,7 @@ function CompileStatusBadge({ status }: { readonly status: CompileStatusKind }) 
   }
   if (status === 'queued' || status === 'running') {
     return (
-      <span className="flex items-center gap-1 text-amber-500">
+      <span data-compile-state={status} className="flex items-center gap-1 text-amber-500">
         <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
         {t(`compile.status.${status}`)}
       </span>
@@ -144,14 +144,14 @@ function CompileStatusBadge({ status }: { readonly status: CompileStatusKind }) 
   }
   if (status === 'success') {
     return (
-      <span className="flex items-center gap-1 text-emerald-500">
+      <span data-compile-state={status} className="flex items-center gap-1 text-emerald-500">
         <Check className="h-3 w-3" aria-hidden="true" />
         {t('compile.status.success')}
       </span>
     );
   }
   return (
-    <span className="flex items-center gap-1 text-destructive">
+    <span data-compile-state={status} className="flex items-center gap-1 text-destructive">
       <FileWarning className="h-3 w-3" aria-hidden="true" />
       {t(`compile.status.${status}`)}
     </span>

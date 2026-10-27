@@ -1,0 +1,20 @@
+[Unit]
+Description=Prims disposable LaTeX and font workbench broker
+After=network.target docker.service
+[Service]
+Type=simple
+User=REPLACE_OPERATOR_USER
+EnvironmentFile=/REPLACE/private/workbench.env
+WorkingDirectory=/REPLACE/source/servers/workbench
+ExecStart=/usr/bin/python3 /REPLACE/source/servers/workbench/broker.py
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectHome=true
+ProtectSystem=strict
+# The trusted broker requires the existing Docker socket. Workers never receive it.
+# Do not expose port19340 or mount this socket into the app/worker containers.
+[Install]
+WantedBy=multi-user.target

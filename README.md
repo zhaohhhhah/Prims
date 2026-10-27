@@ -205,3 +205,40 @@ Appearance now presents theme collections with both day and night previews.
 Choosing a collection applies its matching palette pair atomically, without
 changing personal fonts, icons or the independent light/dark/system color mode.
 Existing custom combinations are retained until a collection is chosen.
+
+### Agent preferences, skills and private memory
+
+Settings now has an independent Agent section for personal tool preferences,
+text-only Agent Skills and account-and-project private memory. Import or edit
+SKILL.md with YAML name/description (up to 48 KiB), enable/disable skills, or
+archive them. Importing instructions does not execute bundled scripts or grant
+permissions. Memory is bounded to 4,000 characters; revision checks preserve
+unsaved drafts when another session changes it. Existing model/API connections
+remain the only provider settings.
+
+Project reads stay membership-scoped. Text and file changes require explicit
+acceptance. The assistant has no host-system tool or arbitrary shell/MCP setup.
+Optional diagnostics run fixed LaTeX/font tasks on a saved, authorized snapshot
+in a fresh resource-limited, network-disabled worker; this does not edit project
+files or install system fonts. Health checks distinguish configured services
+from workers that are actually ready. Search remains limited to each user's
+supported official DeepSeek connection; enabling a preference does not add
+search to unrelated providers.
+
+To deploy this addition, apply
+`supabase/migrations/20261027000001_agent_library.sql` after the existing Prims
+schema. The diagnostic workbench is optional: see
+[its installation and isolation guide](servers/workbench/README.md) and public
+examples. Application variables are `PRIMS_WORKBENCH_URL` and
+`PRIMS_WORKBENCH_TOKEN`; worker/broker examples document
+`PRIMS_WORKBENCH_IMAGE`, `PRIMS_WORKBENCH_TEX_CACHE` and
+`PRIMS_WORKBENCH_TOKEN_FILE`. Operators supply private values outside source
+control, pin approved images and provide an approved public TeX cache. The
+application and model do not receive container-runtime access. Existing API
+credentials and application data are not copied into disposable workers.
+
+Editor chrome now uses short, reduced-motion-aware tab/panel/status transitions
+without delaying operations or animating document layout. Assistant UI omits
+redundant tutorial labels while retaining file paths, actual progress, review
+controls and errors. The upstream AGPL attribution, adapted Codex notices and
+font OFL licenses remain unchanged.

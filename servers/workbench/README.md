@@ -1,0 +1,55 @@
+# Prims disposable LaTeX/font workbench
+
+This is a small trusted HTTP-to-Docker adapter, not a new sandbox implementation.
+The broker listens only on 127.0.0.1:19340; **all routes require its private Bearer token**.
+Do not publish this port or give the app/model the Docker socket. Only the trusted broker
+uses the existing local Docker endpoint. The fixed worker image is pinned by image ID.
+
+## Protocol
+
+- `GET /health`: version, real approved-image availability and capabilities. 503 if unavailable.
+- `POST /run`: `{jobId:UUID,task:"latex_check"|"font_check"|"list_fonts",path?:relative,files:[{path,contentBase64}]}`.
+- `DELETE /runs/:jobId`: mark/stop active job; 202 if found, 404 otherwise. Use this when SSE/client disconnects.
+- Success at HTTP level returns `{ok,exitCode,command:string[],output,truncated,timedOut,cancelled,durationMs,fonts?,fontScope?}`.
+  A failed LaTeX run is HTTP200 with ok=false, not a broker error. Validation400, duplicate409 when a slot is available, busy429 before reading the body at full capacity, unauthenticated401.
+- Inputs ≤256 regular files, each ≤8MiB, decoded total≤32MiB; no symlink type, unsafe paths or conflicting file/directory prefixes.
+- `latex_check` requires the saved snapshot's .tex/.ltx/.latex path. It produces an XDV only in its disposable workspace, returning diagnostics, never artifacts or edited project files.
+- `font_check` checks one provided font, or all project TTF/OTF/TTC files. Project fonts are temporarily visible to this job's fontconfig; no fonts are installed on the NAS or globally.
+- `list_fonts` accepts no project files and lists only worker-provided font families.
+
+Commands are fixed argv: Tectonic `--untrusted --only-cached --outfmt xdv`, `fc-scan`, `fc-list`.
+There is no shell tool, package installation, arbitrary argv, environment override, arbitrary URL or file download.
+Saved snapshot semantics, membership/editor checks and per-user tool permission are enforced by the app before calling this private service.
+
+## Isolation
+
+Fresh container per job: UID/GID10001, root filesystem readonly, network none, all capabilities dropped,
+no-new-privileges, Docker's unchanged default seccomp,512MiB RAM/512MiB RAM+swap,CPU1,pids64,
+workspace tmpfs128MiB and tmp tmpfs32MiB, both noexec/nosuid/nodev. Only the operator-approved **public TeX resource cache**
+is bind-mounted readonly. It must not contain user documents or credentials. No NAS project mounts, Docker socket,
+API/DB keys or broker token are passed to workers. At most two jobs run; commands timeout45s, broker total90s;
+finally removes containers. This is ordinary Docker isolation on the operator's existing kernel, not a VM guarantee.
+No change to host user namespaces, seccomp or network is required.
+
+## Operator installation (optional, root task handles live integration)
+
+1. Prepare a build-only directory with Dockerfile,worker.py and a trusted Tectonic binary.
+   Use a pinned locally approved Python3.11 bookworm base image. The example default is an existing mirror of the official image.
+   Build may use existing proxy build args for official Debian packages; proxy values are not source or worker ENV.
+2. Build independent image; record image ID and package/version manifest. Do not replace the app image.
+3. Generate a **new** random token into a private owner-readable mode0600 file; keep actual env/token out of Git.
+4. Copy workbench.env.example to a private env file and replace imageID/cache/tokenFile. Configure Rust app with matching token and loopbackURL.
+5. Prefer the separate trusted broker container in `Dockerfile.broker` and `compose.example.yml` with restart-unless-stopped, a private token-file bind and the standard Docker Unix socket. Its512MiB limit accommodates Base64/JSON parsing for two32MiB inputs. Copy the approved compatible Docker CLI into the broker build context; verify `docker --version` inside the image. This CLI may be dynamically linked, so verify ABI compatibility with the chosen base. User-systemd is an optional alternative; `Linger=no` cannot guarantee survival after logout. Do not change linger automatically. Existing app/Auth/DB need no restart for building/testing.
+6. Health probe with bearer; run test_worker.py and synthetic sandbox smoke tests first. The source scripts do not auto-install/start a host service.
+
+Readonly cached TeX packages may not include every requested package/font; failures are reported rather than fetching over the network.
+Use existing project file upload plus fontspec `Path=...` for persistent project-local font files.
+Do not claim that this service installed system fonts or examined unsaved editor buffers.
+
+## Upstream/license provenance
+
+- Docker/container flags: https://docs.docker.com/engine/containers/run/ and https://docs.docker.com/engine/security/seccomp/.
+- Tectonic: https://github.com/tectonic-typesetting/tectonic ,0.15.0,MIT; copied from operator's existing trusted runtime binary. See its upstream LICENSE and third-party notices.
+- Python: https://github.com/docker-library/python (official image packaging), Python Software Foundation License for interpreter.
+- Debian bookworm fontconfig/fonts-dejavu: packaged upstream licenses retained in worker `/usr/share/doc/*/copyright`.
+- Thin adapter files follow this repository's existing license; no OpenCode SDK or full agent distribution is vendored.

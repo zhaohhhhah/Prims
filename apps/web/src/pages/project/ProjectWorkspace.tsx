@@ -76,6 +76,7 @@ import { useProjectChrome } from '../../stores/projectChrome';
 import { useSettings } from '../../stores/settings';
 
 import { PreviewPanel } from './PreviewPanel';
+import './editor-motion.css';
 
 import type { AutocompleteSources, HoverPreviewSources } from '@scribe/editor';
 
@@ -1304,8 +1305,8 @@ export function ProjectWorkspace({
     return null;
   })();
 
-  const assistantBottomSlot=assistantLayout.visible&&assistantMode==='bottom'?<div data-testid="assistant-bottom-host" className="relative min-h-0 shrink-0 border-t" style={{height:assistantLayout.bottomHeight}}><div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="调整助手高度" className="absolute -top-1 left-0 z-10 h-2 w-full cursor-row-resize" onPointerDown={event=>resizeAssistant('bottom',event)} onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();updateAssistantLayout({bottomHeight:assistantLayout.bottomHeight+(event.key==='ArrowUp'?20:-20)});}}}/><div ref={setAssistantBottomHost} className="h-full min-h-0"/></div>:null;
-  const assistantRightSlot=assistantLayout.visible&&assistantMode==='right'?<aside data-testid="assistant-right-host" className="relative min-h-0 shrink-0 border-l" style={{width:assistantLayout.rightWidth}}><div role="separator" tabIndex={0} aria-orientation="vertical" aria-label="调整助手宽度" className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize" onPointerDown={event=>resizeAssistant('right',event)} onKeyDown={event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();updateAssistantLayout({rightWidth:assistantLayout.rightWidth+(event.key==='ArrowLeft'?20:-20)});}}}/><div ref={setAssistantRightHost} className="h-full min-h-0"/></aside>:null;
+  const assistantBottomSlot=assistantLayout.visible&&assistantMode==='bottom'?<div data-testid="assistant-bottom-host" className="prims-editor-assistant-host relative min-h-0 shrink-0 border-t" style={{height:assistantLayout.bottomHeight}}><div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="调整助手高度" className="absolute -top-1 left-0 z-10 h-2 w-full cursor-row-resize" onPointerDown={event=>resizeAssistant('bottom',event)} onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();updateAssistantLayout({bottomHeight:assistantLayout.bottomHeight+(event.key==='ArrowUp'?20:-20)});}}}/><div ref={setAssistantBottomHost} className="h-full min-h-0"/></div>:null;
+  const assistantRightSlot=assistantLayout.visible&&assistantMode==='right'?<aside data-testid="assistant-right-host" className="prims-editor-assistant-host relative min-h-0 shrink-0 border-l" style={{width:assistantLayout.rightWidth}}><div role="separator" tabIndex={0} aria-orientation="vertical" aria-label="调整助手宽度" className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize" onPointerDown={event=>resizeAssistant('right',event)} onKeyDown={event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();updateAssistantLayout({rightWidth:assistantLayout.rightWidth+(event.key==='ArrowLeft'?20:-20)});}}}/><div ref={setAssistantRightHost} className="h-full min-h-0"/></aside>:null;
 
   const editorPanel = (
     <div className="flex h-full flex-col">
@@ -1315,7 +1316,7 @@ export function ProjectWorkspace({
         onSelect={onSelectFile}
         onClose={onCloseFile}
       />
-      <div className="flex items-center justify-between gap-2 border-b bg-background px-3 py-1.5">
+      <div className="prims-editor-toolbar flex items-center justify-between gap-2 border-b bg-background px-3 py-1.5">
         <div className="flex min-w-0 items-center gap-2">
           {sidebarCollapsed && onExpandSidebar !== undefined ? (
             <Button
@@ -1348,7 +1349,7 @@ export function ProjectWorkspace({
             <span className="truncate text-sm font-medium">{t('compile.noFileSelected')}</span>
           )}
           {saveStatusLabel !== null ? (
-            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <span className="prims-editor-save text-[10px] uppercase tracking-wide text-muted-foreground" data-save-state={writeMutation.isPending ? 'saving' : 'saved'}>
               {saveStatusLabel}
             </span>
           ) : null}
@@ -1454,7 +1455,8 @@ export function ProjectWorkspace({
               void handleCompile();
             }}
             disabled={compileSession.compiling}
-            className="gap-1.5"
+            data-compile-state={compileSession.compiling ? 'running' : compileSession.status}
+            className="prims-editor-compile gap-1.5"
           >
             {compileSession.compiling ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
@@ -1536,7 +1538,7 @@ export function ProjectWorkspace({
   const showWordCount = selectedFile !== null && isTexFile(selectedFile);
 
   return (
-    <div ref={workspaceRef} className="flex h-full flex-col">
+    <div ref={workspaceRef} className="prims-editor-workspace flex h-full flex-col">
       <div className="flex min-h-0 min-w-0 flex-1">
       <PanelGroup direction="horizontal" autoSaveId="scribe:workspace" className="min-h-0 min-w-0 flex-1">
         <Panel defaultSize={50} minSize={20}>
@@ -1545,6 +1547,8 @@ export function ProjectWorkspace({
         <Splitter orientation="vertical" />
         <Panel
           ref={previewPanelRef}
+          className="prims-editor-preview"
+          data-collapsed={previewCollapsed}
           defaultSize={50}
           minSize={20}
           collapsible
@@ -1561,7 +1565,7 @@ export function ProjectWorkspace({
         {rightPanel !== null ? (
           <>
             <Splitter orientation="vertical" />
-            <Panel defaultSize={25} minSize={15} maxSize={45}>
+            <Panel className="prims-editor-inspector" defaultSize={25} minSize={15} maxSize={45}>
               {rightPanel === 'outline' ? (
                 <OutlinePanel
                   contents={outlineContents}

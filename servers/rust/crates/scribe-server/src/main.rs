@@ -388,6 +388,7 @@ fn build_router(
         .merge(routes::yjs::router())
         .merge(routes::compiles::router())
         .merge(routes::ai::router())
+        .merge(routes::agent_library::router())
         .merge(routes::project_actions::router())
         .merge(routes::exports::router())
         .merge(routes::archives::router())

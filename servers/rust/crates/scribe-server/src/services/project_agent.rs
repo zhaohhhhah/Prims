@@ -15,6 +15,10 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  let project=ProjectId::new(Uuid::parse_str(raw).map_err(|_|ApiError::validation("项目编号无效"))?);
  let pool=state.db().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"database unavailable"))?.pool().clone();
  let memory=AIContextService::new(pool.clone());let saved=memory.get(user,project).await?;
+ let library=super::agent_library::AgentLibrary::new(pool.clone());
+ let initial_preferences=library.preferences(user).await?;let preference_revision=library.preference_revision(user).await?;
+ let project_memory=library.memory(user,project).await?;
+ let writer=super::membership::assert_can_write(&pool,user,project).await.is_ok();
  if let Some(thread)=input.options.as_ref().and_then(|o|o.get("threadId")){if Uuid::parse_str(thread).ok()!=Some(saved.thread_id){return Err(ApiError::new(ErrorCode::Conflict,"已开始新的项目对话，请刷新后重新发送"));}}
  let current=input.options.as_ref().and_then(|o|o.get("filePath")).cloned().unwrap_or_default();
  let selection_id=input.options.as_ref().and_then(|o|o.get("selectionId")).cloned().unwrap_or_default();
@@ -22,6 +26,9 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  let (history,history_truncated)=model_history(&saved,&current,&selection_id);let history_count=history.len();input.history=Some(history);
  let options=input.options.get_or_insert_with(Default::default);options.insert("writingBrief".into(),saved.brief.clone());options.insert("projectTitle".into(),saved.project_title.clone());options.insert("projectDescription".into(),saved.project_description.clone().unwrap_or_default());options.insert("autoSummary".into(),saved.auto_summary.clone());
  // Client-provided synthetic tool results never bypass the server's read authorization.
+ for key in ["agentLibraryReference","agentFileToolsAllowed","agentPreferences","agentCapabilities","projectMemory","skillContent","skills","diagnosticsEnabled","skillsEnabled","memoryEnabled","searchEnabled"]{options.remove(key);}
+ options.insert("agentFileToolsAllowed".into(),allow_files.to_string());
+ options.insert("agentLibraryReference".into(),library.reference(user,project,&initial_preferences).await?.to_string());
  options.remove("projectTools");options.remove("projectContext");options.remove("projectContinuation");options.remove("projectEditsAllowed");options.remove("projectNativeTools");options.remove("projectNativeTurns");options.remove("projectCompaction");options.remove("projectPendingProposals");options.remove("contextCompaction");options.remove("projectCompacted");options.remove("projectPlan");options.remove("projectSearchSources");options.remove("webReferences");
  if !allow_files{options.remove("documentOutline");}
  let mut context_used=json!({"brief":!saved.brief.trim().is_empty(),"autoSummary":!saved.auto_summary.trim().is_empty(),"historyMessages":history_count,"historyTruncated":history_truncated,"fileTools":allow_files,"currentSection":options.get("currentSection"),"selectionStartLine":options.get("selectionStartLine"),"selectionEndLine":options.get("selectionEndLine"),"documentWindowStartLine":if allow_files{options.get("documentWindowStartLine")}else{None},"documentWindowEndLine":if allow_files{options.get("documentWindowEndLine")}else{None}});
@@ -30,7 +37,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  let mut context=if allow_files{Some(ProjectContext::new(&files,user,project).await?)}else{None};
  let crypto=state.inner.ai_crypto.clone().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"AI unavailable"))?;
  let ai=AIService::new(pool,crypto);let editing_allowed=super::inline_prompt::editing_allowed(&input);
- let project_edits_allowed=context.is_some()&&!input.options.as_ref().and_then(|options|options.get("readOnly")).is_some_and(|value|value=="true");
+ let project_edits_allowed=writer&&context.is_some()&&!input.options.as_ref().and_then(|options|options.get("readOnly")).is_some_and(|value|value=="true");
  input.options.as_mut().unwrap().insert("projectEditsAllowed".into(),project_edits_allowed.to_string());
  context_used["projectEditsAllowed"]=json!(project_edits_allowed);context_used["selectionAllowed"]=json!(editing_allowed);
  let live=input.options.as_ref().and_then(|o|o.get("currentDocument")).cloned();
@@ -51,10 +58,13 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
     input.options.as_mut().unwrap().insert("projectTools".into(),"enabled".into());
    }
    input.options.as_mut().unwrap().remove("currentDocument");
-   let mut native_mode=context.is_some();let mut native_fallback_used=false;let mut native_turns=Vec::<NativeToolTurn>::new();
+   input.options.as_mut().unwrap().insert("projectTools".into(),"enabled".into());
+   let mut native_mode=true;let mut native_fallback_used=false;let mut native_turns=Vec::<NativeToolTurn>::new();
    input.options.as_mut().unwrap().insert("projectNativeTools".into(),native_mode.to_string());
-   let mut image_fallback_used=false;let mut read_tools_used=0usize;let mut completed=std::collections::HashMap::<String,Value>::new();let mut continuation=Vec::<Value>::new();
+   let mut image_fallback_used=false;let mut read_tools_used=0usize;let mut completed=std::collections::HashMap::<String,Value>::new();let mut continuation=Vec::<Value>::new();let mut diagnostics_used=0usize;
    for step in 0..32 {
+    let preferences=library.preferences(user).await?;
+    input.options.as_mut().unwrap().insert("agentLibraryReference".into(),library.reference(user,project,&preferences).await?.to_string());
     if let Some(context)=context.as_ref(){context.sync(&mut input);}
     input.options.as_mut().unwrap().insert("projectPendingProposals".into(),pending.metadata().to_string());
     input.options.as_mut().unwrap().insert("projectPlan".into(),plan.metadata().to_string());
@@ -100,7 +110,6 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
     let public_status=output.as_object_mut().and_then(|object|object.remove("_publicStatus")).and_then(|value|value.as_str().map(String::from));
     if let Some(tool)=output.get("tool").and_then(Value::as_str){
      if step==31{return Err(ApiError::validation("本轮文件工具调用已达上限，请缩小问题或分次提问"));}
-     let Some(context)=context.as_mut()else{return Err(ApiError::validation("本轮已关闭项目文件读取；请开启后重试"));};
      let calls=if tool=="_read_batch"{output.get("calls").and_then(Value::as_array).cloned().ok_or_else(||ApiError::validation("读取工具批次格式无效"))?}else{vec![output.clone()]};
      if let Some(status)=public_status.as_ref(){emit(&tx,json!({"status":status})).await?;}
      let new_calls=count_new_read_calls(&calls,&completed);
@@ -109,10 +118,25 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
      let mut round_results=vec![];
      for call in &calls{
       let key=call.to_string();
-      if call.get("tool").and_then(Value::as_str)!=Some("web_search"){if let Some(previous)=completed.get(&key){round_results.push(json!({"toolCall":call,"toolResult":previous,"reused":true}));continue;}}
+      if !matches!(call.get("tool").and_then(Value::as_str),Some("web_search"|"list_skills"|"read_skill"|"read_project_memory"|"run_project_check")){if let Some(previous)=completed.get(&key){round_results.push(json!({"toolCall":call,"toolResult":previous,"reused":true}));continue;}}
       let tool=call.get("tool").and_then(Value::as_str).ok_or_else(||ApiError::validation("读取工具缺少名称"))?;
+      let preferences=library.preferences(user).await?;
+      if let Err(error)=super::agent_library::gate_tool(tool,&preferences,writer,allow_files){round_results.push(json!({"toolCall":call,"toolResult":{"error":error.message}}));continue;}
       let result=match tool{
+       "list_skills"|"read_skill"=>{
+        if !preferences.skills_enabled{Err(ApiError::validation("个人技能已关闭"))}else if tool=="list_skills"{emit(&tx,json!({"status":"正在查看已启用的个人技能…"})).await?;library.list(user,true).await}else{emit(&tx,json!({"status":"正在读取相关个人技能…"})).await?;let id=call.get("id").and_then(Value::as_str).and_then(|id|Uuid::parse_str(id).ok()).ok_or_else(output_format_error)?;library.read(user,id,true).await}
+       },
+       "read_project_memory"=>{
+        if !preferences.memory_enabled{Err(ApiError::validation("项目记忆已关闭"))}else{emit(&tx,json!({"status":"正在查看项目笔记…"})).await?;library.memory(user,project).await.map(|memory|json!({"content":memory.content,"revision":memory.revision,"untrusted":true,"permissionsGranted":false}))}
+       },
+       "run_project_check"=>{
+        if !preferences.diagnostics_enabled||!allow_files{Err(ApiError::validation("项目诊断或文件读取已关闭"))}else if !writer{Err(ApiError::forbidden("只读成员不能运行项目诊断"))}else if diagnostics_used>=3{Err(ApiError::validation("本轮最多运行3次项目诊断"))}else{
+         diagnostics_used+=1;emit(&tx,json!({"status":match call.get("task").and_then(Value::as_str){Some("latex_check")=>"正在检查已保存项目的LaTeX…",Some("font_check")=>"正在检查项目字体…",_=>"正在查看可用字体…"}})).await?;
+         tokio::select!{_=tx.closed()=>return Ok(()),result=tokio::time::timeout(Duration::from_secs(90),super::agent_workbench::run(&state,user,project,call))=>result.unwrap_or_else(|_|Err(ApiError::new(ErrorCode::ServiceUnavailable,"项目诊断超时；已发出取消请求，工作容器另有硬超时保护")))}
+        }
+       },
        "web_search"=>{
+        if !preferences.search_enabled{round_results.push(json!({"toolCall":call,"toolResult":{"error":"公开搜索已关闭"}}));continue;}
         let config=ai.prepare_agent_request(user,input.clone()).await.map_err(AIStreamStartError::into_api_error)?;
         emit(&tx,json!({"status":"正在查找公开参考资料…"})).await?;
         let found=tokio::select!{_=tx.closed()=>return Ok(()),result=search_session.search(&config,call)=>result};
@@ -124,26 +148,28 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
        "compact_context"=>{
         if compaction_attempted{Err(ApiError::validation("本轮已尝试上下文整理，不会重复调用摘要模型；请继续处理候选或结束本轮"))}else{
          compaction_attempted=true;emit(&tx,json!({"status":"正在按Codex方法整理上下文…"})).await?;
-         tokio::select!{_=tx.closed()=>return Ok(()),result=run_codex_compaction(&ai,user,&mut input,&mut native_turns,&mut continuation,&pending,Some(&*context))=>result}
+         tokio::select!{_=tx.closed()=>return Ok(()),result=run_codex_compaction(&ai,user,&mut input,&mut native_turns,&mut continuation,&pending,context.as_ref())=>result}
         }
        },
        "propose_edit"=>{
+        let context=context.as_ref().ok_or_else(||ApiError::validation("本轮未读取项目文件，不能提交精确修改候选"))?;
         match pending.submit(call,context,project_edits_allowed){
          Ok((proposal,is_new))=>{if is_new{emit(&tx,json!({"proposal":proposal,"status":"已提交一段待审修改"})).await?;}Ok(json!({"ok":true,"proposalId":proposal["id"],"filePath":proposal["filePath"],"status":"pending_review","applied":false,"note":"Only a complete pending preview was submitted. The harness has not applied it. Continue other requested small hunks, do not resubmit this proposal."}))},
          Err(error)=>Err(error),
         }
        },
-       "search_project"=>{emit(&tx,json!({"status":action_status(public_status.as_deref(),"正在查找项目内容…")})).await?;let query=call.get("query").and_then(Value::as_str).unwrap_or("");context.search(&files,user,query).await},
-       "list_files"=>{emit(&tx,json!({"status":action_status(public_status.as_deref(),"正在列出项目文件…")})).await?;Ok(context.listing())},
+       "search_project"=>{emit(&tx,json!({"status":action_status(public_status.as_deref(),"正在查找项目内容…")})).await?;let query=call.get("query").and_then(Value::as_str).unwrap_or("");match context.as_mut(){Some(context)=>context.search(&files,user,query).await,None=>Err(ApiError::validation("本轮已关闭项目文件读取"))}},
+       "list_files"=>{emit(&tx,json!({"status":action_status(public_status.as_deref(),"正在列出项目文件…")})).await?;context.as_ref().map(|context|context.listing()).ok_or_else(||ApiError::validation("本轮已关闭项目文件读取"))},
        "read_file"=>{
         let path=call.get("path").and_then(Value::as_str).unwrap_or("");emit(&tx,json!({"status":action_status(public_status.as_deref(),&format!("正在读取：{path}"))})).await?;
         let start=call.get("startLine").and_then(Value::as_u64).map(|n|n as usize);let end=call.get("endLine").and_then(Value::as_u64).map(|n|n as usize);
-        let result=context.read_window(&files,user,path,start,end,&mut input).await;
+        let result=match context.as_mut(){Some(context)=>context.read_window(&files,user,path,start,end,&mut input).await,None=>Err(ApiError::validation("本轮已关闭项目文件读取"))};
         if result.is_ok(){emit(&tx,json!({"status":action_status(public_status.as_deref(),&format!("已读取：{path}")),"file":path})).await?;}result
        },_=>return Err(ApiError::validation("只支持项目读取工具和待审 propose_edit；不能直接写正文")),
       };
       let value=match result{Ok(value) if tool=="search_project"=>value,Ok(value)=>value,Err(err)=>json!({"tool":tool,"error":err.message})};
-      if value.get("error").is_none()&&value.get("ok")!=Some(&Value::Bool(false))&&((matches!(tool,"list_files"|"search_project"|"read_file"|"compact_context"))||(tool=="update_plan"&&value.get("changed")==Some(&Value::Bool(true)))||(tool=="web_search"&&value.get("cached")!=Some(&Value::Bool(true)))){new_results+=1;}
+      let same_previous=completed.get(&key).is_some_and(|previous|previous==&value);
+      if !same_previous&&value.get("error").is_none()&&value.get("ok")!=Some(&Value::Bool(false))&&((matches!(tool,"list_files"|"search_project"|"read_file"|"compact_context"|"list_skills"|"read_skill"|"read_project_memory"|"run_project_check"))||(tool=="update_plan"&&value.get("changed")==Some(&Value::Bool(true)))||(tool=="web_search"&&value.get("cached")!=Some(&Value::Bool(true)))){new_results+=1;}
       completed.insert(key,value.clone());round_results.push(json!({"toolCall":call,"toolResult":value}));
      }
      if loop_guard.observe(&calls,new_results,pending.items.len().saturating_sub(before_proposals)){return Err(ApiError::validation(super::agent_loop_guard::STOP_REPLY));}
@@ -178,8 +204,11 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
      if let Some(status)=public_status.as_ref(){emit(&tx,json!({"status":status})).await?;}
      let recovered=output.as_object_mut().and_then(|value|value.remove("_formatRecovery")).and_then(|value|value.as_bool()).unwrap_or(false);
      if recovered{emit(&tx,json!({"warning":{"code":"answer_only_recovered","message":"修改建议未完整生成，本轮只保留可读答复；没有任何修改已应用。"}})).await?;}
+     let generated_project_memory=output.as_object_mut().and_then(|object|object.remove("projectMemory")).and_then(|value|value.as_str().map(String::from));
      let summary=take_generated_summary(&mut output);
      if output.to_string().chars().count()>MAX_RAW{return Err(ApiError::validation("修改方案过长，请减少修改范围后重试；正文未改动"));}
+     let mut project_memory_updated=false;
+     if let Some(content)=generated_project_memory{if !tx.is_closed(){let result=tokio::select!{_=tx.closed()=>return Ok(()),result=library.save_generated_memory(user,project,&project_memory,preference_revision,&content)=>result};match result{Ok(updated)=>project_memory_updated=updated,Err(_)=>tracing::warn!("Could not save optional private project notes; answer preserved")}}}
      let mut memory_updated=false;
      if let Some(summary)=summary{
       if tx.is_closed(){return Ok(());}
@@ -189,7 +218,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
       match result{Ok(updated)=>memory_updated=updated,Err(_)=>tracing::warn!("Could not save generated private writing context; normal reply preserved")}
      }
      let has_preview=output.get("replacement").is_some_and(Value::is_string)||output.get("edits").and_then(Value::as_array).is_some_and(|edits|!edits.is_empty())||output.get("actions").and_then(Value::as_array).is_some_and(|actions|!actions.is_empty());
-     emit(&tx,json!({"status":if has_preview{"答复与修改预览已生成"}else{"答复已生成"},"text":output.to_string(),"contextMemoryUpdated":memory_updated})).await?;return Ok(());
+     emit(&tx,json!({"status":if has_preview{"答复与修改预览已生成"}else{"答复已生成"},"text":output.to_string(),"contextMemoryUpdated":memory_updated,"projectMemoryUpdated":project_memory_updated})).await?;return Ok(());
     }
    }Err(ApiError::validation("本轮已达32轮工具上限，已完成候选仍保留，可继续分批处理"))
   }).await;
@@ -272,7 +301,7 @@ impl ProposalQueue{
  }
  fn merge(&self,output:&mut Value){if self.items.is_empty(){return;}output["edits"]=json!(self.items.iter().map(|item|json!({"filePath":item["filePath"],"before":item["before"],"after":item["after"]})).collect::<Vec<_>>());output["proposalIds"]=json!(self.items.iter().map(|item|item["id"].clone()).collect::<Vec<_>>());output["replacement"]=Value::Null;}
 }
-const MAX_READ_TOOLS:usize=6;
+const MAX_READ_TOOLS:usize=12;
 const MAX_TOOL_CALLS:usize=8;
 /// Accumulate provider-native tool fragments without exposing arguments or private reasoning.
 #[derive(Default)]struct NativeCalls{calls:std::collections::BTreeMap<usize,NativeToolCall>}
@@ -295,16 +324,16 @@ impl NativeCalls{
 fn native_calls_output(calls:&[NativeToolCall])->ApiResult<Value>{
  if calls.is_empty()||calls.len()>MAX_TOOL_CALLS{return Err(output_format_error());}let mut normalized=vec![];
  for call in calls{
-  let allowed:&[&str]=match call.name.as_str(){"list_files"|"compact_context"=>&[],"search_project"=>&["query"],"read_file"=>&["path","startLine","endLine"],"propose_edit"=>&["filePath","before","after"],"update_plan"=>&["explanation","plan"],"web_search"=>&["query","count"],_=>return Err(ApiError::validation("模型请求了未授权工具，只允许列目录、查找和读取项目文件"))};
-  let args:Value=serde_json::from_str(if call.arguments.trim().is_empty()&&matches!(call.name.as_str(),"list_files"|"compact_context"){"{}"}else{&call.arguments}).map_err(|_|ApiError::validation("原生工具参数未完整生成，本轮未执行"))?;
+  let allowed:&[&str]=match call.name.as_str(){"list_files"|"compact_context"|"list_skills"|"read_project_memory"=>&[],"search_project"=>&["query"],"read_file"=>&["path","startLine","endLine"],"propose_edit"=>&["filePath","before","after"],"update_plan"=>&["explanation","plan"],"web_search"=>&["query","count"],"read_skill"=>&["id"],"run_project_check"=>&["task","path"],_=>return Err(ApiError::validation("模型请求了未授权工具，只允许列目录、查找和读取项目文件"))};
+  let args:Value=serde_json::from_str(if call.arguments.trim().is_empty()&&matches!(call.name.as_str(),"list_files"|"compact_context"|"list_skills"|"read_project_memory"){"{}"}else{&call.arguments}).map_err(|_|ApiError::validation("原生工具参数未完整生成，本轮未执行"))?;
   let args=args.as_object().filter(|args|args.keys().all(|key|allowed.contains(&key.as_str()))).ok_or_else(||ApiError::validation("原生工具参数必须是白名单字段组成的完整对象"))?;
   let mut value=Value::Object(args.clone());value["tool"]=json!(call.name);normalized.push(value);
  }
  parse_read_tool_sequence(&json!(normalized).to_string())?.ok_or_else(output_format_error)
 }
 
-fn count_new_read_calls(calls:&[Value],completed:&std::collections::HashMap<String,Value>)->usize{calls.iter().filter(|call|call.get("tool").and_then(Value::as_str).is_some_and(|name|matches!(name,"read_file"|"list_files"|"search_project"))).map(Value::to_string).filter(|key|!completed.contains_key(key)).collect::<std::collections::HashSet<_>>().len()}
-fn reserve_read_tools(used:&mut usize,count:usize)->ApiResult<()>{if count==0||used.saturating_add(count)>MAX_READ_TOOLS{return Err(ApiError::validation("本轮最多读取或查找 6 次，请缩小范围后继续提问"));}*used+=count;Ok(())}
+fn count_new_read_calls(calls:&[Value],completed:&std::collections::HashMap<String,Value>)->usize{calls.iter().filter(|call|call.get("tool").and_then(Value::as_str).is_some_and(|name|matches!(name,"read_file"|"list_files"|"search_project"|"list_skills"|"read_skill"|"read_project_memory"))).map(Value::to_string).filter(|key|!completed.contains_key(key)).collect::<std::collections::HashSet<_>>().len()}
+fn reserve_read_tools(used:&mut usize,count:usize)->ApiResult<()>{if count==0||used.saturating_add(count)>MAX_READ_TOOLS{return Err(ApiError::validation("本轮最多读取或查找 12 次，请缩小范围后继续提问"));}*used+=count;Ok(())}
 /// Accept complete read-only JSON sequences/arrays; validate the whole batch before any I/O.
 fn parse_read_tool_sequence(raw:&str)->ApiResult<Option<Value>>{
  let clean=raw.lines().filter(|line|!matches!(line.trim().to_ascii_lowercase().as_str(),"```"|"```json")).collect::<Vec<_>>().join("\n");
@@ -324,9 +353,10 @@ fn parse_read_tool_sequence(raw:&str)->ApiResult<Option<Value>>{
   let status=super::project_progress::take_public_status(&mut value);if public_status.is_none(){public_status=status;}
   let item=value.as_object().ok_or_else(||ApiError::validation("读取工具批次必须由完整 JSON 对象组成"))?;
   if let Some(name)=item.get("tool").filter(|value|!value.is_null()){
-   let name=name.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search")).ok_or_else(||ApiError::validation("工具批次只允许 list_files、search_project、read_file"))?;
+   let name=name.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"read_project_memory"|"run_project_check")).ok_or_else(||ApiError::validation("工具批次只允许 list_files、search_project、read_file"))?;
    let mut call=json!({"tool":name});
    match name{
+    "list_skills"|"read_skill"|"read_project_memory"|"run_project_check"=>{super::agent_library::validate_tool(&value)?;for key in ["id","task","path"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "web_search"=>{for key in ["query","count"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "update_plan"=>{for key in ["explanation","plan"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "propose_edit"=>{for key in ["filePath","before","after"]{call[key]=item.get(key).filter(|value|value.is_string()).cloned().ok_or_else(||ApiError::validation("propose_edit需要完整filePath、before、after字符串"))?;}},
@@ -375,8 +405,9 @@ fn normalize_model_value_without_status(value:Value,trusted:bool)->ApiResult<Val
  let object=value.as_object().ok_or_else(output_format_error)?;
  if let Some(tool)=object.get("tool").filter(|tool|!tool.is_null()){
   if !trusted{return Err(output_format_error());}
-  let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search")).ok_or_else(output_format_error)?;
-  let mut output=json!({"tool":name});for key in ["path","query","startLine","endLine","filePath","before","after","explanation","plan","count"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
+  let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"read_project_memory"|"run_project_check")).ok_or_else(output_format_error)?;
+  if matches!(name,"list_skills"|"read_skill"|"read_project_memory"|"run_project_check"){super::agent_library::validate_tool(&value)?;}
+  let mut output=json!({"tool":name});for key in ["id","task","path","query","startLine","endLine","filePath","before","after","explanation","plan","count"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
   if name=="read_file"{let path=output.get("path").and_then(Value::as_str).ok_or_else(output_format_error)?;super::project_context::validate_path(path)?;for key in ["startLine","endLine"]{if output.get(key).is_some_and(|value|!value.is_u64()){return Err(output_format_error());}}}
   if name=="search_project"&&!output.get("query").and_then(Value::as_str).is_some_and(|query|!query.trim().is_empty()&&query.chars().count()<=200){return Err(output_format_error());}
   return Ok(output);
@@ -388,6 +419,7 @@ fn normalize_model_value_without_status(value:Value,trusted:bool)->ApiResult<Val
  if (!replacement.is_null()&&!replacement.is_string())||!edits.is_array(){return answer_only(reply,true);}
  let mut output=json!({"reply":reply,"replacement":replacement,"edits":edits});
  if SUPPORT_FILE_ACTIONS{let actions=object.get("actions").filter(|value|!value.is_null()).cloned().unwrap_or_else(||json!([]));if !actions.is_array(){return answer_only(reply,true);}output["actions"]=actions;}
+ if let Some(content)=object.get("projectMemory").filter(|value|value.is_string()){output["projectMemory"]=content.clone();}
  if let Some(summary)=object.get("contextSummary").filter(|value|value.is_string()){output["contextSummary"]=summary.clone();}Ok(output)
 }
 /// Extract only a complete, root-level quoted reply when later edit JSON was truncated.
@@ -558,7 +590,14 @@ fn validate_project_edit_targets(output:&Value,context:Option<&ProjectContext>)-
  }
  #[test]fn completed_reads_reuse_results_without_spending_new_budget(){let a=json!({"tool":"read_file","path":"a.tex"});let b=json!({"tool":"read_file","path":"b.tex"});let mut completed=std::collections::HashMap::new();assert_eq!(count_new_read_calls(&[a.clone(),a.clone(),b.clone()],&completed),2);completed.insert(a.to_string(),json!({"content":"authorized"}));assert_eq!(count_new_read_calls(&[a.clone(),b.clone()],&completed),1);completed.insert(b.to_string(),json!({"content":"authorized"}));assert_eq!(count_new_read_calls(&[a,b],&completed),0);}
  #[test]fn complete_read_tool_sequences_execute_as_one_authorized_batch_before_answer(){let first=json!({"tool":"read_file","path":"chapters/a.tex"});let second=json!({"tool":"read_file","path":"chapters/b.tex","startLine":2,"endLine":8});for raw in [format!("{}\n{}",first,second),json!([first.clone(),second.clone()]).to_string(),format!("```json\n{}\n```\n```json\n{}\n```",first,second),format!("{}\n{}\n{}",first,second,json!({"reply":"premature","replacement":"NEVER_APPLY"}))]{let value=parse_model_output(&raw).unwrap();assert_eq!(value["tool"],"_read_batch");assert_eq!(value["calls"].as_array().unwrap().len(),2);assert!(value.get("reply").is_none());}let single=parse_model_output(&first.to_string()).unwrap();assert_eq!(single["tool"],"read_file");}
- #[test]fn read_tool_batches_reject_unknown_write_truncation_and_enforce_total_budget(){let first=json!({"tool":"read_file","path":"main.tex"});for raw in [format!("{}\n{}",first,json!({"tool":"delete_file","path":"main.tex"})),format!("{}\n{{\"tool\":",first),json!([{"tool":"read_file","path":"../outside"}]).to_string(),json!([{"tool":"read_file"}]).to_string(),serde_json::to_string(&(0..9).map(|_|first.clone()).collect::<Vec<_>>()).unwrap()]{assert!(parse_model_output(&raw).is_err());}let mut used=0;reserve_read_tools(&mut used,4).unwrap();reserve_read_tools(&mut used,2).unwrap();assert!(reserve_read_tools(&mut used,1).is_err());assert_eq!(used,6);}
+ #[test]fn personal_tools_work_in_native_and_compatibility_protocol_without_authority_fields(){
+  for value in [json!({"tool":"list_skills"}),json!({"tool":"read_skill","id":Uuid::new_v4()}),json!({"tool":"read_project_memory"}),json!({"tool":"run_project_check","task":"latex_check","path":"main.tex"})]{
+   assert!(parse_model_output(&value.to_string()).is_ok());let tool=value["tool"].as_str().unwrap();let mut args=value.clone();args.as_object_mut().unwrap().remove("tool");let native=NativeToolCall{id:Uuid::new_v4().to_string(),name:tool.into(),arguments:args.to_string()};assert!(native_calls_output(&[native]).is_ok());
+  }
+  for value in [json!({"tool":"read_skill","id":Uuid::new_v4(),"userId":Uuid::new_v4()}),json!({"tool":"run_project_check","task":"sh"}),json!({"tool":"read_project_memory","projectId":Uuid::new_v4()})]{assert!(parse_model_output(&value.to_string()).is_err());}
+  let parsed=parse_model_output(&json!({"reply":"Useful factual response","projectMemory":"Audience: graduate students."}).to_string()).unwrap();assert_eq!(parsed["projectMemory"],"Audience: graduate students.");
+ }
+ #[test]fn read_tool_batches_reject_unknown_write_truncation_and_enforce_total_budget(){let first=json!({"tool":"read_file","path":"main.tex"});for raw in [format!("{}\n{}",first,json!({"tool":"delete_file","path":"main.tex"})),format!("{}\n{{\"tool\":",first),json!([{"tool":"read_file","path":"../outside"}]).to_string(),json!([{"tool":"read_file"}]).to_string(),serde_json::to_string(&(0..9).map(|_|first.clone()).collect::<Vec<_>>()).unwrap()]{assert!(parse_model_output(&raw).is_err());}let mut used=0;reserve_read_tools(&mut used,4).unwrap();reserve_read_tools(&mut used,8).unwrap();assert!(reserve_read_tools(&mut used,1).is_err());assert_eq!(used,12);}
  #[test]fn truncated_edit_can_only_recover_complete_reply_with_no_preview_notice(){let mut value=parse_model_output(r#"{"reply":"我已拟好章节展开思路。","replacement":null,"edits":[{"filePath":"main.tex","before":"unfinished"#).unwrap();assert!(value["reply"].as_str().unwrap().contains("没有可应用的方案"));assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));assert!(take_generated_summary(&mut value).is_none());assert!(parse_model_output(r#"{"reply":"incomplete"#).is_err());}
  #[test]fn optional_null_fields_allow_clarification_and_followup(){for raw in [r#"{"reply":"请先确认研究目标，我再提出修改。","tool":null,"replacement":null,"edits":null,"contextSummary":null}"#,r#"{"reply":"下一轮可以继续讨论。","replacement":null}"#]{let value=parse_model_output(raw).unwrap();assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));}}
  #[test]fn latex_encoding_recovery_never_recovers_modifications_or_summary(){for raw in [r#"{"reply":"请确认 \input{methods} 与 \begin{document}。","replacement":"UNTRUSTED","edits":null,"contextSummary":"must not save repaired metadata"}"#,r#"{"reply":"使用 \begin{document} 即可。","replacement":"UNTRUSTED"}"#]{let mut value=parse_model_output(raw).unwrap();assert!(value["reply"].as_str().unwrap().contains('\\'));assert!(value["replacement"].is_null());assert_eq!(value["edits"],json!([]));assert!(take_generated_summary(&mut value).is_none());}}

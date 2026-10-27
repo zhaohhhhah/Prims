@@ -261,7 +261,7 @@ export function ProjectPage() {
   // Sidebar contents are the same in both layouts — the only thing
   // that differs is where they're mounted (resizable Panel vs Sheet).
   const sidebarHeader = (
-    <div className="flex items-center justify-between gap-2 border-b p-3">
+    <div className="prims-project-sidebar-header flex items-center justify-between gap-2 border-b p-3">
       <h2 className="truncate text-sm font-semibold" title={project.name}>
         {project.name}
       </h2>
@@ -293,7 +293,7 @@ export function ProjectPage() {
               <SettingsIcon className="h-4 w-4" />
             </Button>
           </SheetTrigger>
-          <SheetContent className="w-full sm:max-w-md">
+          <SheetContent className="prims-editor-sheet w-full sm:max-w-md">
             <ProjectSettingsSheet
               project={project}
               onClosed={() => {
@@ -335,7 +335,7 @@ export function ProjectPage() {
   );
 
   return (
-    <div className="h-full">
+    <div className="prims-project-page h-full">
       <PanelGroup direction="horizontal" autoSaveId="scribe:project-layout" className="h-full">
         {isMobileLayout ? null : (
           <>
@@ -353,7 +353,7 @@ export function ProjectPage() {
                 setSidebarCollapsed(false);
               }}
             >
-              <aside className="flex h-full flex-col border-r bg-muted/30">
+              <aside className="prims-project-sidebar flex h-full flex-col border-r bg-muted/30" data-collapsed={sidebarCollapsed}>
                 {sidebarHeader}
                 {sidebarFileTree}
               </aside>
@@ -390,7 +390,7 @@ export function ProjectPage() {
           state (cheap when closed) so a window resize while open
           doesn't strand it. */}
       <Sheet open={isMobileLayout && mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
-        <SheetContent side="left" hideCloseButton className="flex w-72 max-w-[85vw] flex-col p-0">
+        <SheetContent side="left" hideCloseButton className="prims-editor-sheet flex w-72 max-w-[85vw] flex-col p-0">
           {sidebarHeader}
           {sidebarFileTree}
         </SheetContent>
