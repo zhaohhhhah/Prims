@@ -112,7 +112,7 @@ export function PreviewPanel({
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <div className="flex items-center gap-1 border-b px-2 py-1">
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-1 border-b px-2 py-1">
         {onCollapse !== undefined ? (
           <Button
             variant="ghost"

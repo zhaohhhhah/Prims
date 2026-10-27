@@ -1,6 +1,5 @@
-import { Button } from '@scribe/ui';
-import { Check, Eye, Moon, Sun, X } from 'lucide-react';
-import { useEffect, useId, useRef, useState } from 'react';
+import { Sun } from 'lucide-react';
+import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import type { PdfAppearance, PdfReadingMode } from '../../lib/pdf-appearance';
@@ -10,78 +9,35 @@ interface Props {
   readonly onChange: (value: PdfAppearance) => void;
 }
 
-/** Compact control lives in the existing PDF/log tab row, never in general appearance settings. */
+/** Theme selection stays in the PDF toolbar, next to the always-visible brightness control. */
 export function PDFReadingAppearance({ appearance, onChange }: Props) {
   const { i18n } = useTranslation();
   const zh = i18n.resolvedLanguage?.startsWith('zh') ?? false;
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  const trigger = useRef<HTMLButtonElement>(null);
   const id = useId();
-  const title = zh ? 'PDF 阅读外观' : 'PDF reading appearance';
   const modes: readonly { value: PdfReadingMode; label: string }[] = [
     { value: 'original', label: zh ? '原色' : 'Original' },
     { value: 'soft', label: zh ? '柔光' : 'Soft' },
     { value: 'night', label: zh ? '夜读' : 'Night' },
+    { value: 'warm', label: zh ? '暖黄纸' : 'Warm paper' },
+    { value: 'green', label: zh ? '浅绿纸' : 'Green paper' },
   ];
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpen(false);
-        trigger.current?.focus();
-      }
-    };
-    document.addEventListener('pointerdown', onPointer);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('pointerdown', onPointer);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   return (
-    <div ref={root} className="relative ml-auto shrink-0">
-      <Button
-        ref={trigger}
-        variant="ghost"
-        size="icon"
-        className="h-7 w-7"
-        aria-label={title}
-        title={title}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? id : undefined}
-        onClick={() => { setOpen((previous) => !previous); }}
-      >
-        <Eye className="h-3.5 w-3.5" aria-hidden="true" />
-      </Button>
-      {open ? (
-        <div id={id} role="dialog" aria-label={title} className="absolute right-0 top-full z-50 mt-1 w-60 rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg">
-          <div className="mb-3 flex items-center justify-between gap-2 text-xs font-medium">
-            <span>{title}</span>
-            <Button variant="ghost" size="icon" className="h-5 w-5" aria-label={zh ? '关闭' : 'Close'} onClick={() => { setOpen(false); trigger.current?.focus(); }}>
-              <X className="h-3 w-3" aria-hidden="true" />
-            </Button>
-          </div>
-          <div role="group" aria-label={zh ? '阅读模式' : 'Reading mode'} className="grid grid-cols-3 gap-1">
-            {modes.map((mode) => (
-              <Button key={mode.value} variant={appearance.mode === mode.value ? 'secondary' : 'ghost'} size="sm" className="h-8 gap-1 px-1 text-xs" aria-pressed={appearance.mode === mode.value} onClick={() => { onChange({ mode: mode.value, brightness: mode.value === 'original' ? 100 : appearance.brightness }); }}>
-                {appearance.mode === mode.value ? <Check className="h-3 w-3" aria-hidden="true" /> : mode.value === 'night' ? <Moon className="h-3 w-3" aria-hidden="true" /> : <Sun className="h-3 w-3" aria-hidden="true" />}
-                {mode.label}
-              </Button>
-            ))}
-          </div>
-          <label htmlFor={`${id}-brightness`} className="mb-1 mt-3 flex items-center justify-between text-xs">
-            <span>{zh ? '亮度' : 'Brightness'}</span><span className="tabular-nums">{appearance.brightness}%</span>
-          </label>
-          <input id={`${id}-brightness`} className="block w-full accent-primary" type="range" min={60} max={120} step={1} value={appearance.brightness} onChange={(event) => { onChange({ ...appearance, brightness: Number(event.target.value) }); }} />
-        </div>
-      ) : null}
+    <div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-1" role="group" aria-label={zh ? 'PDF 阅读外观' : 'PDF reading appearance'}>
+      <select aria-label={zh ? 'PDF 阅读主题' : 'PDF reading theme'} value={appearance.mode}
+        className="h-7 min-w-20 max-w-32 rounded-md border bg-background px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onChange={event => {
+          const mode = event.target.value as PdfReadingMode;
+          onChange({ mode, brightness: mode === 'original' ? 100 : appearance.brightness });
+        }}>
+        {modes.map(mode => <option key={mode.value} value={mode.value}>{mode.label}</option>)}
+      </select>
+      <label htmlFor={id} className="inline-flex shrink-0 items-center gap-1.5 text-[10px] text-muted-foreground">
+        <Sun className="h-3.5 w-3.5" aria-hidden="true" />
+        <span className="sr-only">{zh ? '亮度' : 'Brightness'}</span>
+        <input id={id} className="w-14 accent-primary" type="range" min={60} max={120} step={1}
+          value={appearance.brightness} onChange={event => onChange({ ...appearance, brightness: Number(event.target.value) })} />
+        <span className="w-7 text-right tabular-nums">{appearance.brightness}%</span>
+      </label>
     </div>
   );
 }

@@ -26,7 +26,7 @@ adds a browser-first workflow for writing with your own AI endpoint.
 - **Conversation without forced edits.** The model can explain uncertainty or
   ask a clarifying question. A useful answer without a proposed change is a
   successful response.
-- **Appearance settings.** A separate Appearance section offers 26 palettes,
+- **Appearance settings.** A separate Appearance section offers 82 palettes,
   day/night choices, regional and impression-inspired series, and six coordinated
   presets. Classic colors and existing text/code fonts remain the initial
   defaults. Presets are opt-in; individual choices can still be adjusted.
@@ -175,7 +175,7 @@ Night modes plus brightness. These are screen-only filters: PDF bytes, export,
 download and print output keep their original appearance. Reading preferences
 are separate from the application theme.
 
-The 26 application palettes include classic, impression-inspired, Chinese and
+The 82 application palettes include classic, impression-inspired, Chinese and
 Japanese traditional-color inspirations, and nature-inspired Mexican, American,
 Icelandic, Turkish and African series. These are design references rather than
 national or continent-wide color standards. Day and night palettes are remembered
@@ -188,3 +188,14 @@ Optional calligraphic wordmark/book-title choices use self-hosted Allura and
 Ma Shan Zheng, distributed with their SIL Open Font License texts in
 `apps/web/public/fonts/appearance/`. Existing application, editor and third-party
 licenses remain in place.
+
+
+Additional day/night palette pairs draw on Chinese architecture and landscapes,
+regional color scenes, and musical moods. These include Forbidden City, Great
+Wall, Nanjing, Ginkgo, Debussy-inspired Faun and Moonlight, Sunrise at Sea,
+Rachmaninoff I/II/III, Paganini Variations and Tchaikovsky I. Book covers have
+independent foreground/background colors; application text and all cover titles
+retain at least 4.5:1 contrast. Existing custom appearance choices are preserved.
+A PDF theme dropdown and brightness control sit in the preview toolbar, with warm-yellow and
+light-green paper modes in addition to Original, Soft and Night. Filters are
+display-only and do not change exported/downloaded PDFs.

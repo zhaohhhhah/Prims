@@ -1,5 +1,5 @@
 /** Display preferences only: never change PDF bytes or PDF.js rendering coordinates. */
-export type PdfReadingMode = 'original' | 'soft' | 'night';
+export type PdfReadingMode = 'original' | 'soft' | 'night' | 'warm' | 'green';
 
 export interface PdfAppearance {
   readonly mode: PdfReadingMode;
@@ -14,7 +14,7 @@ export const DEFAULT_PDF_APPEARANCE: PdfAppearance = Object.freeze({
 export function normalizePdfAppearance(value: unknown): PdfAppearance {
   if (typeof value !== 'object' || value === null) return DEFAULT_PDF_APPEARANCE;
   const item = value as Record<string, unknown>;
-  const mode = item['mode'] === 'soft' || item['mode'] === 'night' ? item['mode'] : 'original';
+  const mode = item['mode'] === 'soft' || item['mode'] === 'night' || item['mode'] === 'warm' || item['mode'] === 'green' ? item['mode'] : 'original';
   const raw = item['brightness'];
   const brightness = typeof raw === 'number' && Number.isFinite(raw)
     ? Math.max(60, Math.min(120, Math.round(raw)))
@@ -29,7 +29,12 @@ export function pdfAppearanceKey(userId: string): string {
 export function pdfAppearanceFilter(value: PdfAppearance): string {
   const { mode, brightness } = normalizePdfAppearance(value);
   if (mode === 'original' && brightness === 100) return 'none';
-  // Neutral luminance/contrast only: no inversion, hue rotation or colour remapping.
+  // Mild paper tints preserve dark text and stay entirely in the display layer.
+  if (mode === 'warm' || mode === 'green') {
+    const luminance = Math.round(brightness * (mode === 'warm' ? 0.99 : 0.98)) / 100;
+    return `brightness(0.94) sepia(0.45) saturate(${mode === 'warm' ? 0.9 : 0.8}) hue-rotate(${mode === 'warm' ? -8 : 65}deg) brightness(${luminance}) contrast(0.98)`;
+  }
+  // Existing neutral soft/night modes keep their previous appearance.
   const base = mode === 'night' ? 0.72 : mode === 'soft' ? 0.95 : 1;
   const luminance = Math.round(base * brightness) / 100;
   const contrast = mode === 'original' ? 1 : 0.96;

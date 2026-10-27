@@ -86,3 +86,16 @@ describe('PDF reading appearance', () => {
     expect(header).toContain('<PDFReadingAppearance appearance={appearance} onChange={setAppearance} />');
   });
 });
+
+it('supports warm-yellow and light-green paper without changing stored account isolation or original reset',()=>{
+  for(const mode of ['warm','green'] as const){
+    expect(normalizePdfAppearance({mode,brightness:92})).toEqual({mode,brightness:92});
+    const store=createPdfAppearanceStore(()=>null);store.set('paper-user',{mode,brightness:92});
+    expect(store.read('paper-user')).toEqual({mode,brightness:92});expect(store.read('other-user')).toEqual(DEFAULT_PDF_APPEARANCE);
+    expect(pdfAppearanceFilter(store.read('paper-user'))).toContain('sepia(0.45)');
+    expect(pdfAppearanceFilter(store.read('paper-user'))).not.toContain('invert');
+    store.set('paper-user',DEFAULT_PDF_APPEARANCE);expect(pdfAppearanceFilter(store.read('paper-user'))).toBe('none');
+  }
+  expect(pdfAppearanceFilter({mode:'warm',brightness:100})).toContain('hue-rotate(-8deg)');
+  expect(pdfAppearanceFilter({mode:'green',brightness:100})).toContain('hue-rotate(65deg)');
+});
