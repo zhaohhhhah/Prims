@@ -290,3 +290,9 @@ Search-call preferences are personal and independent of connection keys and
 the four Agent toggles. Zero removes only the separate search-call limit; the
 overall Agent round and time bounds remain. Changing the four toggles or
 deleting a search connection preserves the search-call preference.
+
+The detached assistant follows the original editor current file and selection
+through the same account/project-scoped bridge. Context updates do not replace
+conversation drafts or pending review plans. In-flight requests retain their
+request-time context. Editor surfaces share geometry-based transitions, with
+immediate drag resizing and reduced-motion support.

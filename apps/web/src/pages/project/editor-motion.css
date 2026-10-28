@@ -166,3 +166,36 @@
   from { opacity: 1; transform: translateX(0); }
   to { opacity: 0; transform: translateX(-6px); }
 }
+
+/* Editor controls have a shared directional/geometry vocabulary. */
+.prims-editor-toolbar :where(button:enabled),
+.prims-editor-preview-tabs :where(button:enabled),
+.prims-project-sidebar-header :where(button:enabled),
+.prims-assistant-panel :where(button:enabled) {
+  transition: background-color 120ms ease-out, color 120ms ease-out, box-shadow 120ms ease-out, transform 120ms ease-out;
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .prims-editor-toolbar :where(button:enabled:hover),
+  .prims-editor-preview-tabs :where(button:enabled:hover),
+  .prims-project-sidebar-header :where(button:enabled:hover),
+  .prims-assistant-panel :where(button:enabled:hover) { transform: translateY(-1px); }
+}
+.prims-editor-toolbar :where(button:enabled:active),
+.prims-editor-preview-tabs :where(button:enabled:active),
+.prims-project-sidebar-header :where(button:enabled:active),
+.prims-assistant-panel :where(button:enabled:active) { transform: translateY(0) scale(.96); }
+.prims-selection-popup { animation: prims-editor-control-in 180ms cubic-bezier(.2,.75,.25,1); }
+@keyframes prims-editor-control-in {
+ from { clip-path: inset(0 6% 20% 0 round 12px); transform: translateY(-6px) scale(.94); opacity:.88; }
+ to { clip-path: inset(0 round 8px); transform: translateY(0) scale(1); opacity:1; }
+}
+body:has(.prims-editor-workspace) :where([role="menu"],[role="dialog"],[role="listbox"],[role="tooltip"]):not(.prims-assistant-panel):not(.prims-selection-popup)[data-state="open"] { animation:none; }
+body:has(.prims-editor-workspace) :where([role="menu"],[role="dialog"],[role="listbox"],[role="tooltip"]):not(.prims-assistant-panel):not(.prims-selection-popup)[data-state="closed"] { transform-origin:top center;animation:prims-editor-control-out 120ms ease-in; }
+@keyframes prims-editor-control-out {
+ from {clip-path:inset(0 round 8px);transform:translateY(0) scale(1);opacity:1;}
+ to {clip-path:inset(0 4% 24% 0 round 12px);transform:translateY(-4px) scale(.96);opacity:0;}
+}
+@media (prefers-reduced-motion: reduce) {
+ .prims-editor-toolbar button,.prims-editor-preview-tabs button,.prims-project-sidebar-header button,.prims-assistant-panel button {transform:none!important;transition:none!important;}
+ body:has(.prims-editor-workspace) :where([role="menu"],[role="dialog"],[role="listbox"],[role="tooltip"])[data-state] {animation:none!important;}
+}

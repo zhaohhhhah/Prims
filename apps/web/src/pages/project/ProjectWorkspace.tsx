@@ -63,6 +63,7 @@ import { VersionHistory } from '../../components/VersionHistory/VersionHistory';
 import { VoiceControls } from '../../components/Voice/VoiceControls';
 import { useCompileSession } from '../../hooks/useCompileSession';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { useEditorChromeMotion } from '../../hooks/useEditorChromeMotion';
 import { usePanelMotion } from '../../hooks/usePanelMotion';
 import { previewPanelLayout } from '../../lib/panel-motion';
 import { lookup, lookupReverse, useSyncTeX } from '../../hooks/useSyncTeX';
@@ -88,6 +89,7 @@ interface ProjectWorkspaceProps {
   readonly files: readonly ProjectFile[];
   readonly selectedFile: ProjectFile | null;
   readonly onSelectFile: (file: ProjectFile) => void;
+  readonly onClearFile?:()=>void;
   /** Ordered list of files currently open as editor tabs. */
   readonly openFiles: readonly ProjectFile[];
   readonly onCloseFile: (file: ProjectFile) => void;
@@ -187,12 +189,14 @@ export function ProjectWorkspace({
   files,
   selectedFile,
   onSelectFile,
+  onClearFile,
   openFiles,
   onCloseFile,
   sidebarCollapsed = false,
   onExpandSidebar,
 }: ProjectWorkspaceProps) {
   const { t } = useTranslation();
+  useEditorChromeMotion();
   const queryClient = useQueryClient();
   const projectId: ProjectId = project.id;
   const authUser = useAuthStore((s) => s.user);
@@ -1715,7 +1719,7 @@ export function ProjectWorkspace({
       {assistantRightSlot}
       </div>
       {assistantOnly&&<div ref={setAssistantTabHost} className="min-h-0 flex-1" data-testid="assistant-tab-host"/>}
-      <InlineAssistant standalone={assistantOnly} fileId={selectedFile?.id} onDetachedChange={setAssistantAway} controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} layout={shownAssistantLayout} effectiveMode={assistantMode} onLayoutChange={assistantOnly?()=>{}:updateAssistantLayout} viewport={assistantViewport} rightHost={assistantOnly?assistantTabHost:assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} />
+      <InlineAssistant standalone={assistantOnly} fileId={selectedFile?.id} onDetachedChange={setAssistantAway} controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} layout={shownAssistantLayout} effectiveMode={assistantMode} onLayoutChange={assistantOnly?()=>{}:updateAssistantLayout} viewport={assistantViewport} rightHost={assistantOnly?assistantTabHost:assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} onFollowFile={path=>{if(!path){onClearFile?.();return;}const next=files.find(file=>file.path===path);if(next)onSelectFile(next);}} selectionMatches={(from,to,text)=>{const content=editorRef.current?.getContent();return content!==undefined&&content.slice(from,to)===text;}} />
       <CommandPalette
         open={cmdPaletteOpen}
         onOpenChange={setCmdPaletteOpen}

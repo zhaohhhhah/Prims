@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assistantReturnKey, assistantTabChannel, assistantTabSession, assistantTabUrl, canContinueWithoutParent, editorTabUrl, validTabMessage, validTabState, type AssistantTabState } from './assistant-tab';
+import { assistantCloseKey, handoffDisposition, validEditorContext, restoreInEditor, assistantReturnKey, assistantTabChannel, assistantTabSession, assistantTabUrl, canContinueWithoutParent, editorTabUrl, validTabMessage, validTabState, type AssistantTabState } from './assistant-tab';
 const id='e640f62c-4ff7-4c66-b729-ef1907a87805';
 const state:AssistantTabState={drafts:{panel:'A fixed draft',selection:'A separate selection draft'},threadId:'thread',modelChoice:'["connection","model"]',filePath:'main.tex',plan:{id:'run',threadId:'thread',edits:[{id:'edit',filePath:'main.tex',before:'original',after:'manually adjusted',state:'pending'}]},fileActions:[],target:{from:3,to:11,text:'original'}};
 describe('scoped assistant tab transfer',()=>{
@@ -40,3 +40,15 @@ describe('scoped assistant tab transfer',()=>{
   expect(assistantTabSession('?assistant=tab&bridge=anything')).toBe(null);
  });
 });
+
+ describe('live editor context',()=>{
+ const editor={revision:4,fileId:'intro-id',filePath:'chapters/intro.tex',selection:{from:9,to:14,text:'hello'}};
+ it('accepts a bounded selection and an explicitly cleared selection',()=>{expect(validEditorContext(editor)).toBe(true);expect(validEditorContext({...editor,selection:null})).toBe(true);});
+ it('rejects malformed ranges, oversized content and out-of-order invalid revision values',()=>{for(const selection of [{from:-1,to:4,text:'hello'},{from:9,to:13,text:'hello'},{from:0,to:16001,text:'x'.repeat(16001)}])expect(validEditorContext({...editor,selection})).toBe(false);expect(validEditorContext({...editor,revision:NaN})).toBe(false);expect(validEditorContext({...editor,filePath:'x'.repeat(1025)})).toBe(false);});
+ it('returns discussion and review to the editor current context without overwriting drafts or candidates',()=>{const restored=restoreInEditor(state,editor);expect(restored.filePath).toBe('chapters/intro.tex');expect(restored.target).toEqual(editor.selection);expect(restored.drafts).toEqual(state.drafts);expect(restored.plan).toEqual(state.plan);expect(restored.modelChoice).toBe(state.modelChoice);});
+ it('keeps context traffic scoped to the same project, account and active bridge',()=>{const message={version:1,session:id,userId:'user',projectId:'project',sender:'parent',kind:'editor-context',editor};expect(validTabMessage(message,'user','project',id,'parent')).toBe(true);expect(validTabMessage(message,'user','other',id,'parent')).toBe(false);expect(validTabMessage(message,'user','project',id,'child')).toBe(false);});
+});
+
+it('makes asynchronous handoff idempotent and ignores stale active messages after return',()=>{expect(handoffDisposition(false,false)).toBe('start');expect(handoffDisposition(true,false)).toBe('ignore');expect(handoffDisposition(true,true)).toBe('grant');expect(handoffDisposition(true,false)).toBe('ignore');});
+
+it('scopes crash-recovery drafts to the same user, project and detached session',()=>{expect(assistantCloseKey('a','p',id)).not.toBe(assistantCloseKey('b','p',id));expect(assistantCloseKey('a','p',id)).not.toBe(assistantCloseKey('a','q',id));expect(assistantCloseKey('a','p',id)).not.toBe(assistantCloseKey('a','p','other-session'));});

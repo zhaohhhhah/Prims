@@ -182,7 +182,7 @@ export function ProjectPage() {
   // setSelectedFileId; only the *order* of open tabs needs to live
   // in localStorage.
   useEffect(() => {
-    if (tabsStorageKey === null) return;
+    if (tabsStorageKey === null || assistantOnly) return;
     try {
       window.localStorage.setItem(tabsStorageKey, JSON.stringify(openFileIds));
     } catch {
@@ -374,6 +374,7 @@ export function ProjectPage() {
             onSelectFile={(file) => {
               setSelectedFileId(file.id);
             }}
+            onClearFile={()=>setSelectedFileId(null)}
             openFiles={openFiles}
             onCloseFile={(file) => {
               closeTab(file.id);

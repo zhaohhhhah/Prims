@@ -16,7 +16,7 @@ export function clampAssistantLayout(value:unknown,viewport:AssistantViewport):A
  return {mode:source.mode==='bottom'||source.mode==='float'||source.mode==='right'?source.mode:'right',visible:typeof source.visible==='boolean'?source.visible:true,rightWidth:bounded(number(source.rightWidth,defaults.rightWidth),240,Math.max(240,Math.min(640,viewport.width-240))),bottomHeight:bounded(number(source.bottomHeight,defaults.bottomHeight),240,Math.max(240,viewport.height*.7)),floating:{x:bounded(number(floating.x,defaults.floating.x),8,Math.max(8,viewport.width-width-8)),y:bounded(number(floating.y,defaults.floating.y),8,Math.max(8,viewport.height-height-8)),width,height}};
 }
 export function parseAssistantLayout(raw:string|null,viewport:AssistantViewport):AssistantLayout{try{return clampAssistantLayout(raw?JSON.parse(raw):null,viewport);}catch{return clampAssistantLayout(null,viewport);}}
-export function effectiveAssistantMode(layout:AssistantLayout,workspaceWidth:number):AssistantMode{return layout.mode==='right'&&workspaceWidth<1000?'bottom':layout.mode;}
+export function effectiveAssistantMode(layout:AssistantLayout,workspaceWidth:number):AssistantMode{return layout.mode==='right'&&workspaceWidth<560?'bottom':layout.mode;}
 function currentViewport():AssistantViewport{return typeof window==='undefined'?{width:1280,height:800}:{width:window.innerWidth,height:window.innerHeight};}
 /** Layout only. Conversation content and credentials never enter this browser preference. */
 export function useAssistantLayout(userId:string|undefined){

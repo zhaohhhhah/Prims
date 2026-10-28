@@ -10,9 +10,16 @@ export interface AssistantTabState {
   fileActions: ProjectActionInput[];
   target: { from: number; to: number; text: string } | null;
 }
-export type AssistantTabKind = 'hello'|'state'|'active'|'grant'|'sync'|'return'|'return-ack'|'request-return'|'closed'|'parent-closed'|'busy';
-export interface AssistantTabMessage { version:1;session:string;userId:string;projectId:string;sender:'parent'|'child';kind:AssistantTabKind;state?:AssistantTabState }
-const kinds = new Set<AssistantTabKind>(['hello','state','active','grant','sync','return','return-ack','request-return','closed','parent-closed','busy']);
+export interface EditorTabContext { revision:number;fileId:string|null;filePath:string;selection:{from:number;to:number;text:string}|null }
+export function validEditorContext(value:unknown):value is EditorTabContext {
+ if(!value||typeof value!=='object')return false;const v=value as EditorTabContext;
+ if(!Number.isSafeInteger(v.revision)||v.revision<0||typeof v.filePath!=='string'||v.filePath.length>1024||(v.fileId!==null&&(typeof v.fileId!=='string'||v.fileId.length>128)))return false;
+ const r=v.selection;return r===null||!!r&&Number.isSafeInteger(r.from)&&Number.isSafeInteger(r.to)&&r.from>=0&&r.to>r.from&&typeof r.text==='string'&&r.text.length<=16000&&r.to-r.from===r.text.length;
+}
+export function restoreInEditor(state:AssistantTabState,editor:Omit<EditorTabContext,'revision'>):AssistantTabState {return {...state,filePath:editor.filePath,target:editor.selection};}
+export type AssistantTabKind = 'hello'|'state'|'active'|'grant'|'sync'|'return'|'return-ack'|'request-return'|'closed'|'parent-closed'|'busy'|'editor-context'|'context-request'|'open-file';
+export interface AssistantTabMessage { version:1;session:string;userId:string;projectId:string;sender:'parent'|'child';kind:AssistantTabKind;state?:AssistantTabState;editor?:EditorTabContext;filePath?:string;mode?:'right'|'bottom'|'float' }
+const kinds = new Set<AssistantTabKind>(['hello','state','active','grant','sync','return','return-ack','request-return','closed','parent-closed','busy','editor-context','context-request','open-file']);
 export function assistantTabSession(search:string):string|null {
   const query=new URLSearchParams(search), id=query.get('bridge');
   return query.get('assistant')==='tab'&&id&&/^[a-f\d-]{36}$/i.test(id)?id:null;
@@ -40,3 +47,7 @@ export function validTabState(value:unknown):value is AssistantTabState {
 export const assistantReturnKey=(userId:string,projectId:string)=>`prims-assistant-return:${encodeURIComponent(userId)}:${encodeURIComponent(projectId)}`;
 
 export const canContinueWithoutParent=(ownership:string|null)=>ownership==='closed'||ownership===null;
+
+export const handoffDisposition=(activated:boolean,away:boolean):'start'|'grant'|'ignore'=>away?'grant':activated?'ignore':'start';
+
+export const assistantCloseKey=(userId:string,projectId:string,session:string)=>assistantTabChannel(userId,projectId,session)+':closing-state';
