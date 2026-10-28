@@ -182,11 +182,10 @@ impl Worker {
                             .find(|e| matches!(e.level, scribe_shared::CompileLogLevel::Error))
                             .map(|e| e.message.clone())
                             .unwrap_or_else(|| {
-                                format!(
-                                    "{} exited with code {}",
-                                    payload.engine.as_str(),
-                                    compile.exit_code,
-                                )
+                                let detail = compile.stderr.lines().find(|line| !line.trim().is_empty())
+                                    .or_else(|| compile.stdout.lines().rev().find(|line| !line.trim().is_empty()));
+                                detail.map(|line| line.chars().take(512).collect::<String>())
+                                    .unwrap_or_else(|| format!("{} exited with code {}", payload.engine.as_str(), compile.exit_code))
                             }),
                     )
                 } else {
@@ -278,20 +277,18 @@ impl Worker {
             let workdir = workdir.to_path_buf();
             let state = state_for_writes.clone();
             async move {
-                let bytes = storage
-                    .download(scribe_storage::PROJECT_FILES_BUCKET, &storage_key)
-                    .await
-                    .map_err(|err| anyhow::anyhow!("download {path}: {err}"))?;
                 let dest = workdir.join(&path);
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent).await?;
                 }
-                fs::write(&dest, &bytes).await?;
+                storage.download_to_path(scribe_storage::PROJECT_FILES_BUCKET, &storage_key, &dest, 500*1024*1024)
+                    .await.map_err(|err| anyhow::anyhow!("download {path}: {err}"))?;
                 state.insert(path, updated_at);
                 Ok::<_, anyhow::Error>(())
             }
         });
-        futures::future::try_join_all(downloads).await?;
+        use futures::{StreamExt, TryStreamExt};
+        futures::stream::iter(downloads).buffer_unordered(4).try_collect::<Vec<_>>().await?;
         let download_ms = t_dl.elapsed().as_millis();
         let downloaded = file_count.saturating_sub(skipped);
         tracing::debug!(

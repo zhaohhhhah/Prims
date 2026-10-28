@@ -32,7 +32,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  let allow_files=!input.options.as_ref().and_then(|o|o.get("allowProjectFiles")).is_some_and(|v|v=="false");
  let (history,history_truncated)=model_history_with_limits(&saved,&current,&selection_id,policy.history_messages(),policy.history_chars());let history_count=history.len();input.history=Some(history);
  let (project_compiler,project_main): (String,String)=sqlx::query_as("select compiler::text,main_file from public.projects where id=$1").bind(project.into_inner()).fetch_one(&pool).await.map_err(|_|ApiError::validation("找不到项目编译配置"))?;
- let available_engines=if scribe_compile::isolated::available().await{vec!["tectonic","pdflatex","xelatex","lualatex"]}else{vec!["tectonic"]};
+ let available_engines=if scribe_compile::isolated::available().await{vec!["pdflatex","xelatex","lualatex"]}else{Vec::<&str>::new()};
  let options=input.options.get_or_insert_with(Default::default);options.insert("projectMainFile".into(),project_main);options.insert("projectAvailableEngines".into(),serde_json::to_string(&available_engines).unwrap());options.insert("projectCompiler".into(),project_compiler);options.insert("writingBrief".into(),saved.brief.clone());options.insert("projectTitle".into(),saved.project_title.clone());options.insert("projectDescription".into(),saved.project_description.clone().unwrap_or_default());options.insert("autoSummary".into(),saved.auto_summary.clone());
  // Client-provided synthetic tool results never bypass the server's read authorization.
  for key in ["agentLibraryReference","agentFileToolsAllowed","agentPreferences","agentCapabilities","projectMemory","skillContent","skills","diagnosticsEnabled","skillsEnabled","memoryEnabled","searchEnabled"]{options.remove(key);}
@@ -505,7 +505,7 @@ fn validate_file_action_proposals(output:&Value)->ApiResult<()>{
   let item=action.as_object().ok_or_else(||ApiError::validation("文件操作建议格式不正确"))?;
   let kind=item.get("type").and_then(Value::as_str).ok_or_else(||ApiError::validation("文件操作建议缺少 type"))?;
   if kind=="set_compile_settings"{
-   if item.len()!=3||item.keys().any(|key|!matches!(key.as_str(),"type"|"compiler"|"mainFile"))||!item.get("compiler").and_then(Value::as_str).is_some_and(|value|matches!(value,"tectonic"|"xelatex"|"lualatex"|"pdflatex")){return Err(ApiError::validation("编译设置建议仅接受compiler和mainFile"));}
+   if item.len()!=3||item.keys().any(|key|!matches!(key.as_str(),"type"|"compiler"|"mainFile"))||!item.get("compiler").and_then(Value::as_str).is_some_and(|value|matches!(value,"xelatex"|"lualatex"|"pdflatex")){return Err(ApiError::validation("编译设置建议仅接受compiler和mainFile"));}
    let main=item.get("mainFile").and_then(Value::as_str).ok_or_else(||ApiError::validation("编译设置建议缺少mainFile"))?;validate_action_path(main)?;if !main.to_ascii_lowercase().ends_with(".tex"){return Err(ApiError::validation("主文件必须是.tex文件"));}continue;
   }
   let path=item.get("path").and_then(Value::as_str).ok_or_else(||ApiError::validation("文件操作建议缺少相对路径"))?;

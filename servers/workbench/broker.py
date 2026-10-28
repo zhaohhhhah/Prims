@@ -11,8 +11,9 @@ import subprocess
 import threading
 import time
 import uuid
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from worker import MAX_BODY, validate_job
+from worker import MAX_BODY, validate_job, read_stream_header, STREAM_MAX_BODY, STREAM_MAX_TOTAL
 
 VERSION = '1.0.0'
 DOCKER_HOST = os.environ.get('DOCKER_HOST', 'unix:///var/run/docker.sock')
@@ -26,10 +27,31 @@ TEXLIVE = os.environ.get('PRIMS_WORKBENCH_TEXLIVE', '')
 TEXMF_CACHE = os.environ.get('PRIMS_WORKBENCH_TEXMF_CACHE', '')
 BIBER_CACHE = os.environ.get('PRIMS_WORKBENCH_BIBER_CACHE', '')
 COMPILE_ONLY = os.environ.get('PRIMS_WORKBENCH_PORT') == '19342'
-SLOTS = threading.BoundedSemaphore(2)
+SLOT_COUNT = 1 if COMPILE_ONLY else 2
+SLOTS = threading.BoundedSemaphore(SLOT_COUNT)
 LOCK = threading.Lock()
 RUNS = {}
 SECRET = ''
+
+
+def create_timeout_seconds(value=None):
+    raw = os.environ.get('PRIMS_WORKBENCH_CREATE_TIMEOUT_SECONDS', '60') if value is None else value
+    try:
+        seconds = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError('Sandbox create timeout must be an integer between 5 and 120 seconds') from None
+    if not 5 <= seconds <= 120:
+        raise ValueError('Sandbox create timeout must be between 5 and 120 seconds')
+    return seconds
+
+
+CREATE_TIMEOUT_SECONDS = create_timeout_seconds()
+
+
+def stage_log(job, phase, event, started, **fields):
+    # Never print subprocess argv/stderr, snapshots, file paths or credentials.
+    print(json.dumps({'event': event, 'phase': phase, 'jobId': job['jobId'],
+          'elapsedMs': round((time.monotonic() - started) * 1000), **fields}), file=sys.stderr, flush=True)
 
 
 def docker(args, timeout=8):
@@ -63,9 +85,9 @@ def container_options(name, compile_job=False):
     options = ['create', '--pull', 'never', '-i', '--name', name, '--label', 'prims.workbench=true',
             '--network', 'none', '--user', '10001:10001', '--read-only',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
-            '--memory', '1g' if compile_job else '512m', '--memory-swap', '1g' if compile_job else '512m', '--cpus', '1', '--pids-limit', '64',
-            '--ulimit', 'nofile=256:256', '--ulimit', 'fsize=67108864:67108864',
-            '--tmpfs', '/workspace:rw,nosuid,nodev,noexec,size='+('256m' if compile_job else '128m')+',mode=0700,uid=10001,gid=10001',
+            '--memory', '2g' if compile_job else '512m', '--memory-swap', '2g' if compile_job else '512m', '--cpus', '1', '--pids-limit', '64',
+            '--ulimit', 'nofile=256:256', '--ulimit', 'fsize='+('536870912:536870912' if compile_job else '67108864:67108864'),
+            '--tmpfs', '/workspace:rw,nosuid,nodev,noexec,size='+('768m' if compile_job else '128m')+',mode=0700,uid=10001,gid=10001',
             '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size='+('128m' if compile_job else '32m')+',mode=0700,uid=10001,gid=10001',
             '--mount', f'type=bind,source={CACHE},target=/cache,readonly,bind-propagation=rprivate']
     if TEXLIVE:
@@ -80,24 +102,63 @@ def container_options(name, compile_job=False):
     return options + optional_font_mounts() + [IMAGE]
 
 
-def execute_job(job, raw, run):
+def execute_job(job, raw, run, source=None):
     started = time.monotonic()
+    run['startedAt'] = started
+    run['phase'] = 'docker_create'
     name = run['name']
     proc = None
     try:
         if run['cancel'].is_set():
             return stopped(started, cancelled=True)
-        created = docker(container_options(name,job['task']=='latex_compile'), timeout=12)
+        create_limit = min(CREATE_TIMEOUT_SECONDS, 180 if job['task'] == 'latex_compile' else 90)
+        try:
+            created = docker(container_options(name,job['task']=='latex_compile'), timeout=create_limit)
+        except subprocess.TimeoutExpired:
+            if run['cancel'].is_set():
+                return stopped(started, cancelled=True)
+            stage_log(job, 'docker_create', 'sandbox_startup_timeout', started, timeoutSeconds=create_limit)
+            return failure('[sandbox_startup_timeout] Docker create exceeded '+str(create_limit)+' seconds; the LaTeX engine was not started. Server container preparation was busy; source and engine settings were not checked.', started)
         if created.returncode != 0:
-            return failure('Workbench sandbox could not be created', started)
+            stage_log(job, 'docker_create', 'sandbox_startup_failed', started, dockerExitCode=created.returncode)
+            return failure('[sandbox_startup_failed] Docker could not create the isolated compiler container; the LaTeX engine was not started.', started)
+        stage_log(job, 'docker_create', 'sandbox_created', started)
+        run['phase'] = 'docker_start'
         if run['cancel'].is_set():
             return stopped(started, cancelled=True)
         proc = subprocess.Popen(DOCKER + ['start', '-ai', name], stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        run['phase'] = 'sandbox_execute'
         holder = {}
         def communicate():
             try:
-                holder['result'] = proc.communicate(raw)
+                if source is None:
+                    holder['result'] = proc.communicate(raw)
+                else:
+                    # The HTTP and Docker pipes are copied in bounded chunks. Never buffer a project.
+                    input_error = []
+                    input_pipe = proc.stdin
+                    def send_input():
+                        try:
+                            input_pipe.write(raw)
+                            remaining = sum(item['size'] for item in job['files'])
+                            while remaining:
+                                chunk = source.read(min(65536, remaining))
+                                if not chunk:
+                                    raise ValueError('Incomplete compile snapshot')
+                                input_pipe.write(chunk); remaining -= len(chunk)
+                        except Exception:
+                            input_error.append(True)
+                        finally:
+                            input_pipe.close()
+                    writer = threading.Thread(target=send_input, daemon=True)
+                    writer.start()
+                    # communicate must not flush the pipe managed by the streaming writer.
+                    proc.stdin = None
+                    holder['result'] = proc.communicate()
+                    writer.join(timeout=3)
+                    if input_error or writer.is_alive():
+                        holder['error'] = True
             except Exception:
                 holder['error'] = True
         thread = threading.Thread(target=communicate, daemon=True)
@@ -117,6 +178,7 @@ def execute_job(job, raw, run):
             if run['cancel'].is_set():
                 return stopped(started, cancelled=True)
             return failure('Workbench sandbox exited without a result', started)
+        run['phase'] = 'result_validation'
         try:
             result = json.loads(stdout)
         except (ValueError, TypeError):
@@ -187,9 +249,9 @@ class Handler(BaseHTTPRequestHandler):
             healthy = False
         self.respond(200 if healthy else 503, {'ok': healthy, 'version': VERSION,
             'capabilities': ((['font_check','list_fonts','latex_compile'] if TEXLIVE else []) if COMPILE_ONLY else ['latex_check','font_check','list_fonts']) if healthy else [],
-            'maxConcurrentJobs': 2, 'snapshotMaxBytes': 32 * 1024 * 1024,
+            'maxConcurrentJobs': SLOT_COUNT, 'snapshotMaxBytes': 32 * 1024 * 1024,
             'commandTimeoutSeconds': 45, 'jobTimeoutSeconds': 90, 'maxOutputBytes': 65536,
-            'compileJobTimeoutSeconds':180,'compileSnapshotMaxBytes':32*1024*1024,'compileArtifactTotalMaxBytes':32*1024*1024})
+            'sandboxCreateTimeoutSeconds':CREATE_TIMEOUT_SECONDS,'compileJobTimeoutSeconds':180,'compileSnapshotMaxBytes':STREAM_MAX_TOTAL,'compileStreamProtocol':'prims-compile-v1','compileArtifactTotalMaxBytes':32*1024*1024})
 
     def do_POST(self):
         if not self.authorized():
@@ -204,21 +266,27 @@ class Handler(BaseHTTPRequestHandler):
         acquired = False
         try:
             length = int(self.headers.get('Content-Length', '-1'))
-            if length <= 0 or length > MAX_BODY:
+            streaming = self.headers.get('Content-Type', '').split(';')[0] == 'application/vnd.prims.compile-stream'
+            if length <= 0 or length > (STREAM_MAX_BODY if streaming else MAX_BODY):
                 self.respond(413, {'error': 'Request exceeds snapshot limit'})
                 self.close_connection = True
                 return
             if not SLOTS.acquire(blocking=False):
-                self.respond(429, {'error': 'Workbench is busy; at most two snapshots/jobs are accepted'})
+                self.respond(429, {'error': 'Workbench is busy; snapshot/job capacity reached are accepted'})
                 self.close_connection = True
                 return
             acquired = True
-            self.connection.settimeout(15)
-            raw = self.rfile.read(length)
-            if len(raw) != length:
-                raise ValueError('Incomplete request')
-            job = json.loads(raw)
-            validate_job(job)
+            self.connection.settimeout(30)
+            if streaming:
+                if not COMPILE_ONLY:
+                    raise ValueError('Streaming is available on compile service only')
+                job, raw, _total = read_stream_header(self.rfile, length)
+            else:
+                raw = self.rfile.read(length)
+                if len(raw) != length:
+                    raise ValueError('Incomplete request')
+                job = json.loads(raw)
+                validate_job(job)
             if COMPILE_ONLY and job['task'] not in ('latex_compile','font_check','list_fonts'):
                 raise ValueError('Native compile service only accepts compile and font diagnostics')
         except (ValueError, TypeError, KeyError, OSError, RecursionError):
@@ -236,9 +304,12 @@ class Handler(BaseHTTPRequestHandler):
                    'cancel': threading.Event()}
             RUNS[job['jobId']] = run
         try:
-            result = execute_job(job, raw, run)
-        except Exception:
-            result = failure('Workbench broker failed safely', time.monotonic())
+            result = execute_job(job, raw, run, self.rfile if streaming else None)
+        except Exception as error:
+            started = run.get('startedAt', time.monotonic())
+            phase = run.get('phase', 'broker')
+            stage_log(job, phase, 'sandbox_infrastructure_error', started, errorClass=type(error).__name__)
+            result = failure('[sandbox_infrastructure_error] Isolated compiler infrastructure failed at '+phase+'; inspect the private broker diagnostics before changing source or engine settings.', started)
         self.respond(200, result)
 
     def do_DELETE(self):

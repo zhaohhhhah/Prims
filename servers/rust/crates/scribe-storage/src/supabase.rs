@@ -103,6 +103,28 @@ impl SupabaseStorage {
         })
     }
 
+    /// Materialize a compile input without retaining the full object in memory.
+    /// The caller supplies a private project workdir path, never a request URL.
+    pub async fn download_to_path(&self, bucket: &str, key: &str, destination: &std::path::Path, max_bytes: u64) -> ApiResult<u64> {
+        use tokio::io::AsyncWriteExt;
+        let response = self.http.get(self.object_url(bucket, key)).headers(self.base_headers())
+            .timeout(Duration::from_secs(300)).send().await.map_err(net_err)?;
+        let mut response = check_status(response, "download").await?;
+        if response.content_length().is_some_and(|length| length > max_bytes) {
+            return Err(ApiError::validation("编译源文件超过500MiB限制"));
+        }
+        let mut file = tokio::fs::File::create(destination).await
+            .map_err(|error| ApiError::internal(format!("compile input create: {error}")))?;
+        let mut total = 0u64;
+        while let Some(chunk) = response.chunk().await.map_err(net_err)? {
+            total = total.checked_add(chunk.len() as u64).filter(|value| *value <= max_bytes)
+                .ok_or_else(|| ApiError::validation("编译源文件超过500MiB限制"))?;
+            file.write_all(&chunk).await.map_err(|error| ApiError::internal(format!("compile input write: {error}")))?;
+        }
+        file.flush().await.map_err(|error| ApiError::internal(format!("compile input flush: {error}")))?;
+        Ok(total)
+    }
+
     fn object_url(&self, bucket: &str, key: &str) -> String {
         format!("{}/storage/v1/object/{}/{}", self.base_url, bucket, key)
     }
@@ -300,5 +322,32 @@ mod tests {
             Some("unauthorized".into()),
         );
         assert_eq!(parse_error_message("plain text body"), None);
+    }
+}
+
+
+#[cfg(test)]
+mod compile_download_tests {
+    use super::*;
+    fn serve(body_size: usize) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener=std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address=listener.local_addr().unwrap();
+        let thread=std::thread::spawn(move || {
+            let (mut stream,_)=listener.accept().unwrap();let mut request=[0u8;4096];let _=stream.read(&mut request);
+            if write!(stream,"HTTP/1.1 200 OK\r\nContent-Length: {body_size}\r\nConnection: close\r\n\r\n").is_err(){return;}
+            let buffer=[55u8;8192];let mut left=body_size;
+            while left>0 {let count=left.min(buffer.len());if stream.write_all(&buffer[..count]).is_err(){break;}left-=count;}
+        });
+        (format!("http://{address}"),thread)
+    }
+    #[tokio::test]async fn compile_download_streams_to_disk_and_honors_limit(){
+        let root=std::env::temp_dir().join(format!("prims-download-test-{}",uuid::Uuid::new_v4()));tokio::fs::create_dir(&root).await.unwrap();
+        let (url,server)=serve(2*1024*1024);let storage=SupabaseStorage::new(&url,"synthetic-test-key").unwrap();let destination=root.join("font.ttc");
+        assert_eq!(storage.download_to_path("test","font",&destination,3*1024*1024).await.unwrap(),2*1024*1024);
+        assert_eq!(tokio::fs::metadata(&destination).await.unwrap().len(),2*1024*1024);server.join().unwrap();
+        let (url,server)=serve(2048);let storage=SupabaseStorage::new(&url,"synthetic-test-key").unwrap();
+        assert!(storage.download_to_path("test","large",&root.join("rejected"),1024).await.is_err());server.join().unwrap();assert!(!root.join("rejected").exists());
+        tokio::fs::remove_dir_all(root).await.unwrap();
     }
 }

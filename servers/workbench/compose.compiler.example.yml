@@ -32,5 +32,7 @@ services:
 # Only this trusted broker receives Docker access. The app receives only
 # PRIMS_COMPILE_BROKER_URL=http://127.0.0.1:19342 and a private
 # PRIMS_COMPILE_BROKER_TOKEN matching the token file. Never expose 19342.
-# Compiles run offline/non-root/readonly/cap-drop, CPU1/memory1GiB/180s,
-# with only a bounded project snapshot and readonly TeX/font resources.
+# Compiles run offline/non-root/readonly/cap-drop, CPU1/memory2GiB/180s,
+# One compile runs at a time. Source snapshots stream up to500MiB with bounded buffers;
+# workspace tmpfs768MiB + temporary cache128MiB fit inside the2GiB hard memory limit.
+# No Docker socket, token, app/DB credentials or network is passed to the worker.

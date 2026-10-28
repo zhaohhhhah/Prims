@@ -53,7 +53,7 @@ pub fn router() -> Router<AppState> {
 
 async fn engines(Authenticated(_user):Authenticated)->Json<serde_json::Value>{
     let isolated=scribe_compile::isolated::available().await;
-    Json(serde_json::json!({"available":if isolated{vec!["tectonic","pdflatex","xelatex","lualatex"]}else{vec!["tectonic"]},"default":"tectonic"}))
+    Json(serde_json::json!({"available":if isolated{vec!["pdflatex","xelatex","lualatex"]}else{Vec::<&str>::new()},"default":"xelatex"}))
 }
 
 async fn enqueue(

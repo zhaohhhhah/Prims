@@ -10,6 +10,8 @@ import signal
 import subprocess
 import sys
 import time
+import struct
+import shutil
 
 VERSION = '1.0.0'
 MAX_BODY = 46 * 1024 * 1024
@@ -17,6 +19,74 @@ MAX_TOTAL = 32 * 1024 * 1024
 MAX_FILE = 8 * 1024 * 1024
 MAX_OUTPUT = 64 * 1024
 ROOT = Path('/workspace')
+
+
+# Compile snapshots use a bounded binary stream; diagnostic JSON remains compatible.
+STREAM_MAGIC = b'PRIMSC01'
+STREAM_MAX_TOTAL = 500 * 1024 * 1024
+STREAM_MAX_META = 512 * 1024
+STREAM_MAX_FILES = 4096
+STREAM_MAX_BODY = STREAM_MAX_TOTAL + STREAM_MAX_META + 12
+
+
+def read_exact(stream, size):
+    data = bytearray()
+    while len(data) < size:
+        chunk = stream.read(min(65536, size - len(data)))
+        if not chunk:
+            raise ValueError('Incomplete compile snapshot')
+        data.extend(chunk)
+    return bytes(data)
+
+
+def read_stream_header(stream, content_length=None):
+    if read_exact(stream, 8) != STREAM_MAGIC:
+        raise ValueError('Invalid compile stream')
+    size = struct.unpack('>I', read_exact(stream, 4))[0]
+    if not 0 < size <= STREAM_MAX_META:
+        raise ValueError('Compile metadata exceeds limit')
+    header = read_exact(stream, size)
+    job = json.loads(header)
+    if not isinstance(job, dict) or set(job) != {'jobId', 'task', 'engine', 'path', 'files'} or job['task'] != 'latex_compile':
+        raise ValueError('Invalid compile stream fields')
+    files = job['files']
+    if not isinstance(files, list) or not 0 < len(files) <= STREAM_MAX_FILES:
+        raise ValueError('Too many compile files')
+    # Reuse all legacy identity, path and engine rules without materializing content.
+    shadow = dict(job, files=[])
+    seen = set(); total = 0
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {'path', 'size'} or type(item['size']) is not int or not 0 <= item['size'] <= STREAM_MAX_TOTAL:
+            raise ValueError('Invalid compile file size')
+        path = safe_path(item['path'])
+        if path in seen or any(path.startswith(p+'/') or p.startswith(path+'/') for p in seen):
+            raise ValueError('Duplicate or colliding compile paths')
+        seen.add(path); total += item['size']
+        if total > STREAM_MAX_TOTAL:
+            raise ValueError('Compile source exceeds 500MiB limit')
+    # validate_job's file-count budget intentionally stays unchanged for legacy diagnostics.
+    validate_job(dict(shadow, files=[{'path':job['path'],'contentBase64':''}]))
+    if job['path'] not in seen:
+        raise ValueError('Main document is absent')
+    if content_length is not None and content_length != 12 + size + total:
+        raise ValueError('Compile stream length mismatch')
+    return job, STREAM_MAGIC + struct.pack('>I', size) + header, total
+
+
+def materialize_stream(stream, job):
+    for item in job['files']:
+        target = ROOT / item['path']
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as output:
+            remaining = item['size']
+            while remaining:
+                chunk = stream.read(min(65536, remaining))
+                if not chunk:
+                    raise ValueError('Incomplete compile snapshot')
+                output.write(chunk); remaining -= len(chunk)
+    if stream.read(1):
+        raise ValueError('Unexpected trailing compile data')
 
 
 def safe_path(value):
@@ -201,9 +271,9 @@ def bibliography_failed(log):
     return bool(re.search(r'(?im)(?:\bERRORS:\s*[1-9]\d*|^.*\bERROR\s+-|\bThere (?:was|were) [1-9]\d* error message)',log))
 
 
-def execute(job):
+def execute(job, materialized=False):
     started = time.monotonic()
-    decoded = validate_job(job)
+    decoded = [] if materialized else validate_job(job)
     for path, content in decoded:
         target = ROOT / path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -290,10 +360,24 @@ def execute(job):
 
 def main():
     try:
-        raw = sys.stdin.buffer.read(MAX_BODY + 1)
-        if len(raw) > MAX_BODY:
-            raise ValueError('Request too large')
-        result = execute(json.loads(raw))
+        stream = sys.stdin.buffer
+        first = read_exact(stream, 8)
+        if first == STREAM_MAGIC:
+            class PrefixedStream:
+                def __init__(self, prefix, source): self.prefix = prefix; self.source = source
+                def read(self, size):
+                    if self.prefix:
+                        part = self.prefix[:size]; self.prefix = self.prefix[size:]
+                        return part
+                    return self.source.read(size)
+            job, _prefix, _total = read_stream_header(PrefixedStream(first, stream))
+            materialize_stream(stream, job)
+            result = execute(job, materialized=True)
+        else:
+            raw = first + stream.read(MAX_BODY + 1 - len(first))
+            if len(raw) > MAX_BODY:
+                raise ValueError('Request too large')
+            result = execute(json.loads(raw))
     except (ValueError, TypeError, KeyError) as error:
         result = {'ok': False, 'exitCode': 2, 'command': [], 'output': str(error), 'truncated': False,
                   'timedOut': False, 'cancelled': False, 'durationMs': 0}

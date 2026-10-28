@@ -117,3 +117,43 @@ Fontconfig matches are checked exactly and TeX font files are resolved through
 the same readonly TeX resources as native compilation. A fallback font is never
 reported as an exact match. Project TTF/OTF/TTC checks continue to use `path`;
 font names cannot supply paths, commands, environment variables or mounts.
+
+
+## Native project compiler (500MiB snapshots)
+
+`compose.compiler.example.yml` runs a separate, authenticated, loopback-only broker on
+port19342. It reuses the fixed native TeX Live worker image and supports PDFLaTeX,
+XeLaTeX and LuaLaTeX. Project compilation does not download TeX packages at runtime.
+Keep19340's existing diagnostic clients and their small JSON budgets compatible.
+
+The app streams each storage object into its private workdir (at most four transfers),
+then streams only registered project inputs into the compiler. Generated output files
+are not added to that list; uploaded PDF figures and project-local fonts are preserved.
+The native compile snapshot allows4096 files and500MiB aggregate source bytes, including
+individual fonts larger than8MiB. Existing JSON snapshot requests retain the legacy
+8MiB/file and32MiB total limits; large native clients use the stream protocol below.
+
+`Content-Type: application/vnd.prims.compile-stream` requires a precise Content-Length.
+Body layout: eight ASCII bytes `PRIMSC01`, one big-endian unsigned32-bit metadata byte
+length, UTF-8 JSON `{jobId,task:"latex_compile",engine,path,files:[{path,size}]}`, then
+exactly each file's bytes in metadata order. Metadata is limited to512KiB; file sizes
+and total request length are validated before sandbox startup. Absolute/traversing
+paths, links, duplicate paths, directory collisions, truncated and trailing content
+are rejected. Sender and broker copy at most64KiB per buffer; no whole-project JSON,
+Base64 decode, tar extraction or project mount is needed. Responses retain the existing
+bounded artifact JSON protocol (32MiB total output artifacts).
+
+Dedicated compiler budgets: one active job, worker CPU1/memory2GiB/no extra swap,
+workspace tmpfs768MiB and temporary cache128MiB, noexec/nosuid/nodev, offline/non-root,
+read-only root, cap-drop-all, no-new-privileges and fixed operator-approved readonly
+TeX/font resources. The trusted broker alone retains the existing Docker socket;
+workers and models receive neither socket nor token. The2GiB limit includes tmpfs pages.
+The native runner uses the existing multipass bibliography pipeline and180-second total
+job limit. Cancel/disconnect cleanup removes the disposable container. Docker container
+startup has a separate bounded timeout; startup failures are reported as infrastructure
+failures rather than false LaTeX errors.
+
+Tests: `python3 test_compile_stream.py`, `python3 test_compile_broker_stream.py`, and
+existing `test_worker.py`. Test scripts use synthetic data and do not require user keys.
+Private deployments, images containing private fonts, documents, tokens and fixture ZIPs
+must not be committed. Only copy the public source and configurable deployment examples.

@@ -1,4 +1,6 @@
-# Offline, non-root multi-engine TeX worker. Operator supplies public TeX Live
+# Offline, non-root native TeX worker with bounded-stream snapshot input.
+# CPU/RAM/tmpfs/time limits are fixed by the authenticated broker, not by request data.
+# The compatibility Tectonic binary remains only for existing diagnostic clients. Operator supplies public TeX Live
 # as a fixed readonly mount, and approved local Tectonic/runner binaries.
 ARG BASE_IMAGE=sharelatex/sharelatex:6.0.1
 FROM ${BASE_IMAGE}

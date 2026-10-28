@@ -98,7 +98,7 @@ export const createProjectInputSchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(200),
   description: z.string().max(2000).optional(),
   template: projectTemplateSchema.default('blank'),
-  compiler: compilerEngineSchema.default('tectonic'),
+  compiler: compilerEngineSchema.default('xelatex'),
 });
 export type CreateProjectInput = z.infer<typeof createProjectInputSchema>;
 

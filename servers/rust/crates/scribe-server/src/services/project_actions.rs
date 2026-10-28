@@ -28,7 +28,7 @@ impl ProjectActions{
   for action in input.actions{
    if action.kind=="set_compile_settings"{
     validate_main(action.main_file.as_deref().unwrap(),&files)?;
-    if action.compiler!=Some(CompilerEngine::Tectonic)&&!scribe_compile::isolated::available().await{return Err(ApiError::new(ErrorCode::ServiceUnavailable,"所选编译器暂不可用，设置未保存"));}
+    if !scribe_compile::isolated::available().await{return Err(ApiError::new(ErrorCode::ServiceUnavailable,"所选编译器暂不可用，设置未保存"));}
     let settings=self.owner_settings(user,project).await?;
     let expected=action.expected.as_ref().ok_or_else(||ApiError::validation("缺少原编译设置，请重新生成建议"))?;
     if expected.compiler!=settings.compiler||expected.main_file!=settings.main_file{return Err(ApiError::new(ErrorCode::Conflict,"编译设置已被修改，请重新生成建议"));}
@@ -50,7 +50,7 @@ impl ProjectActions{
   // Capabilities are checked before any row locks; model output never executes an engine.
   if !reject{
    let raw:Option<Value>=sqlx::query_scalar("select items from public.scribe_project_action_plans where id=$1 and user_id=$2 and project_id=$3 and expires_at>now()").bind(plan).bind(user.into_inner()).bind(project.into_inner()).fetch_optional(&self.pool).await.map_err(db)?;
-   if let Some(raw)=raw{if let Ok(items)=serde_json::from_value::<Vec<Item>>(raw){if items.iter().any(|item|item.id==item_id&&item.status=="pending"&&item.action.kind=="set_compile_settings"&&item.action.compiler!=Some(CompilerEngine::Tectonic))&&!scribe_compile::isolated::available().await{return Err(ApiError::new(ErrorCode::ServiceUnavailable,"所选编译器暂不可用，设置未保存"));}}}
+   if let Some(raw)=raw{if let Ok(items)=serde_json::from_value::<Vec<Item>>(raw){if items.iter().any(|item|item.id==item_id&&item.status=="pending"&&item.action.kind=="set_compile_settings")&&!scribe_compile::isolated::available().await{return Err(ApiError::new(ErrorCode::ServiceUnavailable,"所选编译器暂不可用，设置未保存"));}}}
   }
   assert_can_write(&self.pool,user,project).await?;let mut tx=self.pool.begin().await.map_err(db)?;
   let raw:Value=sqlx::query_scalar("select items from public.scribe_project_action_plans where id=$1 and user_id=$2 and project_id=$3 and expires_at>now() for update").bind(plan).bind(user.into_inner()).bind(project.into_inner()).fetch_optional(&mut *tx).await.map_err(db)?.ok_or_else(||ApiError::not_found("文件计划已过期或不可访问，请重新生成"))?;
@@ -103,7 +103,7 @@ pub fn validate_actions(actions:&[ActionInput])->ApiResult<()>{
  let mut total=0;let mut targets=HashSet::new();
  for a in actions{
   if a.kind=="set_compile_settings"{
-   if !a.path.is_empty()||a.content.is_some()||a.new_path.is_some()||a.compiler.is_none()||a.main_file.is_none()||a.expected.is_none(){return Err(ApiError::validation("编译设置仅接受compiler和mainFile"));}
+   if !a.path.is_empty()||a.content.is_some()||a.new_path.is_some()||a.compiler.is_none()||a.compiler==Some(CompilerEngine::Tectonic)||a.main_file.is_none()||a.expected.is_none(){return Err(ApiError::validation("编译设置仅接受compiler和mainFile"));}
    validate_path(a.main_file.as_deref().unwrap())?;let expected=a.expected.as_ref().unwrap();validate_path(&expected.main_file)?;if !matches!(expected.compiler.as_str(),"tectonic"|"xelatex"|"lualatex"|"pdflatex"){return Err(ApiError::validation("原编译设置无效"));}
    if !a.main_file.as_deref().unwrap().to_ascii_lowercase().ends_with(".tex"){return Err(ApiError::validation("主文件必须是.tex文件"));}
    if !targets.insert("\0compile-settings"){return Err(ApiError::validation("每轮只能有一项编译设置建议"));}continue;

@@ -1,4 +1,5 @@
-# A trusted broker image, separate from both app and untrusted workers.
+# Trusted bounded-stream broker; only this service receives the operator Docker socket.
+# Models, app containers and disposable compile workers never receive that socket.
 ARG BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm
 FROM ${BASE_IMAGE}
 # Operator supplies the locally approved compatible Docker CLI binary.

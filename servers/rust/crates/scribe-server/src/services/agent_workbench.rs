@@ -75,7 +75,7 @@ pub async fn run(state:&AppState,user:UserId,project:ProjectId,call:&Value)->Api
  if !super::agent_library::AgentLibrary::new(pool.clone()).preferences(user).await?.diagnostics_enabled{return Err(ApiError::forbidden("本账号已关闭隔离诊断"));}
  let input=parse(call)?;
  let compiler=sqlx::query_scalar::<_,String>("select compiler::text from public.projects where id=$1").bind(project.into_inner()).fetch_one(pool).await.map_err(|_|ApiError::validation("找不到项目编译配置"))?;
- if input.task=="latex_check"&&compiler!="tectonic"{return run_native_compile(state,user,project,input.path,&compiler).await;}
+ if input.task=="latex_check"{let engine=if compiler=="tectonic"{"xelatex"}else{compiler.as_str()};return run_native_compile(state,user,project,input.path,engine).await;}
  let (base,token)=if matches!(input.task.as_str(),"font_check"|"list_fonts"){font_config().or_else(||if input.font_name.is_none(){config()}else{None}).ok_or_else(unavailable)?}else{config().ok_or_else(unavailable)?};
  let storage=state.inner.storage.clone().ok_or_else(unavailable)?;let files=FileService::new(pool.clone(),storage);
  let all=files.list(user,project).await?;
@@ -121,7 +121,7 @@ async fn run_native_compile(state:&AppState,user:UserId,project:ProjectId,path:O
  let storage=state.inner.storage.clone().ok_or_else(unavailable)?;
  let files=FileService::new(pool.clone(),storage).list(user,project).await?;
  if !files.iter().any(|file|file.path==main){return Err(ApiError::not_found("诊断主文件不属于当前项目"));}
- if files.len()>256||files.iter().any(|f|f.size_bytes<0||f.size_bytes as u64>MAX_FILE as u64)||files.iter().map(|f|f.size_bytes.max(0) as u64).sum::<u64>()>MAX_TOTAL as u64{return Err(ApiError::validation("隔离编译副本限256个文件、单文件8MiB、合计32MiB"));}
+ if files.len()>4096||files.iter().any(|f|f.size_bytes<0)||files.iter().map(|f|f.size_bytes.max(0) as u64).sum::<u64>()>500*1024*1024{return Err(ApiError::validation("隔离编译副本限4096个文件、合计500MiB"));}
  let queue=state.inner.compile_queue.clone().ok_or_else(unavailable)?;
  let service=super::compiles::CompileService::new(pool.clone(),queue);
  // Reuse a pending or recent compile of this unchanged saved source rather

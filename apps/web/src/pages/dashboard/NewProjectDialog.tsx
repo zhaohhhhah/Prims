@@ -75,7 +75,7 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
 
   const form = useForm<CreateProjectInput>({
     resolver: zodResolver(createProjectInputSchema),
-    defaultValues: { name: '', description: '', template: 'blank', compiler: 'tectonic' },
+    defaultValues: { name: '', description: '', template: 'blank', compiler: 'xelatex' },
   });
 
   const mutation = useMutation<Project, Error, CreateProjectInput>({
@@ -168,6 +168,10 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
             <Button type="button" variant={mode==='template'?'default':'outline'} disabled={mutation.isPending||inspecting} onClick={()=>changeMode('template')}>使用模板</Button>
             <Button type="button" variant={mode==='import'?'default':'outline'} disabled={mutation.isPending||inspecting} onClick={()=>changeMode('import')}>导入项目</Button>
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="new-project-compiler">编译器</Label>
+            <Controller control={form.control} name="compiler" render={({field})=>(<select id="new-project-compiler" className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={field.value} onChange={field.onChange} disabled={mutation.isPending||inspecting}><option value="xelatex">XeLaTeX</option><option value="pdflatex">pdfLaTeX</option><option value="lualatex">LuaLaTeX</option></select>)}/>
+          </div>
           {mode==='import'?<div className="space-y-2">
             <div className="flex flex-wrap gap-2">
               <Button type="button" variant="outline" disabled={mutation.isPending||inspecting} onClick={()=>filePicker.current?.click()}>选择文件或 ZIP</Button>
@@ -175,7 +179,6 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
             </div>
             <input ref={filePicker} className="hidden" type="file" multiple disabled={mutation.isPending||inspecting} onChange={event=>{void chooseImport(Array.from(event.target.files??[]));event.target.value='';}}/>
             <input ref={folderPicker} className="hidden" type="file" multiple {...{webkitdirectory:'',directory:''}} disabled={mutation.isPending||inspecting} onChange={event=>{void chooseImport(Array.from(event.target.files??[]),true);event.target.value='';}}/>
-            <p className="text-xs text-muted-foreground">自动识别 ZIP；也可导入单个或多个文件、文件夹。ZIP 请单独选择。保留目录和隐藏文件，忽略系统元数据和 .git。最多256个文件，单文件≤8MiB，合计≤32MiB，打包后≤20MiB。文件夹选择需浏览器支持，空目录不会导入。</p>
             {inspecting&&<p role="status" className="text-sm">正在检查导入内容…</p>}
             {zipError&&<div><p role="alert" className="text-sm text-destructive">{zipError}</p>{lastSelection.current&&<Button type="button" variant="outline" disabled={inspecting||mutation.isPending} onClick={()=>{const selected=lastSelection.current;if(selected)void chooseImport(selected.files,selected.directory);}}>重试检查</Button>}</div>}
             {manifest&&<>

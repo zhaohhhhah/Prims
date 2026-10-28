@@ -124,7 +124,7 @@ export const api = {
   },
   projects: {
     inspectZip:(file:File):Promise<ZipManifest>=>fetchJson('/api/projects/import-zip/inspect',{method:'POST',body:zipForm(file)}),
-    importZip:(input:CreateProjectInput,file:File,mainFile:string):Promise<Project>=>fetchJson('/api/projects/import-zip',{method:'POST',body:zipForm(file,{name:input.name,description:input.description??'',compiler:input.compiler??'tectonic',mainFile})}),
+    importZip:(input:CreateProjectInput,file:File,mainFile:string):Promise<Project>=>fetchJson('/api/projects/import-zip',{method:'POST',body:zipForm(file,{name:input.name,description:input.description??'',compiler:input.compiler??'xelatex',mainFile})}),
     uploadZip:(projectId:ProjectId,file:File):Promise<ZipUploadResult>=>fetchJson(`/api/projects/${projectId}/import-zip`,{method:'POST',body:zipForm(file)}),
     list: (): Promise<Project[]> => fetchJson('/api/projects'),
     get: (id: ProjectId): Promise<Project> => fetchJson(`/api/projects/${id}`),

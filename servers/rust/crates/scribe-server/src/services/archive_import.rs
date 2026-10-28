@@ -95,6 +95,12 @@ pub fn is_main_candidate(path: &str) -> bool {
         )
     })
 }
+// zip 2.4.2 replaces both name() and name_raw() with a validated Unicode
+// Path extra field when present. Otherwise recover UTF-8 bytes from writers
+// that forgot bit 11; non-UTF8 legacy names retain zip's CP437 interpretation.
+fn archive_name<'a>(decoded: &'a str, raw: &'a [u8]) -> &'a str {
+    std::str::from_utf8(raw).unwrap_or(decoded)
+}
 pub fn parse_zip(bytes: Vec<u8>) -> ApiResult<ParsedArchive> {
     parse_with_limits(bytes, Limits::default())
 }
@@ -125,10 +131,10 @@ fn parse_with_limits(bytes: Vec<u8>, limits: Limits) -> ApiResult<ParsedArchive>
         {
             return Err(invalid("ZIP只允许普通文件和目录，不能包含链接或设备条目"));
         }
-        if entry.is_dir() && matches!(entry.name(), "./" | ".") {
+        if entry.is_dir() && matches!(archive_name(entry.name(),entry.name_raw()), "./" | ".") {
             continue;
         }
-        let path = safe_path(entry.name())?;
+        let path = safe_path(archive_name(entry.name(),entry.name_raw()))?;
         if !names.insert(path.clone()) {
             return Err(invalid("ZIP含重复或归一化后重名的路径，未导入任何文件"));
         }
@@ -352,4 +358,42 @@ mod tests {
         )
         .is_err());
     }
+    #[test]
+    fn recovers_utf8_names_when_writer_omits_utf8_flag() {
+        let expected="章节/引言.tex";
+        let mut bytes=archive(&[(expected,b"synthetic source")]);
+        for at in 0..bytes.len().saturating_sub(10) {
+            if &bytes[at..at+4]==b"PK\x03\x04" { bytes[at+7]&=!0x08; }
+            if &bytes[at..at+4]==b"PK\x01\x02" { bytes[at+9]&=!0x08; }
+        }
+        let mut zip=zip::ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+        assert_ne!(zip.by_index(0).unwrap().name(),expected);
+        let parsed=parse_zip(bytes).unwrap();
+        assert_eq!(parsed.files[0].path,expected);
+        assert_eq!(parsed.manifest.suggested_main_file.as_deref(),Some(expected));
+        assert_eq!(archive_name("legacy fallback",&[0xd6,0xd0]),"legacy fallback");
+    }
+    #[test]
+    fn retains_validated_unicode_path_extra_field() {
+        let raw=b"legacy.tex";let expected="中文主文件.tex";
+        let mut crc=0xffff_ffffu32;
+        for byte in raw {crc^=*byte as u32;for _ in 0..8 {crc=(crc>>1)^if crc&1!=0{0xedb8_8320}else{0};}}
+        let mut extra=vec![1];extra.extend_from_slice(&(!crc).to_le_bytes());extra.extend_from_slice(expected.as_bytes());
+        // Insert the valid extra field into the central directory. FileOptions
+        // validates extra fields before a filename exists, so it cannot build
+        // a filename-dependent Unicode Path fixture directly.
+        let mut bytes=archive(&[("legacy.tex",b"synthetic")]);
+        let central=bytes.windows(4).position(|p|p==b"PK\x01\x02").unwrap();
+        let name_len=u16::from_le_bytes(bytes[central+28..central+30].try_into().unwrap()) as usize;
+        let extra_len=u16::from_le_bytes(bytes[central+30..central+32].try_into().unwrap()) as usize;
+        let mut field=0x7075u16.to_le_bytes().to_vec();field.extend_from_slice(&(extra.len() as u16).to_le_bytes());field.extend_from_slice(&extra);
+        bytes.splice(central+46+name_len+extra_len..central+46+name_len+extra_len,field.iter().copied());
+        bytes[central+30..central+32].copy_from_slice(&((extra_len+field.len()) as u16).to_le_bytes());
+        let end=bytes.windows(4).rposition(|p|p==b"PK\x05\x06").unwrap();
+        let size=u32::from_le_bytes(bytes[end+12..end+16].try_into().unwrap());bytes[end+12..end+16].copy_from_slice(&(size+field.len() as u32).to_le_bytes());
+        let mut zip=zip::ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+        let entry=zip.by_index(0).unwrap();assert_eq!(entry.name(),expected);assert_eq!(entry.name_raw(),expected.as_bytes());drop(entry);
+        assert_eq!(parse_zip(bytes).unwrap().files[0].path,expected);
+    }
+
 }

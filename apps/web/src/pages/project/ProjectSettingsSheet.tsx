@@ -24,13 +24,13 @@ export function ProjectSettingsSheet({ project, onClosed }: ProjectSettingsSheet
 
   const user=useAuthStore(state=>state.user);
   const canWrite=project.ownerId===user?.id;
-  const [compiler,setCompiler]=useState<CompilerEngine>(project.compiler);
+  const [compiler,setCompiler]=useState<CompilerEngine>(project.compiler==='tectonic'?'xelatex':project.compiler);
   const [mainFile,setMainFile]=useState(project.mainFile);
-  useEffect(()=>{setCompiler(project.compiler);setMainFile(project.mainFile);},[project.id,project.compiler,project.mainFile]);
+  useEffect(()=>{setCompiler(project.compiler==='tectonic'?'xelatex':project.compiler);setMainFile(project.mainFile);},[project.id,project.compiler,project.mainFile]);
   const files=useQuery({queryKey:['files',project.id],queryFn:()=>api.files.list(project.id)});
   const engines=useQuery({queryKey:['compile-engines'],queryFn:()=>api.compiles.engines(),staleTime:30000});
   const save=useMutation<Project,ApiError>({mutationFn:()=>api.projects.update(project.id,{compiler,mainFile}),onSuccess:value=>{queryClient.setQueryData(['project',project.id],value);void queryClient.invalidateQueries({queryKey:['projects']});toast.success(t('project.compileSettingsSaved'));},onError:error=>toast.error(error.body.message)});
-  const available=engines.data?.available??['tectonic'];
+  const available=engines.data?.available??[];
   const mainFiles=(files.data??[]).filter(file=>/\.(tex|ltx|latex)$/i.test(file.path));
 
   const deleteMutation = useMutation<unknown, ApiError>({
@@ -74,9 +74,9 @@ export function ProjectSettingsSheet({ project, onClosed }: ProjectSettingsSheet
             <Select value={compiler} disabled={!canWrite || save.isPending} onValueChange={value => setCompiler(value as CompilerEngine)}>
               <SelectTrigger aria-labelledby="project-compiler-label"><SelectValue /></SelectTrigger>
               <SelectContent>
-                {([['tectonic', 'Tectonic'], ['xelatex', 'XeLaTeX'], ['lualatex', 'LuaLaTeX'], ['pdflatex', 'pdfLaTeX']] as const).map(([value, label]) => (
+                {([['xelatex', 'XeLaTeX'], ['lualatex', 'LuaLaTeX'], ['pdflatex', 'pdfLaTeX']] as const).map(([value, label]) => (
                   <SelectItem key={value} value={value} disabled={!available.includes(value) && project.compiler !== value}>
-                    {label}{value === 'tectonic' ? ` (${t('project.defaultCompiler')})` : !available.includes(value) ? ` (${t('project.compilerUnavailable')})` : ''}
+                    {label}{!available.includes(value) ? ` (${t('project.compilerUnavailable')})` : ''}
                   </SelectItem>
                 ))}
               </SelectContent>

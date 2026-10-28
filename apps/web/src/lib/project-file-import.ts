@@ -17,7 +17,7 @@ export async function packageProjectImport(selected: readonly File[], directory 
   if (directory) return packageFolderImport(selected);
   if (classifyProjectImport(selected) === 'zip') {
     const archive = selected[0]!;
-    if (archive.size > ZIP_MAX_BYTES) throw new Error('ZIP压缩包最多20MiB');
+    if (archive.size > ZIP_MAX_BYTES) throw new Error('ZIP压缩包最多500MiB');
     return { archive, name: archive.name.replace(/\.zip$/i, ''), skippedMetadata: 0 };
   }
   const main = selected.find(file => /\.(?:tex|ltx|latex)$/i.test(file.name)) ?? selected[0]!;
