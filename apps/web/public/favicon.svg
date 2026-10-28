@@ -1,5 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Prims">
-  <!-- Prims deployment mark. Upstream application: Scribe. -->
-  <rect width="32" height="32" rx="7" fill="#000000"/>
-  <path d="M11 24V8.5H17.3C21.2 8.5 23 10.3 23 13.1C23 16.1 21.1 18 17.3 18H11" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Prims fountain pen">
+  <title>Prims — Compose with AI</title>
+  <style>
+    :root { --paper: #1b2224; --pen: #fffaf0; }
+    @media (prefers-color-scheme: dark) { :root { --paper: #f5f0e6; --pen: #20272a; } }
+    .paper { fill: var(--paper); }
+    .pen { fill: var(--pen); }
+  </style>
+  <rect class="paper" width="64" height="64" rx="16"/>
+  <path class="pen" transform="rotate(40 32 32)" fill-rule="evenodd" d="M24 10H40L49 29L32 55L15 29Z M30.8 32.02A3.25 3.25 0 1 1 33.2 32.02V51.5L32 54L30.8 51.5Z"/>
 </svg>
