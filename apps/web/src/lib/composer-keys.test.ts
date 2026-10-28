@@ -1,0 +1,3 @@
+import {describe,it,expect} from 'vitest';
+import {isComposerComposing,submitsComposer} from './composer-keys';
+describe('Chinese input composition and chat shortcuts',()=>{it('only submits plain Enter',()=>{expect(submitsComposer({key:'Enter',nativeEvent:{}})).toBe(true);expect(submitsComposer({key:'Enter',shiftKey:true,nativeEvent:{}})).toBe(false);});it('keeps IME confirmation and Safari legacy 229 inside the composer',()=>{for(const nativeEvent of [{isComposing:true},{isComposing:false,keyCode:229}]){expect(submitsComposer({key:'Enter',nativeEvent})).toBe(false);expect(isComposerComposing({key:'Escape',nativeEvent})).toBe(true);}});});
