@@ -2,10 +2,8 @@
 //! Their stable IDs prevent reseeding after edits/disable/archive; no skill grants tools.
 use super::agent_library::validate_skill;
 use scribe_shared::{ApiError, ApiResult, UserId};
-use sqlx::{PgPool, Postgres, Transaction};
+use sqlx::PgPool;
 
-pub const PERSONAL_LIMIT: i64 = 32;
-pub const LIST_LIMIT: i64 = PERSONAL_LIMIT + DOCUMENTS.len() as i64;
 const ID_NAMESPACE: &str = ":prims-builtin-v1:";
 pub const DOCUMENTS: &[&str] = &[
     include_str!("builtin_skills/references/SKILL.md"),
@@ -38,14 +36,6 @@ pub async fn ensure(pool: &PgPool, user: UserId) -> ApiResult<()> {
     Ok(())
 }
 
-/// The six bundled records do not consume the existing 32-personal-skill quota.
-/// Identity, not editable names or content, distinguishes a bundled record.
-pub async fn personal_count(tx: &mut Transaction<'_, Postgres>, user: UserId) -> ApiResult<i64> {
-    let names = documents()?.into_iter().map(|(name,_,_)|name).collect::<Vec<_>>();
-    sqlx::query_scalar("select count(*) from public.scribe_agent_skills where user_id=$1 and archived_at is null and id not in(select md5($1::uuid::text||$3||name)::uuid from unnest($2::text[]) as names(name))")
-        .bind(user.into_inner()).bind(names).bind(ID_NAMESPACE)
-        .fetch_one(&mut **tx).await.map_err(db)
-}
 fn db(_: sqlx::Error) -> ApiError { ApiError::internal("Bundled workflow library unavailable") }
 
 #[cfg(test)]
@@ -57,7 +47,6 @@ mod tests {
         let docs=documents().unwrap();
         assert_eq!(docs.len(),6);
         assert_eq!(docs.iter().map(|(name,_,_)|name).collect::<HashSet<_>>().len(),6);
-        assert_eq!(LIST_LIMIT,38);
         assert!(docs.iter().all(|(_,description,content)|description.chars().count()<100 && content.len()<9000));
         assert!(docs.iter().map(|(_,description,_)|description.chars().count()).sum::<usize>()<350);
     }

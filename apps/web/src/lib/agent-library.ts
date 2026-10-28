@@ -9,7 +9,7 @@ export interface AgentMemory { content: string; revision: number }
 export interface AgentSearchConfig { provider: 'doubao' | 'deepseek' | 'searxng'; endpoint: string; hasApiKey: boolean; updatedAt: string }
 export interface AgentSearchState { limits?: { maxCallsPerRequest: number }; config: AgentSearchConfig | null; fallback: { provider: 'deepseek'; available: boolean } }
 export interface AgentCapabilities {
-  limits?: { modelRounds?: number; requestSeconds?: number; readCalls?: number; diagnosticCalls?: number };
+  limits?: { modelRounds?: number | null; requestSeconds?: number | null; readCalls?: number | null; diagnosticCalls?: number | null; skills?: number | null; pendingProposals?: number | null };
   skills?: { available: boolean }; memory?: { available: boolean };
   diagnostics?: { available: boolean; configured?: boolean; ready?: boolean; health?: { ready: boolean; status: 'ready' | 'unavailable' | 'not_configured' }; tasks?: string[]; reason?: string };
   search?: { available: boolean; provider?: string; scope?: string; reason?: string };

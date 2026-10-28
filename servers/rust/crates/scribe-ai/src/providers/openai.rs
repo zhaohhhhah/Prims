@@ -283,6 +283,7 @@ where S:Stream<Item=Result<String,AdapterError>> {
         let mut complete=false;let mut output_limited=false;
         while let Some(line_result)=lines.next().await {
             let line=match line_result {Ok(line)=>line,Err(error)=>{yield Err(error);return;}};
+            if line.starts_with(':')&&!complete {yield Ok(CompletionChunk::default());continue;}
             let Some(payload)=line.strip_prefix("data:").map(str::trim_start) else {continue;};
             if payload.trim()=="[DONE]" {complete=true;break;}
             if let Ok(value)=serde_json::from_str::<serde_json::Value>(payload) {
@@ -292,7 +293,9 @@ where S:Stream<Item=Result<String,AdapterError>> {
             let frame:StreamFrame=match serde_json::from_str(payload){Ok(frame)=>frame,Err(_)=>continue};
             if frame.choices.first().and_then(|choice|choice.finish_reason.as_deref())==Some("length"){if let Some(usage)=crate::adapter::usage_from_json(&serde_json::json!({"usage":frame.usage.clone()}),"openai"){yield Ok(CompletionChunk{usage:Some(usage),..Default::default()});}}
             let finished=frame.choices.first().and_then(|choice|choice.finish_reason.as_deref()).is_some_and(|reason|matches!(reason,"tool_calls"|"stop"));
+            let activity=frame.choices.first().is_none_or(|choice|choice.finish_reason.is_none());
             if let Some(chunk)=chunk_from_frame(frame){match chunk {Ok(chunk)=>{has_native_calls|=!chunk.tool_call_deltas.is_empty();yield Ok(chunk);},Err(AdapterError::OutputLimit)=>{output_limited=true;complete=true;},Err(error)=>{yield Err(error);return;}}}
+            else if activity {yield Ok(CompletionChunk::default());}
             if finished {complete=true;}
         }
         if output_limited{yield Err(AdapterError::OutputLimit);return;}
@@ -505,3 +508,5 @@ mod tests {
 #[cfg(test)]mod trailing_usage_tests{use super::*;use futures::StreamExt;#[tokio::test]async fn usage_after_stop_and_output_limit_is_not_dropped(){for finish in ["stop","length"]{let lines=futures::stream::iter(vec![Ok::<_,AdapterError>(format!("data:{}",serde_json::json!({"choices":[{"delta":{"content":"answer"},"finish_reason":finish}]}))),Ok(format!("data:{}",serde_json::json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}))),Ok("data: [DONE]".into())]);let chunks=parse_sse(lines).collect::<Vec<_>>().await;assert!(chunks.iter().any(|c|c.as_ref().ok().and_then(|c|c.usage.as_ref()).is_some_and(|u|u.total()==120)));assert_eq!(chunks.iter().any(|c|matches!(c,Err(AdapterError::OutputLimit))),finish=="length");}}}
 
 #[cfg(test)]mod automatic_output_tests{use super::*;#[test]fn unspecified_output_limit_is_omitted(){let req=CompleteRequest::system_then_user(AIProvider::Openai,"fixture".into(),None,"k".into(),"system","user");let body=serde_json::to_value(build_request(&req)).unwrap();assert!(body.get("max_tokens").is_none());assert!(body.get("max_completion_tokens").is_none());}}
+
+#[cfg(test)]mod activity_tests{use super::*;use futures::StreamExt;#[tokio::test]async fn thinking_and_sse_keepalive_emit_only_empty_activity(){let lines=futures::stream::iter(vec![Ok::<_,AdapterError>(": ping".into()),Ok(r#"data: {"choices":[{"delta":{"reasoning_content":"PRIVATE"},"finish_reason":null}]}"#.into()),Ok(r#"data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}"#.into()),Ok("data: [DONE]".into())]);let chunks=parse_sse(lines).collect::<Vec<_>>().await;assert_eq!(chunks.len(),3);assert!(chunks[..2].iter().all(|c|c.as_ref().is_ok_and(|c|c.text.is_empty()&&c.tool_call_deltas.is_empty()&&c.usage.is_none())));assert_eq!(chunks[2].as_ref().unwrap().text,"answer");}}

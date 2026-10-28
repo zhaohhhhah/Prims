@@ -252,14 +252,7 @@ impl Adapter for AnthropicAdapter {
             return Err(AdapterError::HttpStatus { status: status.as_u16(), message: text });
         }
 
-        let stream=async_stream::stream!{
-         let mut lines=Box::pin(anthropic_sse(response.bytes_stream()));let mut state=EventState::default();
-         while let Some(line)=lines.next().await{let line=match line{Ok(line)=>line,Err(error)=>{yield Err(error);return;}};let Some(payload)=line.strip_prefix("data:").map(str::trim_start)else{continue;};
-          if let Ok(value)=serde_json::from_str::<Value>(payload){if let Some(usage)=crate::adapter::usage_from_json(&value,"anthropic"){yield Ok(CompletionChunk{usage:Some(usage),..Default::default()});}}
-          if let Some(result)=state.consume(payload){let failed=result.is_err();yield result;if failed{return;}}
-         }
-         if !state.stopped{yield Err(AdapterError::Stream("Anthropic response ended before message_stop".into()));}
-        };
+        let stream=parse_anthropic_events(anthropic_sse(response.bytes_stream()));
         Ok(Box::pin(stream))
     }
 
@@ -287,6 +280,21 @@ impl Adapter for AnthropicAdapter {
         }
         Ok(Some(req.model))
     }
+}
+
+fn parse_anthropic_events<S>(lines:S)->impl futures::Stream<Item=Result<CompletionChunk,AdapterError>>
+where S:futures::Stream<Item=Result<String,AdapterError>>{
+ async_stream::stream!{
+  let mut lines=std::pin::pin!(lines);let mut state=EventState::default();
+  while let Some(line)=lines.next().await{let line=match line{Ok(line)=>line,Err(error)=>{yield Err(error);return;}};
+   if line.starts_with(':')&&!state.stopped{yield Ok(CompletionChunk::default());continue;}
+   let Some(payload)=line.strip_prefix("data:").map(str::trim_start)else{continue;};let mut emitted=false;
+   if let Ok(value)=serde_json::from_str::<Value>(payload){if let Some(usage)=crate::adapter::usage_from_json(&value,"anthropic"){emitted=true;yield Ok(CompletionChunk{usage:Some(usage),..Default::default()});}}
+   if let Some(result)=state.consume(payload){emitted=true;let failed=result.is_err();yield result;if failed{return;}}
+   if !emitted&&!state.stopped{yield Ok(CompletionChunk::default());}
+  }
+  if !state.stopped{yield Err(AdapterError::Stream("Anthropic response ended before message_stop".into()));}
+ }
 }
 
 fn anthropic_sse<S, E>(stream: S) -> impl futures::Stream<Item = Result<String, AdapterError>>
@@ -422,3 +430,5 @@ mod tests {
   req.max_tokens=Some(200);let body=serde_json::to_value(build_request(&req).unwrap()).unwrap();assert_eq!(body["max_tokens"],200);
  }
 }
+
+#[cfg(test)]mod activity_tests{use super::*;use futures::StreamExt;#[tokio::test]async fn thinking_and_ping_preserve_liveness_without_exposing_thinking(){let lines=futures::stream::iter(vec![Ok::<_,AdapterError>(": ping".into()),Ok(r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"PRIVATE"}}"#.into()),Ok(r#"data: {"type":"ping"}"#.into()),Ok(r#"data: {"type":"message_stop"}"#.into())]);let chunks=parse_anthropic_events(lines).collect::<Vec<_>>().await;assert_eq!(chunks.len(),3);assert!(chunks.iter().all(|c|c.as_ref().is_ok_and(|c|c.text.is_empty()&&c.tool_call_deltas.is_empty()&&c.usage.is_none())));}}

@@ -10,7 +10,6 @@ export function profileModelNames(profile:Pick<ModelProfile,'model'|'models'>):s
 export function parseModelNamesInput(input:string):string[]{
  const models=[...new Set(input.split(/\r?\n/).map(name=>name.trim()).filter(Boolean))];
  if(!models.length)throw new Error('请至少填写一个模型名称，每行一个');
- if(models.length>100)throw new Error('每个连接最多保存 100 个模型名称');
  if(models.some(name=>name.length>256||/[\x00-\x1f\x7f]/.test(name)))throw new Error('每个模型名称最多 256 个字符，不能包含控制字符');
  return models;
 }

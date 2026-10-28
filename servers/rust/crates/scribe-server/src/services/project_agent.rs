@@ -10,6 +10,11 @@ use scribe_ai::adapter::{NativeToolCall,NativeToolCallDelta,NativeToolTurn};
 use crate::state::AppState;
 use super::{ai::{AIService,AIStreamStartError},ai_context::{AIContextService,model_history_with_limits,take_generated_summary,MAX_CONTENT,MAX_RAW},files::FileService,project_context::ProjectContext};
 
+/// Reset the watchdog on provider activity, including content-free reasoning/keepalive events.
+async fn next_model_chunk<S:futures::Stream+Unpin>(stream:&mut S,idle:Duration)->ApiResult<Option<S::Item>>{
+ tokio::time::timeout(idle,stream.next()).await.map_err(|_|ApiError::new(ErrorCode::ServiceUnavailable,"模型长时间未返回数据，请重试"))
+}
+
 pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiResult<Response>{
  let raw=input.options.as_ref().and_then(|o|o.get("projectId")).ok_or_else(||ApiError::validation("缺少项目编号"))?;
  let project=ProjectId::new(Uuid::parse_str(raw).map_err(|_|ApiError::validation("项目编号无效"))?);
@@ -87,8 +92,8 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
     if let Some(status)=plan.current_status(){emit(&tx,json!({"status":status})).await?;}else if !pending.items.is_empty(){emit(&tx,json!({"status":format!("已提交{}处待审修改，正在处理后续修改",pending.items.len())})).await?;}else if step==0{emit(&tx,json!({"status":"正在确定需要读取的文件和修改范围"})).await?;}else if context.as_ref().is_some_and(|context|context.results.iter().any(|result|result.get("kind").and_then(Value::as_str)==Some("text"))){emit(&tx,json!({"status":"正在核对已读取内容与修改要求"})).await?;}
     let (raw,native_calls)=loop{
      let round=async{
-      let mut stream=ai.complete_stream_for_agent(user,input.clone()).await?;let mut text=String::new();let mut tick=0;let mut tools=NativeCalls::default();
-      while let Some(chunk)=stream.next().await{
+      let mut stream=tokio::time::timeout(Duration::from_secs(90),ai.complete_stream_for_agent(user,input.clone())).await.map_err(|_|AIStreamStartError::Request(ApiError::new(ErrorCode::ServiceUnavailable,"连接模型超时，请重试")))??;let mut text=String::new();let mut tick=0;let mut tools=NativeCalls::default();
+      while let Some(chunk)=next_model_chunk(&mut stream,Duration::from_secs(90)).await.map_err(AIStreamStartError::Request)?{
        if matches!(&chunk,Err(scribe_ai::AdapterError::OutputLimit)){tracing::warn!(finish_reason="length",raw_chars=text.chars().count(),"AI output reached model token limit; no content recorded");}
        let chunk=chunk.map_err(AIStreamStartError::Provider)?;text.push_str(&chunk.text);
        for delta in chunk.tool_call_deltas{tools.push(delta).map_err(AIStreamStartError::Request)?;}
@@ -96,7 +101,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
        if text.len()/500>tick{tick=text.len()/500;emit(&tx,json!({"received":text.chars().count()})).await?;}
       }Ok::<_,AIStreamStartError>((text,tools.finish().map_err(AIStreamStartError::Request)?))
      };
-     let result=tokio::select!{_=tx.closed()=>return Ok(()),result=tokio::time::timeout(Duration::from_secs(90),round)=>result.map_err(|_|ApiError::new(ErrorCode::ServiceUnavailable,"模型响应超时，请重试"))?};
+     let result=tokio::select!{_=tx.closed()=>return Ok(()),result=round=>result};
      match result{
       Ok(value)=>break value,
       Err(error) if native_mode&&!native_fallback_used&&error.is_tools_unsupported()=>{
@@ -671,3 +676,8 @@ fn validate_project_edit_targets(output:&Value,context:Option<&ProjectContext>)-
 }
 
 #[cfg(test)]mod font_lookup_transport_tests{use super::*;#[test]fn named_fonts_pass_both_protocols_without_granting_commands(){let call=json!({"tool":"run_project_check","task":"font_check","fontName":"FandolSong-Regular"});assert_eq!(parse_model_output(&call.to_string()).unwrap(),call);assert!(parse_read_tool_sequence(&json!([call.clone()]).to_string()).unwrap().is_some());let native=NativeToolCall{id:"font-1".into(),name:"run_project_check".into(),arguments:json!({"task":"font_check","fontName":"FandolSong-Regular"}).to_string()};assert!(native_calls_output(&[native]).is_ok());for bad in [json!({"tool":"run_project_check","task":"font_check","fontName":"/etc/passwd"}),json!({"tool":"run_project_check","task":"font_check","fontName":"Arial","command":"apt"})]{assert!(parse_model_output(&bad.to_string()).is_err());}}}
+
+#[cfg(test)]mod idle_stream_tests{use super::*;
+ #[tokio::test]async fn active_stream_can_run_longer_than_idle_timeout(){let stream=futures::stream::unfold(0,|n|async move{if n==6{None}else{tokio::time::sleep(Duration::from_millis(10)).await;Some((n,n+1))}});let mut stream=Box::pin(stream);let started=std::time::Instant::now();let mut values=vec![];while let Some(value)=next_model_chunk(&mut stream,Duration::from_millis(50)).await.unwrap(){values.push(value);}assert_eq!(values.len(),6);assert!(started.elapsed()>Duration::from_millis(50));}
+ #[tokio::test]async fn silent_stream_times_out(){let mut stream=futures::stream::pending::<()>();assert!(next_model_chunk(&mut stream,Duration::from_millis(5)).await.is_err());}
+}

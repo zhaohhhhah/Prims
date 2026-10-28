@@ -100,7 +100,7 @@ impl AgentLibrary {
     }
     pub async fn list(&self, user: UserId, enabled_only: bool) -> ApiResult<Value> {
         super::builtin_skills::ensure(&self.pool, user).await?;
-        let rows=sqlx::query("select id,name,description,enabled,updated_at from public.scribe_agent_skills where user_id=$1 and archived_at is null and (not $2 or enabled) order by name limit $3").bind(user.into_inner()).bind(enabled_only).bind(super::builtin_skills::LIST_LIMIT).fetch_all(&self.pool).await.map_err(db)?;
+        let rows=sqlx::query("select id,name,description,enabled,updated_at from public.scribe_agent_skills where user_id=$1 and archived_at is null and (not $2 or enabled) order by name").bind(user.into_inner()).bind(enabled_only).fetch_all(&self.pool).await.map_err(db)?;
         Ok(
             json!({"skills":rows.into_iter().map(|r|json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"updatedAt":r.get::<chrono::DateTime<chrono::Utc>,_>("updated_at")})).collect::<Vec<_>>()}),
         )
@@ -132,10 +132,6 @@ impl AgentLibrary {
             }
             id
         } else {
-            let count = super::builtin_skills::personal_count(&mut tx, user).await?;
-            if count >= super::builtin_skills::PERSONAL_LIMIT {
-                return Err(ApiError::validation("最多保存32个个人技能"));
-            }
             Uuid::new_v4()
         };
         sqlx::query("insert into public.scribe_agent_skills(id,user_id,name,description,content,enabled) values($1,$2,$3,$4,$5,$6) on conflict(id) do update set name=$3,description=$4,content=$5,enabled=$6,updated_at=now() where scribe_agent_skills.user_id=$2 and scribe_agent_skills.archived_at is null")
