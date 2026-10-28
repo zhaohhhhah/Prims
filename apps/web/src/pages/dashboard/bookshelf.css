@@ -53,8 +53,13 @@
  .prims-project-shelf>header,.prims-shelf-search{flex-shrink:0}
  .prims-shelf-scroll{flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:stable}
 }
-.prims-project-actions{position:absolute;top:7px;right:6px;z-index:30;display:grid;place-items:center;width:28px;height:28px;border:1px solid hsl(var(--border)/.7);border-radius:7px;background:hsl(var(--background)/.88);color:hsl(var(--foreground));box-shadow:0 1px 4px #00000012;transition:background 140ms ease}
-.prims-project-actions:hover{background:hsl(var(--accent))}
-.prims-project-actions:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+.prims-project-actions{--book-action-ink:var(--prims-cover-ink-0,var(--shelf-ink));position:absolute;top:7px;right:6px;z-index:30;display:grid;place-items:center;width:28px;height:28px;border:1px solid transparent;border-radius:50%;background:transparent;color:var(--book-action-ink);opacity:.7;transition:background 140ms ease,border-color 140ms ease,opacity 140ms ease}
+.prims-project-actions.cover-1{--book-action-ink:var(--prims-cover-ink-1,var(--shelf-ink))}
+.prims-project-actions.cover-2{--book-action-ink:var(--prims-cover-ink-2,var(--shelf-ink))}
+.prims-project-actions.cover-3{--book-action-ink:var(--prims-cover-ink-3,var(--shelf-ink))}
+.prims-project-actions:hover,.prims-project-actions[data-state=open]{background:color-mix(in srgb,var(--book-action-ink) 8%,transparent);border-color:color-mix(in srgb,var(--book-action-ink) 18%,transparent);opacity:1}
+.prims-project-actions:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:1px;opacity:1}
+.prims-project-menu{min-width:144px;padding:5px;border:1px solid hsl(var(--border));border-radius:9px;box-shadow:0 4px 16px #00000014!important;outline:none!important;background:var(--prims-ground,hsl(var(--popover)));color:var(--prims-ink,hsl(var(--popover-foreground)))}
+.prims-project-menu>[role=menuitem]{padding:8px 10px;font-size:13px;gap:9px;border-radius:5px}
 .prims-cover-number{max-width:calc(100% - 28px)}
 @media(prefers-reduced-motion:reduce){.prims-project-actions{transition:none}}

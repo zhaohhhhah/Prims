@@ -13,9 +13,10 @@ import { api } from '../../lib/api';
 interface Props {
   project: Project;
   userId: string;
+  coverIndex: number;
 }
 
-export function ProjectActionsMenu({ project, userId }: Props) {
+export function ProjectActionsMenu({ project, userId, coverIndex }: Props) {
   const { i18n } = useTranslation();
   const zh = i18n.language.startsWith('zh');
   const copy = zh ? {
@@ -61,11 +62,11 @@ export function ProjectActionsMenu({ project, userId }: Props) {
   return <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="prims-project-actions" aria-label={`${project.name} · ${copy.more}`} title={copy.more}>
-          <MoreHorizontal size={17} />
+        <button type="button" className={`prims-project-actions cover-${coverIndex}`} aria-label={`${project.name} · ${copy.more}`} title={copy.more}>
+          <MoreHorizontal size={16} strokeWidth={1.5} />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" onCloseAutoFocus={event => { if (action) event.preventDefault(); }}>
+      <DropdownMenuContent className="prims-project-menu" side="right" align="start" sideOffset={8} onCloseAutoFocus={event => { if (action) event.preventDefault(); }}>
         <DropdownMenuItem onSelect={() => choose('rename')}><Pencil size={15} />{copy.rename}</DropdownMenuItem>
         <DropdownMenuItem destructive onSelect={() => choose('delete')}><Trash2 size={15} />{copy.remove}</DropdownMenuItem>
       </DropdownMenuContent>
