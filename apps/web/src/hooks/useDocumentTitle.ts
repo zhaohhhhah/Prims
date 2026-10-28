@@ -1,25 +1,11 @@
 import { useEffect } from 'react';
 
-/**
- * Set `document.title` to `"<title> · Prims"` for the lifetime of the
- * calling component, restoring the previous title on unmount so a
- * route swap doesn't leave a stale title flashing for one frame.
- *
- * Pass `null` or an empty string to fall back to the static
- * `<title>` baked into `index.html` (the marketing line).
- */
-const APP_SUFFIX = 'Prims';
+const APP_TITLE = 'Prims — Compose with AI';
 
-export function useDocumentTitle(title: string | null | undefined): void {
+/** Use the project name in its editor and the site title on other routes. */
+export function useDocumentTitle(title: string | null | undefined, project = false): void {
   useEffect(() => {
-    const previous = document.title;
-    if (title === null || title === undefined || title === '') {
-      document.title = APP_SUFFIX;
-    } else {
-      document.title = `${title} · ${APP_SUFFIX}`;
-    }
-    return () => {
-      document.title = previous;
-    };
-  }, [title]);
+    document.title = project && title ? title : APP_TITLE;
+    return () => { document.title = APP_TITLE; };
+  }, [title, project]);
 }

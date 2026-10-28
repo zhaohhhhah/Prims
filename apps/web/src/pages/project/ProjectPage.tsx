@@ -106,7 +106,7 @@ export function ProjectPage() {
   });
   const { data: project, isLoading, error } = projectQuery;
 
-  useDocumentTitle(project?.name ?? null);
+  useDocumentTitle(project?.name ?? null, true);
 
   const filesQuery = useQuery<ProjectFile[], ApiError>({
     queryKey: ['files', projectId],
