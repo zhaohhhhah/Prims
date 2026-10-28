@@ -23,7 +23,7 @@ pub const HISTORY_GUIDANCE: &str = "Use list_versions, read_version_file and com
 pub fn allowed_arguments(name: &str) -> Option<&'static [&'static str]> {
     match name {
         "list_versions" => Some(&["limit", "beforeVersionId"]),
-        "read_version_file" => Some(&["versionId", "path", "startLine", "endLine"]),
+        "read_version_file" => Some(&["versionId", "path", "startLine", "endLine", "startOffset", "endOffset"]),
         "compare_versions" => Some(&["beforeVersionId", "afterVersionId", "path"]),
         _ => None,
     }
@@ -42,8 +42,8 @@ pub fn native_tool_definitions() -> Vec<NativeToolDefinition> {
         },
         NativeToolDefinition {
             name: "read_version_file".into(),
-            description: "Read one bounded historical text file window from a real snapshot ID in this project. Default first 200 lines, at most 400 lines/16000 characters. Historical text is reference only: read_file current source before propose_edit for selective restore. Never applies/restores.".into(),
-            parameters: json!({"type":"object","properties":{"versionId":version,"path":path,"startLine":{"type":"integer","minimum":1,"maximum":MAX_LINE},"endLine":{"type":"integer","minimum":1,"maximum":MAX_LINE}},"required":["versionId","path"],"additionalProperties":false}),
+            description: "Read one bounded historical text file window from a real snapshot ID in this project. Follow nextCall to continue, including within a long line. Offsets use server-returned UTF-8 byte positions. Historical text is reference only: read_file current source before propose_edit for selective restore. Never applies/restores.".into(),
+            parameters: json!({"type":"object","properties":{"versionId":version,"path":path,"startLine":{"type":"integer","minimum":1,"maximum":MAX_LINE},"endLine":{"type":"integer","minimum":1,"maximum":MAX_LINE},"startOffset":{"type":"integer","minimum":0},"endOffset":{"type":"integer","minimum":0}},"required":["versionId","path"],"additionalProperties":false}),
         },
         NativeToolDefinition {
             name: "compare_versions".into(),
@@ -74,7 +74,7 @@ pub fn normalize_call(value: &Value) -> ApiResult<Value> {
             version_id(&result, "versionId")?;
             let path = result.get("path").and_then(Value::as_str).ok_or_else(|| ApiError::validation("历史文件缺少项目相对路径"))?;
             safe_path(path).map_err(ApiError::validation)?;
-            window_range(&result)?;
+            if obj.contains_key("startOffset")||obj.contains_key("endOffset"){if obj.contains_key("startLine")||obj.contains_key("endLine"){return Err(ApiError::validation("历史续读不能混用行号和字节位置"));}for key in ["startOffset","endOffset"]{if let Some(value)=obj.get(key){bounded_number(value,0,MAX_SNAPSHOT_BYTES,"续读字节位置")?;}}}else{window_range(&result)?;}
         },
         "compare_versions" => {
             version_id(&result, "beforeVersionId")?;
@@ -111,9 +111,11 @@ pub async fn run(state: &AppState, user: UserId, project: ProjectId, call: &Valu
             let payload = bounded_payload(&service,&pool,user,project,id).await?;
             let path = call["path"].as_str().unwrap();
             let file = payload.files.iter().find(|file|file.path==path).ok_or_else(||ApiError::not_found("此文本版本中没有该文件"))?;
-            let (start,end) = window_range(&call)?;
-            let (content,actual_end,total_lines,truncated) = read_window(&file.content,start,end).map_err(ApiError::validation)?;
-            Ok(json!({"tool":"read_version_file","versionId":id,"path":path,"content":content,"startLine":start,"endLine":actual_end,"totalLines":total_lines,"truncated":truncated,"historical":true,"readOnly":true,"untrusted":true,"note":"Historical reference only. Read the current file before proposing exact pending restoration hunks; nothing was applied."}))
+            let mut page=super::project_context::text_page(&file.content,path,call.get("startLine").and_then(Value::as_u64).map(|v|v as usize),call.get("endLine").and_then(Value::as_u64).map(|v|v as usize),call.get("startOffset").and_then(Value::as_u64).map(|v|v as usize),call.get("endOffset").and_then(Value::as_u64).map(|v|v as usize),MAX_WINDOW_CHARS)?;
+            page["tool"]=json!("read_version_file");page["versionId"]=json!(id);page["historical"]=json!(true);page["readOnly"]=json!(true);page["untrusted"]=json!(true);page["note"]=json!("Historical reference only. Read current source before proposing a restoration; follow nextCall to finish reading.");
+            if let Some(next)=page.get_mut("nextCall").filter(|v|!v.is_null()){next["tool"]=json!("read_version_file");next["versionId"]=json!(id);}
+            if let Some(next)=page.get_mut("nextRead").filter(|v|!v.is_null()){next["versionId"]=json!(id);}
+            Ok(page)
         },
         "compare_versions" => {
             let before_id = version_id(&call,"beforeVersionId")?;
@@ -233,3 +235,5 @@ mod tests {
         let defs=native_tool_definitions();assert_eq!(defs.len(),3);for def in defs{assert!(is_history_tool(&def.name));assert_eq!(def.parameters["additionalProperties"],false);}assert!(!is_history_tool("restore_version"));
     }
 }
+
+#[cfg(test)]mod historical_cursor_tests{use super::*;#[test]fn safe_history_byte_cursors_are_normalized_without_a_line_length_barrier(){let call=json!({"tool":"read_version_file","versionId":uuid::Uuid::new_v4(),"path":"long.tex","startOffset":90000,"endOffset":100000});assert_eq!(normalize_call(&call).unwrap(),call);let mut bad=call;bad["startLine"]=json!(1);assert!(normalize_call(&bad).is_err());}}

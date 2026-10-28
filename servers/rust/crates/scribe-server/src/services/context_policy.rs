@@ -13,7 +13,7 @@ impl ContextPolicy{
  pub fn compact_at(self)->usize{self.window*4/5}
  pub fn history_messages(self)->usize{(self.window/128).clamp(40,MAX_HISTORY_MESSAGES)}
  pub fn history_chars(self)->usize{(self.window*2).min(2_000_000)}
- pub fn source_limits(self)->(usize,usize){((self.window/2).clamp(8_000,256_000),(self.window*2).min(1_000_000))}
+ pub fn source_limits(self)->(usize,usize){(self.window/8,self.window/2)}
  pub fn output_reserve(self)->usize{4096.min(self.window/4)}
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn windows_scale_history_and_compaction_without_early_character_trigger(){let small=ContextPolicy::new(16384);let large=ContextPolicy::new(262144);assert!(large.compact_at()>small.compact_at());assert!(large.history_chars()>small.history_chars());assert!(large.history_messages()>40);assert!(large.compact_at()+large.output_reserve()<large.window);assert_eq!(ContextPolicy::new(usize::MAX).window,MAX_WINDOW);}}

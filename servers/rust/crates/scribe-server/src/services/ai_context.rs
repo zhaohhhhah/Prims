@@ -131,7 +131,7 @@ fn validate_messages(messages:&[ContextMessage])->ApiResult<()> {
  for m in messages {
   if !ids.insert(m.id){return Err(ApiError::validation("消息标识不能重复"));}
   if !matches!(m.role.as_str(),"user"|"assistant"|"action"){return Err(ApiError::validation("不支持的消息类型"));}
-  for(value,limit)in [(Some(m.content.as_str()),MAX_CONTENT),(m.raw.as_deref(),MAX_RAW),(m.selection.as_deref(),16000)]{if value.is_some_and(|v|v.chars().count()>limit){return Err(ApiError::validation("对话内容过长，当前页面仍保留方案；请缩短选区后保存"));}}
+  for(value,limit)in [(Some(m.content.as_str()),MAX_CONTENT),(m.raw.as_deref(),MAX_RAW),(m.selection.as_deref(),MAX_CONTENT)]{if value.is_some_and(|v|v.chars().count()>limit){return Err(ApiError::validation("对话内容过长，当前页面仍保留方案；请缩短选区后保存"));}}
   for(value,limit)in [(m.file_path.as_deref(),512),(m.selection_id.as_deref(),128)]{if value.is_some_and(|v|v.chars().count()>limit||v.chars().any(char::is_control)){return Err(ApiError::validation("对话位置格式不正确"));}}
  }Ok(())
 }

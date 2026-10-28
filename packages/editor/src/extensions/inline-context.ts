@@ -18,7 +18,7 @@ function boundary(text:string,offset:number,direction:-1|1):number {
   if(offset>0&&offset<text.length){const a=text.charCodeAt(offset-1),b=text.charCodeAt(offset);if(a>=0xd800&&a<=0xdbff&&b>=0xdc00&&b<=0xdfff)return offset+direction;}
   return offset;
 }
-export function getInlineWritingContext(text:string,from:number,to:number,limit=32000):InlineWritingContext {
+export function getInlineWritingContext(text:string,from:number,to:number,limit=Number.POSITIVE_INFINITY):InlineWritingContext {
   from=Math.max(0,Math.min(text.length,from));to=Math.max(from,Math.min(text.length,to));limit=Math.max(1,limit);
   let start=0,end=text.length;
   if(text.length>limit){
