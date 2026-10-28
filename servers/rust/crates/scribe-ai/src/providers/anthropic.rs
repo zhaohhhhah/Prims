@@ -29,7 +29,8 @@ struct MessagesRequest<'a> {
     messages: Vec<RequestMessage<'a>>,
     stream: bool,
     temperature: f32,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<RequestTool<'a>>,
 }
@@ -194,9 +195,37 @@ fn build_request<'a>(req: &'a CompleteRequest) -> Result<MessagesRequest<'a>,Ada
       }
     }
     Ok(MessagesRequest {
-        model: &req.model,system,messages,stream:true,temperature:req.temperature.clamp(0.0,1.0),max_tokens:req.max_tokens.unwrap_or(2048),
+        model: &req.model,system,messages,stream:true,temperature:req.temperature.clamp(0.0,1.0),max_tokens:req.max_tokens,
         tools:req.native_tools.iter().map(|tool|RequestTool{name:&tool.name,description:&tool.description,input_schema:&tool.parameters}).collect(),
     })
+}
+
+// Messages requires max_tokens on strict providers. Use their live model capability,
+// never substitute a small application default. Compatible APIs may accept omission.
+fn reported_output_ceiling(value:&Value,model:&str)->Option<u32>{
+ let item=if let Some(rows)=value.get("data").and_then(Value::as_array){rows.iter().find(|row|row.get("id").and_then(Value::as_str)==Some(model))?}else{value};
+ ["max_output_tokens","max_tokens","max_completion_tokens"].iter().find_map(|name|item.get(*name).and_then(Value::as_u64).and_then(|n|u32::try_from(n).ok()).filter(|n|*n>0))
+}
+async fn discover_output_ceiling(req:&CompleteRequest)->Option<u32>{
+ use std::{collections::HashMap,hash::{Hash,Hasher},sync::{Mutex,OnceLock},time::{Duration,Instant}};
+ static CACHE:OnceLock<Mutex<HashMap<u64,(Instant,Option<u32>)>>>=OnceLock::new();
+ let mut hasher=std::collections::hash_map::DefaultHasher::new();base_url(req).hash(&mut hasher);req.model.hash(&mut hasher);req.api_key.hash(&mut hasher);let key=hasher.finish();
+ let cache=CACHE.get_or_init(||Mutex::new(HashMap::new()));
+ if let Ok(guard)=cache.lock(){if let Some((time,value))=guard.get(&key){if time.elapsed()<Duration::from_secs(600){return *value;}}}
+ let mut url=reqwest::Url::parse(&format!("{}/v1/models",base_url(req).trim_end_matches("/v1"))).ok()?;
+ let deepseek=url.host_str()==Some("api.deepseek.com");
+ if deepseek{url.set_path("/models");}
+ // An alias may only resolve via the single-model endpoint on strict Anthropic.
+ let mut urls=vec![url.clone()];if !deepseek{let mut exact=url;exact.path_segments_mut().ok()?.push(&req.model);urls.insert(0,exact);}
+ let client=reqwest::Client::builder().timeout(Duration::from_secs(3)).redirect(reqwest::redirect::Policy::none()).build().ok()?;
+ let mut ceiling=None;
+ for url in urls{
+  let request=client.get(url).header("anthropic-version",ANTHROPIC_VERSION);
+  let request=if deepseek{request.bearer_auth(&req.api_key)}else{request.header("x-api-key",&req.api_key)};
+  if let Ok(response)=request.send().await{if response.status().is_success()&&response.content_length().is_none_or(|n|n<=262144){if let Ok(bytes)=response.bytes().await{if bytes.len()<=262144{if let Ok(value)=serde_json::from_slice::<Value>(&bytes){ceiling=reported_output_ceiling(&value,&req.model);if ceiling.is_some(){break;}}}}}}
+ }
+ if let Ok(mut guard)=cache.lock(){if guard.len()>=512{guard.clear();}guard.insert(key,(Instant::now(),ceiling));}
+ ceiling
 }
 
 #[async_trait]
@@ -206,7 +235,9 @@ impl Adapter for AnthropicAdapter {
         req: CompleteRequest,
     ) -> Result<BoxStream<'static, Result<CompletionChunk, AdapterError>>, AdapterError> {
         let url = format!("{}/v1/messages", base_url(&req));
-        let body = serde_json::to_vec(&build_request(&req)?)?;
+        let mut payload = build_request(&req)?;
+        if payload.max_tokens.is_none(){payload.max_tokens=discover_output_ceiling(&req).await;}
+        let body = serde_json::to_vec(&payload)?;
         let response = reqwest::Client::new()
             .post(&url)
             .header("x-api-key", &req.api_key)
@@ -375,4 +406,19 @@ mod tests {
       let chunks=wire.as_bytes().iter().map(|byte|Ok::<_,AdapterError>(bytes::Bytes::from(vec![*byte]))).collect::<Vec<_>>();let lines=anthropic_sse(futures::stream::iter(chunks)).collect::<Vec<_>>().await;assert_eq!(lines.len(),2);let mut state=EventState::default();let chunk=state.consume(lines[0].as_ref().unwrap().strip_prefix("data: ").unwrap()).unwrap().unwrap();assert_eq!(chunk.text,"中文");state.consume(lines[1].as_ref().unwrap().strip_prefix("data: ").unwrap());assert!(state.stopped);
     }
 
+}
+
+#[cfg(test)]mod automatic_output_tests{
+ use super::*;
+ #[test]fn capability_ceiling_comes_from_the_exact_model_not_context_size(){
+  let v=serde_json::json!({"data":[{"id":"other","max_output_tokens":1},{"id":"deepseek-v4-pro","context_window":1048576,"max_output_tokens":393216}]});
+  assert_eq!(reported_output_ceiling(&v,"deepseek-v4-pro"),Some(393216));assert_eq!(reported_output_ceiling(&v,"missing"),None);
+  assert_eq!(reported_output_ceiling(&serde_json::json!({"max_tokens":64000}),"alias"),Some(64000));
+  assert_eq!(reported_output_ceiling(&serde_json::json!({"context_window":1000000}),"alias"),None);
+ }
+ #[test]fn automatic_requests_have_no_fabricated_default_but_explicit_budgets_are_preserved(){
+  let mut req=CompleteRequest::system_then_user(scribe_shared::AIProvider::Anthropic,"fixture".into(),None,"k".into(),"system","user");
+  let body=serde_json::to_value(build_request(&req).unwrap()).unwrap();assert!(body.get("max_tokens").is_none());
+  req.max_tokens=Some(200);let body=serde_json::to_value(build_request(&req).unwrap()).unwrap();assert_eq!(body["max_tokens"],200);
+ }
 }

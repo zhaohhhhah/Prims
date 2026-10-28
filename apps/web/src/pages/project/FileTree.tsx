@@ -6,6 +6,10 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
 } from '@scribe/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -18,19 +22,22 @@ import {
   FolderOpen,
   FolderPlus,
   Loader2,
+  ListChecks,
   Pencil,
   Trash2,
   Upload,
 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 
 import { api, type ApiError } from '../../lib/api';
 import {uploadBatch} from '../../lib/archive-upload';
+import { packageFolderUpload } from '../../lib/folder-upload';
 import { useAuthStore } from '../../stores/auth';
 import { projectActionsApi } from '../../lib/project-actions';
 import { buildFileTree, type FolderNode, type TreeNode } from '../../lib/file-tree-shape';
+import { FileBatchActions } from './FileBatchActions';
 
 interface FileTreeProps {
   readonly projectId: ProjectId;
@@ -50,10 +57,33 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const [packingFolder, setPackingFolder] = useState(false);
+  useEffect(() => { folderInputRef.current?.setAttribute('webkitdirectory', ''); }, []);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(['']));
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [selecting, setSelecting] = useState(false);
+  const [checkedIds, setCheckedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [batchBusy, setBatchBusy] = useState(false);
+  const selectedFiles = files.filter(file => checkedIds.has(file.id));
+  useEffect(() => { setSelecting(false); setCheckedIds(new Set()); }, [projectId]);
+  useEffect(() => { setCheckedIds(previous => { const valid = new Set<string>(files.map(file => file.id)); const next = new Set([...previous].filter(id => valid.has(id))); return next.size === previous.size ? previous : next; }); }, [files]);
+  function checkFiles(items: readonly ProjectFile[], value: boolean) {
+    setCheckedIds(previous => { const next = new Set(previous); for (const file of items) { if (value) next.add(file.id); else next.delete(file.id); } return next; });
+  }
+  async function refreshFiles() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['files', projectId] }),
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] }),
+      queryClient.invalidateQueries({ queryKey: ['versions', projectId] }),
+      queryClient.invalidateQueries({ queryKey: ['project-directories'] }),
+    ]);
+  }
 
   const userId=useAuthStore(state=>state.user?.id);
+  const members=useQuery({queryKey:['members',projectId],queryFn:()=>api.members.list(projectId),enabled:!!userId});
+  const role=members.data?.find(member=>member.userId===userId)?.role;
+  const canWrite=role==='owner'||role==='editor';
   const directories=useQuery({queryKey:['project-directories',userId,projectId],queryFn:()=>projectActionsApi.listDirectories(projectId),enabled:!!userId});
   const directoryPaths=directories.data?.directories.map(item=>item.path)??[];
   const protectedDirectory=(path:string)=>directoryPaths.some(item=>item===path||item.startsWith(`${path}/`));
@@ -115,6 +145,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function promptNewFile(prefix = '') {
+    if (!canWrite || batchBusy) return;
     const seed = prefix === '' ? 'new.tex' : `${prefix}/new.tex`;
     const name = window.prompt(t('project.newFilePrompt'), seed);
     if (name === null || name.trim() === '') return;
@@ -122,6 +153,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function promptNewFolder(prefix = '') {
+    if (!canWrite || batchBusy) return;
     const seed = prefix === '' ? 'chapters' : `${prefix}/sub`;
     const name = window.prompt(t('project.newFolderPrompt'), seed);
     if (name === null || name.trim() === '') return;
@@ -131,6 +163,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function promptRenameFile(file: ProjectFile) {
+    if (!canWrite || batchBusy) return;
     const next = window.prompt(t('project.renameFilePrompt'), file.path);
     if (next === null || next.trim() === '' || next.trim() === file.path) return;
     renameMutation.mutate(
@@ -144,6 +177,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   async function promptRenameFolder(folder: FolderNode) {
+    if (!canWrite || batchBusy) return;
     if(protectedDirectory(folder.path)){toast.message('此目录暂不支持整体改名，可单独移动其中的文件。');return;}
     const next = window.prompt(t('project.renameFolderPrompt'), folder.path);
     if (next === null || next.trim() === '' || next.trim() === folder.path) return;
@@ -164,6 +198,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   async function confirmDeleteFolder(folder: FolderNode) {
+    if (!canWrite || batchBusy) return;
     if(protectedDirectory(folder.path)){toast.message('此目录暂不支持删除，可单独管理其中的文件。');return;}
     const contained = filesUnder(files, folder.path);
     const ok = window.confirm(
@@ -180,6 +215,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function handleDelete(file: ProjectFile) {
+    if (!canWrite || batchBusy) return;
     if (window.confirm(t('project.deleteFileConfirm', { path: file.path }))) {
       deleteMutation.mutate(file, {
         onSuccess: () => {
@@ -190,7 +226,20 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function handleUploadChange(event:React.ChangeEvent<HTMLInputElement>){
+    if (!canWrite || batchBusy) return;
     const selected=Array.from(event.target.files??[]);event.target.value='';if(selected.length)uploadMutation.mutate(selected);
+  }
+
+  async function handleFolderUploadChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const selected = Array.from(event.target.files ?? []); event.target.value = '';
+    if (!canWrite || busy || !selected.length) return;
+    setPackingFolder(true);
+    try {
+      const { archive, name } = await packageFolderUpload(selected);
+      setExpanded(previous => new Set([...previous, name]));
+      uploadMutation.mutate([archive]);
+    } catch (error) { toast.error(error instanceof Error ? error.message : String(error)); }
+    finally { setPackingFolder(false); }
   }
 
   function toggleFolder(path: string) {
@@ -208,7 +257,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function handleFolderDragOver(e: React.DragEvent<HTMLElement>, folderPath: string) {
-    if (!e.dataTransfer.types.includes(MIME_FILE_DRAG)) return;
+    if (!canWrite || busy || selecting || !e.dataTransfer.types.includes(MIME_FILE_DRAG)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     setDropTarget(folderPath);
@@ -216,6 +265,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
 
   function handleFolderDrop(e: React.DragEvent<HTMLElement>, folderPath: string) {
     e.preventDefault();
+    if (!canWrite || busy || selecting) return;
     setDropTarget(null);
     const fileId = e.dataTransfer.getData(MIME_FILE_DRAG);
     const file = files.find((f) => f.id === fileId);
@@ -259,6 +309,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
                   handleFolderDrop(e, node.path);
                 }}
               >
+                {selecting && <input type="checkbox" className="h-3.5 w-3.5 shrink-0" disabled={busy} aria-label={`选择目录 ${node.path}`} checked={filesUnder(files,node.path).length > 0 && filesUnder(files,node.path).every(file=>checkedIds.has(file.id))} onChange={event=>checkFiles(filesUnder(files,node.path),event.target.checked)} />}
                 <button
                   type="button"
                   className="flex flex-1 items-center gap-1 truncate text-left"
@@ -278,7 +329,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
                 </button>
                 <button
                   type="button"
-                  className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                  className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 disabled:invisible"
+                  disabled={!canWrite || busy}
                   onClick={() => {
                     promptNewFile(node.path);
                   }}
@@ -291,6 +343,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
             </ContextMenuTrigger>
             <ContextMenuContent>
               <ContextMenuItem
+                disabled={!canWrite || busy}
                 onClick={() => {
                   promptNewFile(node.path);
                 }}
@@ -299,6 +352,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
                 {t('project.newFile')}
               </ContextMenuItem>
               <ContextMenuItem
+                disabled={!canWrite || busy}
                 onClick={() => {
                   promptNewFolder(node.path);
                 }}
@@ -308,7 +362,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
               </ContextMenuItem>
               <ContextMenuSeparator />
               <ContextMenuItem
-                disabled={protectedDirectory(node.path)}
+                disabled={!canWrite || busy || protectedDirectory(node.path)}
                 title={protectedDirectory(node.path)?'真实目录暂不支持整体改名':undefined}
                 onClick={() => {
                   void promptRenameFolder(node);
@@ -319,7 +373,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
               </ContextMenuItem>
               <ContextMenuItem
                 destructive
-                disabled={protectedDirectory(node.path)}
+                disabled={!canWrite || busy || protectedDirectory(node.path)}
                 title={protectedDirectory(node.path)?'真实目录暂不支持删除':undefined}
                 onClick={() => {
                   void confirmDeleteFolder(node);
@@ -346,15 +400,17 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
                 isSelected ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/60'
               }`}
               style={indent}
-              draggable
+              draggable={canWrite && !busy && !selecting}
               onDragStart={(e) => {
                 handleFileDragStart(e, node.file);
               }}
             >
+              {selecting && <input type="checkbox" className="h-3.5 w-3.5 shrink-0" disabled={busy} aria-label={`选择文件 ${node.file.path}`} checked={checkedIds.has(node.file.id)} onChange={event=>checkFiles([node.file],event.target.checked)} />}
               <button
                 type="button"
+                disabled={batchBusy}
                 className="flex flex-1 items-center gap-1 truncate text-left"
-                onClick={() => onSelect?.(node.file)}
+                onClick={() => { if (selecting) checkFiles([node.file], !checkedIds.has(node.file.id)); else onSelect?.(node.file); }}
                 onDoubleClick={() => {
                   promptRenameFile(node.file);
                 }}
@@ -369,7 +425,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
               </button>
               <button
                 type="button"
-                className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 disabled:invisible"
+                disabled={!canWrite || busy}
                 onClick={() => {
                   promptRenameFile(node.file);
                 }}
@@ -380,7 +437,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
               </button>
               <button
                 type="button"
-                className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+                className="opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 disabled:invisible"
+                disabled={!canWrite || busy}
                 onClick={() => {
                   handleDelete(node.file);
                 }}
@@ -391,11 +449,12 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
             </div>
           </ContextMenuTrigger>
           <ContextMenuContent>
-            <ContextMenuItem onClick={() => onSelect?.(node.file)}>
+            <ContextMenuItem disabled={batchBusy} onClick={() => onSelect?.(node.file)}>
               <FileText className="h-3.5 w-3.5" aria-hidden="true" />
               {t('project.openFile')}
             </ContextMenuItem>
             <ContextMenuItem
+              disabled={!canWrite || busy}
               onClick={() => {
                 promptRenameFile(node.file);
               }}
@@ -414,6 +473,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
             <ContextMenuSeparator />
             <ContextMenuItem
               destructive
+              disabled={!canWrite || busy}
               onClick={() => {
                 handleDelete(node.file);
               }}
@@ -427,7 +487,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
     );
   };
 
-  const busy = createMutation.isPending || uploadMutation.isPending || renameMutation.isPending;
+  const busy = packingFolder || batchBusy || createMutation.isPending || uploadMutation.isPending || renameMutation.isPending || deleteMutation.isPending;
 
   return (
     <div
@@ -447,6 +507,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
           {t('project.files')}
         </span>
         <div className="flex items-center gap-0.5">
+          <Button variant="ghost" size="icon" className={`h-6 w-6 ${selecting ? 'bg-accent' : ''}`} disabled={busy} aria-label="批量选择文件" title="批量选择文件" aria-pressed={selecting} onClick={()=>{setSelecting(value=>!value);setCheckedIds(new Set());}}><ListChecks className="h-3.5 w-3.5" /></Button>
           <Button
             variant="ghost"
             size="icon"
@@ -456,7 +517,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
             onClick={() => {
               promptNewFile();
             }}
-            disabled={busy}
+            disabled={busy || !canWrite}
           >
             <FilePlus className="h-3 w-3" aria-hidden="true" />
           </Button>
@@ -469,39 +530,38 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
             onClick={() => {
               promptNewFolder();
             }}
-            disabled={busy}
+            disabled={busy || !canWrite}
           >
             <FolderPlus className="h-3 w-3" aria-hidden="true" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            aria-label="上传多个文件或 ZIP"
-            title="上传多个文件或 ZIP（重名会提示，不会覆盖）"
-            onClick={() => uploadInputRef.current?.click()}
-            disabled={busy}
-          >
-            {uploadMutation.isPending ? (
-              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-            ) : (
-              <Upload className="h-3 w-3" aria-hidden="true" />
-            )}
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-xs" aria-label="上传" title="上传" disabled={busy || !canWrite}>
+                {uploadMutation.isPending || packingFolder ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : <Upload className="h-3 w-3" aria-hidden="true" />}
+                上传<ChevronDown className="h-3 w-3" aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={busy || !canWrite} onSelect={() => uploadInputRef.current?.click()}><FilePlus className="h-3.5 w-3.5" />文件或 ZIP 压缩包</DropdownMenuItem>
+              <DropdownMenuItem disabled={busy || !canWrite} onSelect={() => folderInputRef.current?.click()}><FolderOpen className="h-3.5 w-3.5" />文件夹</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <input
             ref={uploadInputRef}
             type="file"
             id="file-tree-upload"
             name="file-tree-upload"
             multiple
-            disabled={busy}
+            disabled={busy || !canWrite}
             accept=".tex,.bib,.cls,.sty,.bst,.tikz,.latex,.md,.txt,.csv,.json,.png,.jpg,.jpeg,.gif,.webp,.svg,.pdf,.eps,.zip"
             className="hidden"
             onChange={handleUploadChange}
             aria-hidden="true"
           />
+          <input ref={folderInputRef} type="file" multiple id="file-tree-folder-upload" name="file-tree-folder-upload" className="hidden" disabled={busy || !canWrite} onChange={event => void handleFolderUploadChange(event)} aria-hidden="true" />
         </div>
       </div>
+      {selecting && <FileBatchActions key={projectId} projectId={projectId} files={files} selected={selectedFiles} directories={directoryPaths} canWrite={canWrite} onSelection={setCheckedIds} onBusy={setBatchBusy} onRefresh={refreshFiles} onClose={()=>{setSelecting(false);setCheckedIds(new Set());}} />}
       {tree.length === 0 ? (
         <p className="text-xs text-muted-foreground">{t('project.noFiles')}</p>
       ) : (

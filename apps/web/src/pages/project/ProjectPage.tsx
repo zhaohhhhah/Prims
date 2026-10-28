@@ -163,6 +163,7 @@ export function ProjectPage() {
   useEffect(() => {
     if (filesQuery.data === undefined) return;
     const valid = new Set(filesQuery.data.map((f) => f.id));
+    setSelectedFileId(previous => previous !== null && !valid.has(previous) ? (openFileIds.find(id => valid.has(id)) ?? null) : previous);
     setOpenFileIds((prev) => {
       const next = prev.filter((id) => valid.has(id));
       return next.length === prev.length ? prev : next;

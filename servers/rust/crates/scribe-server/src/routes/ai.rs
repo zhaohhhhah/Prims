@@ -114,9 +114,10 @@ fn service(state: &AppState) -> ApiResult<AIService> {
 }
 
 #[derive(serde::Deserialize)]#[serde(rename_all="camelCase")]
-struct UsageQuery{#[serde(default="usage_days")]days:u32,#[serde(default="usage_zone")]time_zone:String}
+struct UsageQuery{#[serde(default="usage_days")]days:u32,#[serde(default="usage_zone")]time_zone:String,#[serde(default="usage_resolution")]resolution:String}
+fn usage_resolution()->String{"standard".into()}
 fn usage_days()->u32{7}fn usage_zone()->String{"UTC".into()}
 async fn usage(State(state):State<AppState>,Authenticated(user):Authenticated,axum::extract::Query(query):axum::extract::Query<UsageQuery>)->ApiResult<Json<serde_json::Value>>{
  let pool=state.db().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"database unavailable"))?.pool();
- Ok(Json(crate::services::ai_usage::summary(pool,user.id,query.days,&query.time_zone).await?))
+ Ok(Json(crate::services::ai_usage::summary(pool,user.id,query.days,&query.time_zone,&query.resolution).await?))
 }

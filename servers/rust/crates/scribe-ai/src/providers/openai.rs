@@ -503,3 +503,5 @@ mod tests {
 }
 
 #[cfg(test)]mod trailing_usage_tests{use super::*;use futures::StreamExt;#[tokio::test]async fn usage_after_stop_and_output_limit_is_not_dropped(){for finish in ["stop","length"]{let lines=futures::stream::iter(vec![Ok::<_,AdapterError>(format!("data:{}",serde_json::json!({"choices":[{"delta":{"content":"answer"},"finish_reason":finish}]}))),Ok(format!("data:{}",serde_json::json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}))),Ok("data: [DONE]".into())]);let chunks=parse_sse(lines).collect::<Vec<_>>().await;assert!(chunks.iter().any(|c|c.as_ref().ok().and_then(|c|c.usage.as_ref()).is_some_and(|u|u.total()==120)));assert_eq!(chunks.iter().any(|c|matches!(c,Err(AdapterError::OutputLimit))),finish=="length");}}}
+
+#[cfg(test)]mod automatic_output_tests{use super::*;#[test]fn unspecified_output_limit_is_omitted(){let req=CompleteRequest::system_then_user(AIProvider::Openai,"fixture".into(),None,"k".into(),"system","user");let body=serde_json::to_value(build_request(&req)).unwrap();assert!(body.get("max_tokens").is_none());assert!(body.get("max_completion_tokens").is_none());}}

@@ -13,7 +13,7 @@ import {
 } from '@scribe/ui';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -24,11 +24,11 @@ import {
   type TemplateSelection,
 } from '../../components/TemplateGallery/TemplateGallery';
 import { api, type ZipManifest } from '../../lib/api';
-import {ZIP_MAX_BYTES} from '../../lib/archive-upload';
+import {packageProjectImport} from '../../lib/project-file-import';
 
 interface NewProjectDialogProps {
   readonly open: boolean;
-  readonly initialMode?: 'template' | 'zip';
+  readonly initialMode?: 'template' | 'import';
   readonly onOpenChange: (open: boolean) => void;
 }
 
@@ -42,20 +42,34 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
   // create-project API call stays well-typed; for community
   // selections we send `blank` then seed files after creation.
   const [selection, setSelection] = useState<TemplateSelection>({ kind: 'builtin', id: 'blank' });
-  const [mode,setMode]=useState<'template'|'zip'>(initialMode);
+  const [mode,setMode]=useState<'template'|'import'>(initialMode);
   useEffect(()=>{if(open)setMode(initialMode);},[open,initialMode]);
   const [zipFile,setZipFile]=useState<File|null>(null);
   const [manifest,setManifest]=useState<ZipManifest|null>(null);
   const [mainFile,setMainFile]=useState('');
   const [inspecting,setInspecting]=useState(false);
   const [zipError,setZipError]=useState('');
-  async function chooseZip(file:File|undefined){
-    setZipFile(file??null);setManifest(null);setMainFile('');setZipError('');if(!file)return;
-    if(!file.name.toLowerCase().endsWith('.zip')||file.size>ZIP_MAX_BYTES){setZipError('请选择不超过20MiB的ZIP压缩包');return;}
-    setInspecting(true);
-    try{const result=await api.projects.inspectZip(file);setManifest(result);setMainFile(result.suggestedMainFile??'');if(!form.getValues('name').trim())form.setValue('name',file.name.replace(/\.zip$/i,''));}
-    catch(error){setZipError(error instanceof Error?error.message:'ZIP检查失败');}
-    finally{setInspecting(false);}
+  const inspectionVersion=useRef(0);
+  const lastSelection=useRef<{files:readonly File[];directory:boolean}|undefined>(undefined);
+  const filePicker=useRef<HTMLInputElement>(null);
+  const folderPicker=useRef<HTMLInputElement>(null);
+  const [folderSkipped,setFolderSkipped]=useState(0);
+  function clearImport(){lastSelection.current=undefined;inspectionVersion.current+=1;setZipFile(null);setManifest(null);setMainFile('');setZipError('');setInspecting(false);setFolderSkipped(0);}
+  function changeMode(next:'template'|'import'){clearImport();setMode(next);}
+  async function chooseImport(selected:readonly File[],directory=false){
+    if(!selected.length)return;
+    lastSelection.current={files:selected,directory};
+    const version=++inspectionVersion.current;
+    setZipFile(null);setManifest(null);setMainFile('');setZipError('');setFolderSkipped(0);setInspecting(true);
+    try{
+      const imported=await packageProjectImport(selected,directory);
+      if(version!==inspectionVersion.current)return;
+      const result=await api.projects.inspectZip(imported.archive);
+      if(version!==inspectionVersion.current)return;
+      setZipFile(imported.archive);setManifest(result);setMainFile(result.suggestedMainFile??'');setFolderSkipped(imported.skippedMetadata);
+      if(!form.getValues('name').trim())form.setValue('name',imported.name);
+    }catch(error){if(version===inspectionVersion.current)setZipError(error instanceof Error?error.message:'导入检查失败');}
+    finally{if(version===inspectionVersion.current)setInspecting(false);}
   }
 
 
@@ -66,8 +80,8 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
 
   const mutation = useMutation<Project, Error, CreateProjectInput>({
     mutationFn: async (input) => {
-      if(mode==='zip'){
-        if(!zipFile||!manifest||!mainFile)throw new Error('请先选择ZIP和主文件');
+      if(mode!=='template'){
+        if(!zipFile||!manifest||!mainFile)throw new Error('请先选择导入文件和主文件');
         return api.projects.importZip(input,zipFile,mainFile);
       }
 
@@ -103,7 +117,7 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
       await queryClient.invalidateQueries({ queryKey: ['projects'] });
       onOpenChange(false);
       form.reset();
-      setSelection({ kind: 'builtin', id: 'blank' });setZipFile(null);setManifest(null);setMainFile('');setZipError('');setMode('template');
+      setSelection({ kind: 'builtin', id: 'blank' });clearImport();setMode('template');
       void navigate(`/project/${project.id}`);
     },
     onError: (error) => {
@@ -115,7 +129,7 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!next) form.reset();
+        if (!next) {form.reset();clearImport();}
         onOpenChange(next);
       }}
     >
@@ -151,17 +165,21 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
             />
           </div>
           <div className="flex gap-2">
-            <Button type="button" variant={mode==='template'?'default':'outline'} disabled={mutation.isPending||inspecting} onClick={()=>setMode('template')}>使用模板</Button>
-            <Button type="button" variant={mode==='zip'?'default':'outline'} disabled={mutation.isPending||inspecting} onClick={()=>setMode('zip')}>从 ZIP 创建</Button>
+            <Button type="button" variant={mode==='template'?'default':'outline'} disabled={mutation.isPending||inspecting} onClick={()=>changeMode('template')}>使用模板</Button>
+            <Button type="button" variant={mode==='import'?'default':'outline'} disabled={mutation.isPending||inspecting} onClick={()=>changeMode('import')}>导入项目</Button>
           </div>
-          {mode==='zip'?<div className="space-y-2">
-            <Label htmlFor="new-project-zip">ZIP压缩包</Label>
-            <Input id="new-project-zip" type="file" accept=".zip,application/zip" disabled={mutation.isPending||inspecting} onChange={event=>{void chooseZip(event.target.files?.[0]);}}/>
-            <p className="text-xs text-muted-foreground">保留目录和文件原始内容；压缩包≤20MiB，最多256条目，单文件≤8MiB，展开后合计≤32MiB。</p>
-            {inspecting&&<p className="text-sm">正在检查压缩包…</p>}
-            {zipError&&<p role="alert" className="text-sm text-destructive">{zipError}</p>}
+          {mode==='import'?<div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" disabled={mutation.isPending||inspecting} onClick={()=>filePicker.current?.click()}>选择文件或 ZIP</Button>
+              <Button type="button" variant="outline" disabled={mutation.isPending||inspecting} onClick={()=>folderPicker.current?.click()}>选择文件夹</Button>
+            </div>
+            <input ref={filePicker} className="hidden" type="file" multiple disabled={mutation.isPending||inspecting} onChange={event=>{void chooseImport(Array.from(event.target.files??[]));event.target.value='';}}/>
+            <input ref={folderPicker} className="hidden" type="file" multiple {...{webkitdirectory:'',directory:''}} disabled={mutation.isPending||inspecting} onChange={event=>{void chooseImport(Array.from(event.target.files??[]),true);event.target.value='';}}/>
+            <p className="text-xs text-muted-foreground">自动识别 ZIP；也可导入单个或多个文件、文件夹。ZIP 请单独选择。保留目录和隐藏文件，忽略系统元数据和 .git。最多256个文件，单文件≤8MiB，合计≤32MiB，打包后≤20MiB。文件夹选择需浏览器支持，空目录不会导入。</p>
+            {inspecting&&<p role="status" className="text-sm">正在检查导入内容…</p>}
+            {zipError&&<div><p role="alert" className="text-sm text-destructive">{zipError}</p>{lastSelection.current&&<Button type="button" variant="outline" disabled={inspecting||mutation.isPending} onClick={()=>{const selected=lastSelection.current;if(selected)void chooseImport(selected.files,selected.directory);}}>重试检查</Button>}</div>}
             {manifest&&<>
-              <p className="text-sm">已检查 {manifest.files.length} 个文件、{manifest.directories.length} 个目录{manifest.skippedMetadata?`，忽略${manifest.skippedMetadata}个系统元数据条目`:''}。</p>
+              <p className="text-sm">已检查 {manifest.files.length} 个文件、{manifest.directories.length} 个目录{(manifest.skippedMetadata+folderSkipped)?`，忽略${manifest.skippedMetadata+folderSkipped}个系统元数据或 .git 条目`:''}。</p>
               <Label htmlFor="zip-main-file">LaTeX主文件</Label>
               <select id="zip-main-file" className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm" value={mainFile} onChange={event=>setMainFile(event.target.value)} disabled={mutation.isPending}>
                 <option value="">请选择主文件</option>{manifest.mainCandidates.map(path=><option key={path} value={path}>{path}</option>)}
@@ -193,12 +211,12 @@ export function NewProjectDialog({ open, onOpenChange, initialMode = 'template' 
               type="button"
               variant="ghost"
               onClick={() => {
-                onOpenChange(false);
+                clearImport();form.reset();onOpenChange(false);
               }}
             >
               {t('common.cancel')}
             </Button>
-            <Button type="submit" disabled={mutation.isPending||inspecting||(mode==='zip'&&(!manifest||!mainFile))}>
+            <Button type="submit" disabled={mutation.isPending||inspecting||(mode!=='template'&&(!manifest||!mainFile))}>
               {mutation.isPending && (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
               )}

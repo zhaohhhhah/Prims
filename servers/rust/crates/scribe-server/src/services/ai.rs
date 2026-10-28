@@ -195,7 +195,7 @@ impl AIService {
         // features keep the conversational defaults.
         let (temperature, max_tokens) = match input.feature {
             AIFeature::RecognizeEquation => (0.0, Some(512)),
-            _ if inline => (0.3, Some(4096)),
+            _ if inline => (0.3, None),
             _ => (0.4, Some(2048)),
         };
 

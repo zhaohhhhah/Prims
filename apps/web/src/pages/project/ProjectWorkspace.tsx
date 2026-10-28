@@ -70,6 +70,7 @@ import { previewPanelLayout } from '../../lib/panel-motion';
 import { lookup, lookupReverse, useSyncTeX } from '../../hooks/useSyncTeX';
 import { useYjsDoc } from '../../hooks/useYjsDoc';
 import { api, ApiError } from '../../lib/api';
+import { registerFileOperationGuard } from '../../lib/file-operation-guard';
 import { findBibKeyInBbl, findEntryLineInBib } from '../../lib/bblToBib';
 import { log } from '../../lib/debug';
 import { API_URL, getAccessTokenSync } from '../../lib/supabase';
@@ -281,6 +282,7 @@ export function ProjectWorkspace({
     );
     return me?.role ?? null;
   }, [membersQuery.data, authUser?.id]);
+  const [fileBatchBusy, setFileBatchBusy] = useState(false);
   const editorReadOnly = myRole === 'viewer' || myRole === 'commenter';
   useEffect(() => {
     if (myRole !== null) {
@@ -648,6 +650,7 @@ export function ProjectWorkspace({
 
   const handleChange = useCallback(
     (next: string) => {
+      if (fileBatchBusy) return;
       // Loud, verbose log so anyone debugging "edits don't persist"
       // can see exactly what the editor reported to us per keystroke.
       log.editor('onChange', {
@@ -704,10 +707,11 @@ export function ProjectWorkspace({
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedFile, writeMutation, liveCompile, liveCompileDelayMs, triggerLint],
+    [selectedFile, writeMutation, liveCompile, liveCompileDelayMs, triggerLint, fileBatchBusy],
   );
 
   const handleSave = useCallback(() => {
+    if (fileBatchBusy) return;
     if (selectedFile === null) return;
     if (saveTimerRef.current !== null) clearTimeout(saveTimerRef.current);
     // Ctrl+S: always read the editor view directly. `editorContent`
@@ -727,9 +731,10 @@ export function ProjectWorkspace({
         },
       },
     );
-  }, [editorContent, selectedFile, writeMutation, t]);
+  }, [editorContent, selectedFile, writeMutation, t, fileBatchBusy]);
 
   const handleCompile = useCallback(async () => {
+    if (fileBatchBusy) return;
     if (selectedFile !== null && !editorReadOnly) {
       // Owners + editors only: force-save before compile so the worker
       // sees the latest content. Viewers/commenters skip this step
@@ -770,6 +775,7 @@ export function ProjectWorkspace({
     await queryClient.invalidateQueries({ queryKey: ['compiles', projectId] });
   }, [
     compileSession,
+    fileBatchBusy,
     editorContent,
     editorReadOnly,
     project.mainFile,
@@ -1200,6 +1206,21 @@ export function ProjectWorkspace({
     await api.files.writeContent(projectId,selectedFile.id,live);queryClient.setQueryData(['file-content',projectId,selectedFile.id],{content:live});
   },[editorReadOnly,selectedFile,projectId,queryClient,writeMutation.isPending]);
 
+  useEffect(() => {
+    if (assistantOnly) return;
+    return registerFileOperationGuard(projectId, async write => {
+      if (fileBatchBusy) throw new Error('文件操作进行中，请稍后再试');
+      if (compileSession.compiling) throw new Error('编译进行中，请完成后再操作文件');
+      if (write && myRole !== 'owner' && myRole !== 'editor') throw new Error('当前项目为只读');
+      setFileBatchBusy(true);
+      if (liveCompileTimerRef.current !== null) { clearTimeout(liveCompileTimerRef.current); liveCompileTimerRef.current = null; }
+      try {
+        if (!editorReadOnly) await flushAssistantEditor();
+        return () => setFileBatchBusy(false);
+      } catch (error) { setFileBatchBusy(false); throw error; }
+    });
+  }, [projectId, assistantOnly, myRole, editorReadOnly, fileBatchBusy, flushAssistantEditor, compileSession.compiling]);
+
   const commandList = useMemo<CommandItem[]>(() => {
     const cmds: CommandItem[] = [
       {
@@ -1541,7 +1562,7 @@ export function ProjectWorkspace({
             autocomplete={autocomplete}
             hover={hoverSources}
             collab={collab}
-            readOnly={editorReadOnly}
+            readOnly={editorReadOnly || fileBatchBusy}
             logEntries={logEntries.map((e) => ({
               level: e.level,
               message: e.message,
@@ -1660,7 +1681,7 @@ export function ProjectWorkspace({
               {renderedRightPanel === 'history' ? (
                 <VersionHistory
                   projectId={projectId}
-                  readOnly={editorReadOnly}
+                  readOnly={editorReadOnly || fileBatchBusy}
                   beforeReview={flushAssistantEditor}
                   onClose={() => {
                     closeRightPanel();
@@ -1723,7 +1744,7 @@ export function ProjectWorkspace({
       {assistantRightSlot}
       </div>
       {assistantOnly&&<div ref={setAssistantTabHost} className="min-h-0 flex-1" data-testid="assistant-tab-host"/>}
-      <InlineAssistant standalone={assistantOnly} fileId={selectedFile?.id} onDetachedChange={setAssistantAway} controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly} layout={shownAssistantLayout} effectiveMode={assistantMode} onLayoutChange={assistantOnly?()=>{}:updateAssistantLayout} viewport={assistantViewport} rightHost={assistantOnly?assistantTabHost:assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} onFollowFile={path=>{if(!path){onClearFile?.();return;}const next=files.find(file=>file.path===path);if(next)onSelectFile(next);}} selectionMatches={(from,to,text)=>{const content=editorRef.current?.getContent();return content!==undefined&&content.slice(from,to)===text;}} />
+      <InlineAssistant standalone={assistantOnly} fileId={selectedFile?.id} onDetachedChange={setAssistantAway} controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly || fileBatchBusy} layout={shownAssistantLayout} effectiveMode={assistantMode} onLayoutChange={assistantOnly?()=>{}:updateAssistantLayout} viewport={assistantViewport} rightHost={assistantOnly?assistantTabHost:assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} onFollowFile={path=>{if(!path){onClearFile?.();return;}const next=files.find(file=>file.path===path);if(next)onSelectFile(next);}} selectionMatches={(from,to,text)=>{const content=editorRef.current?.getContent();return content!==undefined&&content.slice(from,to)===text;}} />
       <CommandPalette
         open={cmdPaletteOpen}
         onOpenChange={setCmdPaletteOpen}
