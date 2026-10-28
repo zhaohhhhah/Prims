@@ -344,6 +344,8 @@ export function ProjectPage() {
         {isMobileLayout || assistantOnly ? null : (
           <>
             <Panel
+              id="project-sidebar"
+              order={1}
               ref={sidebarRef}
               defaultSize={18}
               minSize={12}
@@ -365,7 +367,7 @@ export function ProjectPage() {
             <Splitter orientation="vertical" />
           </>
         )}
-        <Panel>
+        <Panel id="project-workspace" order={2}>
           <ProjectWorkspace
             assistantOnly={assistantOnly}
             project={project}

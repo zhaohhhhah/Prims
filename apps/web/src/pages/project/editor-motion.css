@@ -226,3 +226,10 @@ body:has(.prims-editor-workspace) [data-prims-editor-chrome][data-state="closed"
 @media (prefers-reduced-motion:reduce) {.prims-editor-assistant-host[data-dock][data-state] {animation:none!important;}}
 
 .prims-editor-assistant-host[data-dock][data-state] {overflow:hidden;}
+
+/* Only the conversation viewport may scroll. `hidden` also permits ancestor
+   scrolling during focus/scrollIntoView and can shift the fixed chrome away. */
+.prims-assistant-panel[data-layout] { overflow: clip; }
+.prims-assistant-panel [data-testid="assistant-scroll-viewport"] {
+  overscroll-behavior: contain;
+}

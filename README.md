@@ -313,3 +313,7 @@ to enable the native engines. Existing projects retain their saved settings.
 The assistant can propose compiler and main-document changes for explicit review.
 The compiler workers use read-only TeX resources, no network, no shell escape,
 and bounded per-job resources; API credentials remain outside each worker.
+
+The assistant header selects conversations with a compact dropdown. Work status
+appears within the conversation, and opening a conversation shows the latest
+messages while manual history reading keeps its scroll position.
