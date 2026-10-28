@@ -343,7 +343,7 @@ impl NativeCalls{
 fn native_calls_output(calls:&[NativeToolCall])->ApiResult<Value>{
  if calls.is_empty()||calls.len()>MAX_TOOL_CALLS{return Err(output_format_error());}let mut normalized=vec![];
  for call in calls{
-  let allowed:&[&str]=match call.name.as_str(){"list_files"|"compact_context"|"list_skills"|"read_project_memory"=>&[],"search_project"=>&["query"],"read_file"=>&["path","startLine","endLine"],"propose_edit"=>&["filePath","before","after"],"update_plan"=>&["explanation","plan"],"web_search"=>&["query","count"],"read_skill"=>&["id"],"install_skill"=>&["content","url"],"run_project_check"=>&["task","path"],name if super::agent_history::is_history_tool(name)=>super::agent_history::allowed_arguments(name).unwrap(),_=>return Err(ApiError::validation("模型请求了未授权工具，只允许列目录、查找和读取项目文件"))};
+  let allowed:&[&str]=match call.name.as_str(){"list_files"|"compact_context"|"list_skills"|"read_project_memory"=>&[],"search_project"=>&["query"],"read_file"=>&["path","startLine","endLine"],"propose_edit"=>&["filePath","before","after"],"update_plan"=>&["explanation","plan"],"web_search"=>&["query","count"],"read_skill"=>&["id"],"install_skill"=>&["content","url"],"run_project_check"=>&["task","path","fontName"],name if super::agent_history::is_history_tool(name)=>super::agent_history::allowed_arguments(name).unwrap(),_=>return Err(ApiError::validation("模型请求了未授权工具，只允许列目录、查找和读取项目文件"))};
   let args:Value=serde_json::from_str(if call.arguments.trim().is_empty()&&matches!(call.name.as_str(),"list_files"|"list_versions"|"compact_context"|"list_skills"|"read_project_memory"){"{}"}else{&call.arguments}).map_err(|_|ApiError::validation("原生工具参数未完整生成，本轮未执行"))?;
   let args=args.as_object().filter(|args|args.keys().all(|key|allowed.contains(&key.as_str()))).ok_or_else(||ApiError::validation("原生工具参数必须是白名单字段组成的完整对象"))?;
   let mut value=Value::Object(args.clone());value["tool"]=json!(call.name);normalized.push(value);
@@ -376,7 +376,7 @@ fn parse_read_tool_sequence(raw:&str)->ApiResult<Option<Value>>{
    let mut call=json!({"tool":name});
    match name{
     name if super::agent_history::is_history_tool(name)=>{call=super::agent_history::normalize_call(&value)?;},
-    "list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"=>{super::agent_library::validate_tool(&value)?;for key in ["id","task","path","content","url"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
+    "list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"=>{super::agent_library::validate_tool(&value)?;for key in ["id","task","path","fontName","content","url"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "web_search"=>{for key in ["query","count"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "update_plan"=>{for key in ["explanation","plan"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "propose_edit"=>{for key in ["filePath","before","after"]{call[key]=item.get(key).filter(|value|value.is_string()).cloned().ok_or_else(||ApiError::validation("propose_edit需要完整filePath、before、after字符串"))?;}},
@@ -428,7 +428,7 @@ fn normalize_model_value_without_status(value:Value,trusted:bool)->ApiResult<Val
   let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"list_versions"|"read_version_file"|"compare_versions")).ok_or_else(output_format_error)?;
   if super::agent_history::is_history_tool(name){return super::agent_history::normalize_call(&value);}
   if matches!(name,"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"){super::agent_library::validate_tool(&value)?;}
-  let mut output=json!({"tool":name});for key in ["id","task","path","content","url","query","startLine","endLine","filePath","before","after","explanation","plan","count"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
+  let mut output=json!({"tool":name});for key in ["id","task","path","fontName","content","url","query","startLine","endLine","filePath","before","after","explanation","plan","count"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
   if name=="read_file"{let path=output.get("path").and_then(Value::as_str).ok_or_else(output_format_error)?;super::project_context::validate_path(path)?;for key in ["startLine","endLine"]{if output.get(key).is_some_and(|value|!value.is_u64()){return Err(output_format_error());}}}
   if name=="search_project"&&!output.get("query").and_then(Value::as_str).is_some_and(|query|!query.trim().is_empty()&&query.chars().count()<=200){return Err(output_format_error());}
   return Ok(output);
@@ -671,3 +671,5 @@ fn validate_project_edit_targets(output:&Value,context:Option<&ProjectContext>)-
   let calls=vec![json!({"tool":"list_versions"}),json!({"tool":"list_versions"}),json!({"tool":"read_version_file","versionId":Uuid::new_v4(),"path":"main.tex"})];let mut completed=std::collections::HashMap::new();assert_eq!(count_new_read_calls(&calls,&completed),2);completed.insert(calls[0].to_string(),json!({"versions":[]}));assert_eq!(count_new_read_calls(&calls,&completed),1);
  }
 }
+
+#[cfg(test)]mod font_lookup_transport_tests{use super::*;#[test]fn named_fonts_pass_both_protocols_without_granting_commands(){let call=json!({"tool":"run_project_check","task":"font_check","fontName":"FandolSong-Regular"});assert_eq!(parse_model_output(&call.to_string()).unwrap(),call);assert!(parse_read_tool_sequence(&json!([call.clone()]).to_string()).unwrap().is_some());let native=NativeToolCall{id:"font-1".into(),name:"run_project_check".into(),arguments:json!({"task":"font_check","fontName":"FandolSong-Regular"}).to_string()};assert!(native_calls_output(&[native]).is_ok());for bad in [json!({"tool":"run_project_check","task":"font_check","fontName":"/etc/passwd"}),json!({"tool":"run_project_check","task":"font_check","fontName":"Arial","command":"apt"})]{assert!(parse_model_output(&bad.to_string()).is_err());}}}

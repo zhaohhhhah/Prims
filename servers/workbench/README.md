@@ -104,9 +104,16 @@ remains untrusted. Worker cancellation and total timeout remove the disposable
 container; closing a log stream does not change the app's existing queue-job
 semantics.
 
-The dedicated 19342 instance advertises and accepts only `latex_compile`;
+The dedicated 19342 instance advertises `latex_compile`, `font_check` and `list_fonts`;
 19340 keeps the original diagnostic capabilities. Project-aware AI receives
 the saved compiler, and its legacy Tectonic-only check refuses native-engine
 projects rather than reporting an incompatible engine as a source error.
 TeX resource reads use `openin_any=r` so Lua font loading can read its fixed
 readonly TeX data; writes stay `openout_any=p`. No host/private data is mounted.
+
+Font checks accept `fontName` to query an exact compilation font family,
+PostScript name or TeX font filename, without requiring a project font upload.
+Fontconfig matches are checked exactly and TeX font files are resolved through
+the same readonly TeX resources as native compilation. A fallback font is never
+reported as an exact match. Project TTF/OTF/TTC checks continue to use `path`;
+font names cannot supply paths, commands, environment variables or mounts.

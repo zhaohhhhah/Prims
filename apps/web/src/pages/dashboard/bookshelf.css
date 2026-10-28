@@ -45,3 +45,16 @@
 [data-palette="classic-dark"] .prims-book-cover.cover-1{--cover:#454545}
 [data-palette="classic-dark"] .prims-book-cover.cover-2{--cover:#303030}
 [data-palette="classic-dark"] .prims-book-cover.cover-3{--cover:#3e3e3e}
+
+/* Keep the bookshelf inside the viewport; the book list owns its scrolling. */
+@media(min-width:561px){
+ .prims-bookshelf-dashboard{grid-template-rows:minmax(0,1fr);min-height:0;overflow:hidden}
+ .prims-project-shelf,.prims-project-reader{min-height:0}
+ .prims-project-shelf>header,.prims-shelf-search{flex-shrink:0}
+ .prims-shelf-scroll{flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:stable}
+}
+.prims-project-actions{position:absolute;top:7px;right:6px;z-index:30;display:grid;place-items:center;width:28px;height:28px;border:1px solid hsl(var(--border)/.7);border-radius:7px;background:hsl(var(--background)/.88);color:hsl(var(--foreground));box-shadow:0 1px 4px #00000012;transition:background 140ms ease}
+.prims-project-actions:hover{background:hsl(var(--accent))}
+.prims-project-actions:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+.prims-cover-number{max-width:calc(100% - 28px)}
+@media(prefers-reduced-motion:reduce){.prims-project-actions{transition:none}}

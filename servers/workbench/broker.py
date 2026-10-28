@@ -122,7 +122,7 @@ def execute_job(job, raw, run):
         except (ValueError, TypeError):
             return failure('Workbench returned an invalid result', started)
         allowed = {'ok', 'exitCode', 'command', 'output', 'truncated', 'timedOut', 'cancelled',
-                   'durationMs', 'fonts', 'fontScope'}
+                   'durationMs', 'fonts', 'fontScope', 'fontName', 'available', 'fontMatches'}
         if job['task']=='latex_compile':allowed={'ok','exitCode','output','truncated','timedOut','cancelled','durationMs','artifacts'}
         if not isinstance(result, dict) or set(result) - allowed or not isinstance(result.get('output'), str):
             return failure('Workbench returned an invalid result', started)
@@ -186,7 +186,7 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, subprocess.TimeoutExpired):
             healthy = False
         self.respond(200 if healthy else 503, {'ok': healthy, 'version': VERSION,
-            'capabilities': (([] if COMPILE_ONLY else ['latex_check', 'font_check', 'list_fonts'])+(['latex_compile'] if TEXLIVE else [])) if healthy else [],
+            'capabilities': ((['font_check','list_fonts','latex_compile'] if TEXLIVE else []) if COMPILE_ONLY else ['latex_check','font_check','list_fonts']) if healthy else [],
             'maxConcurrentJobs': 2, 'snapshotMaxBytes': 32 * 1024 * 1024,
             'commandTimeoutSeconds': 45, 'jobTimeoutSeconds': 90, 'maxOutputBytes': 65536,
             'compileJobTimeoutSeconds':180,'compileSnapshotMaxBytes':32*1024*1024,'compileArtifactTotalMaxBytes':32*1024*1024})
@@ -219,8 +219,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Incomplete request')
             job = json.loads(raw)
             validate_job(job)
-            if COMPILE_ONLY and job['task'] != 'latex_compile':
-                raise ValueError('Dedicated compiler only accepts latex_compile')
+            if COMPILE_ONLY and job['task'] not in ('latex_compile','font_check','list_fonts'):
+                raise ValueError('Native compile service only accepts compile and font diagnostics')
         except (ValueError, TypeError, KeyError, OSError, RecursionError):
             if acquired:
                 SLOTS.release()

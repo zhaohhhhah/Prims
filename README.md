@@ -317,3 +317,8 @@ and bounded per-job resources; API credentials remain outside each worker.
 The assistant header selects conversations with a compact dropdown. Work status
 appears within the conversation, and opening a conversation shows the latest
 messages while manual history reading keeps its scroll position.
+
+The bookshelf scrolls independently of the project preview and provides owner-only
+rename and confirmed-delete actions. The assistant can check an exact installed
+font name in the compilation environment without requiring a project font upload.
+Native compiler workers reuse a persistent Fontconfig cache.

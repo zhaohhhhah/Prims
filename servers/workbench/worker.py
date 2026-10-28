@@ -32,8 +32,67 @@ def safe_path(value):
     return value
 
 
+def validate_font_name(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 120:
+        raise ValueError('Font name must contain 1-120 characters')
+    value = value.strip()
+    if value.startswith('-') or any(c in value for c in '/\\:') or any(ord(c)<32 or ord(c)==127 for c in value):
+        raise ValueError('Font name cannot contain paths, options or control characters')
+    return value
+
+
+def font_records(text):
+    records=[]
+    for line in text.splitlines():
+        fields=line.split('\t')
+        if len(fields)!=3:continue
+        family,postscript,path=fields
+        records.append({'family':family[:300],'postscriptName':postscript[:300], 'fileName':Path(path).name[:256]})
+    return records
+
+
+def matching_font_records(records, name):
+    key=name.casefold(); result=[];seen=set()
+    for record in records:
+        names=[v.strip().casefold() for field in ('family','postscriptName') for v in record[field].split(',')]
+        file=record['fileName']
+        if key not in names and key not in (file.casefold(),Path(file).stem.casefold()):continue
+        identity=(record['family'],record['postscriptName'],file)
+        if identity not in seen:seen.add(identity);result.append(record)
+        if len(result)>=20:break
+    return result
+
+
+def named_font_check(name, deadline, env):
+    name=validate_font_name(name);records=[];truncated=False;timed_out=False;failed=False
+    escaped=''.join('\\'+c if c in '\\-,:=' else c for c in name)
+    fmt='%{family}\t%{postscriptname}\t%{file}\n'
+    for field in ('family','postscriptname'):
+        code,text,cut,timeout=run_command(['/usr/bin/fc-list','--format',fmt,':'+field+'='+escaped],deadline,env)
+        records.extend(font_records(text));truncated|=cut;timed_out|=timeout;failed|=code!=0
+    matches=matching_font_records(records,name)
+    # TeX's font-file database is part of the actual native compile environment;
+    # these files need not be registered as OS font families for fontspec/xeCJK.
+    kpse=Path('/usr/local/texlive/2025/bin/x86_64-linux/kpsewhich')
+    if not matches and kpse.is_file() and time.monotonic()<deadline:
+        candidates=[name] if name.lower().endswith(('.otf','.ttf','.ttc')) else [name+'.otf',name+'.ttf',name+'.ttc']
+        for candidate in candidates:
+            code,text,cut,timeout=run_command([str(kpse),candidate],deadline,env);truncated|=cut;timed_out|=timeout
+            if code!=0:continue
+            for value in text.splitlines()[:4]:
+                path=Path(value)
+                if not path.is_absolute() or not path.resolve().is_relative_to(Path('/usr/local/texlive')) or not path.is_file():continue
+                scan_code,scan_text,scan_cut,scan_timeout=run_command(['/usr/bin/fc-scan','--format',fmt,str(path)],deadline,env)
+                truncated|=scan_cut;timed_out|=scan_timeout
+                if scan_code==0:matches.extend(matching_font_records(font_records(scan_text),name))
+            if matches:break
+    available=True if matches else None if failed or timed_out or truncated else False
+    output=('Available in the editor compilation environment: ' if available else 'Compilation font lookup was incomplete: ' if available is None else 'No exact font match in the editor compilation environment: ')+name
+    return {'ok':not failed and not timed_out,'exitCode':0 if not failed and not timed_out else 1,'output':output,'fonts':[m['family']+'\t'+m['postscriptName'] for m in matches[:20]],'fontName':name,'available':available,'fontMatches':matches[:20],'fontScope':'compilation','truncated':truncated,'timedOut':timed_out,'cancelled':False}
+
+
 def validate_job(job):
-    if not isinstance(job, dict) or set(job) - {'jobId', 'task', 'path', 'files', 'engine'}:
+    if not isinstance(job, dict) or set(job) - {'jobId', 'task', 'path', 'files', 'engine', 'fontName'}:
         raise ValueError('Invalid job fields')
     import uuid
     if not isinstance(job.get('jobId'), str) or str(uuid.UUID(job['jobId'])) != job['jobId']:
@@ -45,6 +104,10 @@ def validate_job(job):
             raise ValueError('Unsupported compile engine')
     elif 'engine' in job:
         raise ValueError('Engine is only accepted for compile jobs')
+    if 'fontName' in job:
+        validate_font_name(job['fontName'])
+        if job['task'] != 'font_check' or job.get('path') is not None or job.get('files'):
+            raise ValueError('Named font checks cannot select paths or project snapshots')
     files = job.get('files', [])
     if not isinstance(files, list) or len(files) > 256:
         raise ValueError('Too many files')
@@ -154,6 +217,8 @@ def execute(job):
            'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'TECTONIC_CACHE_DIR': '/cache',
            'XDG_CACHE_HOME': '/cache', 'FONTCONFIG_FILE': config, 'FONTCONFIG_PATH': '/etc/fonts'}
     env.update(TEXMFVAR='/tmp/texmf-var',TEXMFCONFIG='/tmp/texmf-config',TEXMFCACHE='/texmf-cache:/usr/local/texlive/2025/texmf-var:/tmp/texmf-var',openin_any='r',openout_any='p')
+    if job['task']=='font_check' and job.get('fontName') is not None:
+        result=named_font_check(job['fontName'],started+45,env);result['durationMs']=round((time.monotonic()-started)*1000);return result
     if job['task']=='latex_compile':
         argv=['/usr/local/bin/scribe-tex-runner',job['engine'],job['path']]
         code,output,truncated,timed_out=run_command(argv,started+165,env)
@@ -195,7 +260,7 @@ def execute(job):
         commands = [['/usr/bin/fc-list', '--format', '%{family}\t%{style}\n']]
     result = {'ok': True, 'exitCode': 0, 'command': commands[0] if commands else [],
               'output': '', 'truncated': False, 'timedOut': False, 'cancelled': False,
-              'durationMs': 0, 'fontScope': 'project-job-only'}
+              'durationMs': 0, 'fontScope': 'compilation' if task == 'list_fonts' else 'project-font-file'}
     fonts = []
     for index, argv in enumerate(commands):
         code, output, truncated, timed_out = run_command(argv, deadline, env)
@@ -216,7 +281,7 @@ def execute(job):
         if timed_out:
             break
     if task == 'font_check' and not commands:
-        result['output'] = 'No TTF/OTF/TTC fonts in this project snapshot. Upload a font file to the project, then use fontspec with Path=...; no system fonts were installed.'
+        result['output'] = 'No project font files were supplied. Check an existing compilation font with fontName, or use list_fonts; project font uploads are optional.'
     if task in ('font_check', 'list_fonts'):
         result['fonts'] = fonts
     result['durationMs'] = round((time.monotonic() - started) * 1000)

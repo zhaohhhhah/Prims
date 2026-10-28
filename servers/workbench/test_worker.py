@@ -74,3 +74,33 @@ class BibliographyErrorTests(unittest.TestCase):
             self.assertTrue(worker.bibliography_failed(log))
         for log in ["Warning--I didn't find a database entry for ref1", "INFO - ERRORS: 0", "INFO - WARNINGS: 1"]:
             self.assertFalse(worker.bibliography_failed(log))
+
+class CompilationFontLookup(unittest.TestCase):
+    def test_named_queries_reject_paths_commands_and_snapshot(self):
+        q={'jobId':str(uuid.uuid4()),'task':'font_check','fontName':'FandolSong-Regular','files':[]}
+        self.assertEqual(validate_job(q),[])
+        for name in ('','../fonts','/etc/passwd','C:/font','-help','Arial\nOther'):
+            with self.assertRaises(ValueError):validate_job({**q,'fontName':name})
+        for change in ({'path':'font.ttf'},{'task':'latex_check'},{'task':'list_fonts'},{'files':[{'path':'a.ttf','contentBase64':''}]},{'command':'fc-cache'}):
+            with self.assertRaises(ValueError):validate_job({**q,**change})
+    def test_exact_family_postscript_and_filename_matching(self):
+        rows=worker.font_records('FandolSong\tFandolSong-Regular\t/readonly/FandolSong-Regular.otf\nDejaVu Sans\tDejaVuSans\t/fallback.ttf\n')
+        for name in ('FandolSong','fandolsong-regular','FandolSong-Regular.otf'):self.assertEqual(len(worker.matching_font_records(rows,name)),1)
+        self.assertEqual(worker.matching_font_records(rows,'not-installed'),[])
+    def test_fontconfig_match_needs_no_tex_probe(self):
+        with patch('worker.run_command',return_value=(0,'Arial\tArialMT\t/readonly/Arial.ttf\n',False,False)) as run:
+            result=worker.named_font_check('Arial',time.monotonic()+5,{})
+        self.assertTrue(result['available']);self.assertEqual(len(result['fontMatches']),1);self.assertEqual(run.call_count,2)
+        self.assertTrue(all(c.args[0][0]=='/usr/bin/fc-list' for c in run.call_args_list));self.assertNotIn('/readonly',result['output'])
+    def test_tex_font_files_work_without_os_registration(self):
+        path='/usr/local/texlive/2025/texmf-dist/fonts/opentype/public/fandol/FandolSong-Regular.otf'
+        with patch('worker.Path.is_file',return_value=True),patch('worker.run_command',side_effect=[(0,'',False,False),(0,'',False,False),(0,path+'\n',False,False),(0,'FandolSong\tFandolSong-Regular\t'+path+'\n',False,False)]):
+            result=worker.named_font_check('FandolSong-Regular',time.monotonic()+5,{})
+        self.assertTrue(result['available']);self.assertEqual(result['fontMatches'][0]['fileName'],'FandolSong-Regular.otf')
+    def test_missing_and_truncated_queries_do_not_claim_fallback_fonts(self):
+        with patch('worker.Path.is_file',return_value=False),patch('worker.run_command',return_value=(0,'DejaVu Sans\tDejaVuSans\t/fallback.ttf\n',False,False)):
+            result=worker.named_font_check('missing-font',time.monotonic()+5,{})
+        self.assertFalse(result['available']);self.assertTrue(result['ok'])
+        with patch('worker.Path.is_file',return_value=False),patch('worker.run_command',return_value=(0,'',True,False)):
+            result=worker.named_font_check('missing-font',time.monotonic()+5,{})
+        self.assertIsNone(result['available']);self.assertTrue(result['truncated'])
