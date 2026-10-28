@@ -2754,6 +2754,7 @@ name = "scribe-compile"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "chrono",
  "dashmap",
@@ -2768,6 +2769,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

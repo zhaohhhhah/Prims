@@ -33,13 +33,18 @@ def safe_path(value):
 
 
 def validate_job(job):
-    if not isinstance(job, dict) or set(job) - {'jobId', 'task', 'path', 'files'}:
+    if not isinstance(job, dict) or set(job) - {'jobId', 'task', 'path', 'files', 'engine'}:
         raise ValueError('Invalid job fields')
     import uuid
     if not isinstance(job.get('jobId'), str) or str(uuid.UUID(job['jobId'])) != job['jobId']:
         raise ValueError('Invalid jobId')
-    if job.get('task') not in ('latex_check', 'font_check', 'list_fonts'):
+    if job.get('task') not in ('latex_check', 'font_check', 'list_fonts', 'latex_compile'):
         raise ValueError('Unsupported task')
+    if job['task']=='latex_compile':
+        if job.get('engine') not in ('pdflatex','xelatex','lualatex'):
+            raise ValueError('Unsupported compile engine')
+    elif 'engine' in job:
+        raise ValueError('Engine is only accepted for compile jobs')
     files = job.get('files', [])
     if not isinstance(files, list) or len(files) > 256:
         raise ValueError('Too many files')
@@ -82,7 +87,7 @@ def validate_job(job):
         safe_path(path)
         if path not in seen:
             raise ValueError('Requested path is not in the snapshot')
-    if job['task'] == 'latex_check' and (path is None or not path.lower().endswith(('.tex', '.ltx', '.latex'))):
+    if job['task'] in ('latex_check','latex_compile') and (path is None or not path.lower().endswith(('.tex', '.ltx', '.latex'))):
         raise ValueError('latex_check requires a project LaTeX path')
     if job['task'] == 'font_check' and path is not None and not path.lower().endswith(('.ttf', '.otf', '.ttc')):
         raise ValueError('font_check requires a project font path')
@@ -129,6 +134,10 @@ def run_command(argv, deadline, env):
     return proc.returncode, clean_output(output.decode('utf-8', errors='replace')), truncated, timed_out
 
 
+def bibliography_failed(log):
+    return bool(re.search(r'(?im)(?:\bERRORS:\s*[1-9]\d*|^.*\bERROR\s+-|\bThere (?:was|were) [1-9]\d* error message)',log))
+
+
 def execute(job):
     started = time.monotonic()
     decoded = validate_job(job)
@@ -141,9 +150,38 @@ def execute(job):
     Path('/tmp/home').mkdir(exist_ok=True)
     config = '/tmp/project-fonts.conf'
     Path(config).write_text('<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd"><fontconfig><include ignore_missing="yes">/etc/fonts/fonts.conf</include><dir>/workspace</dir><cachedir>/tmp/fontconfig</cachedir></fontconfig>')
-    env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'HOME': '/tmp/home', 'TMPDIR': '/tmp',
+    env = {'PATH': '/usr/local/bin:/usr/local/texlive/2025/bin/x86_64-linux:/usr/bin:/bin', 'HOME': '/tmp/home', 'TMPDIR': '/tmp',
            'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'TECTONIC_CACHE_DIR': '/cache',
            'XDG_CACHE_HOME': '/cache', 'FONTCONFIG_FILE': config, 'FONTCONFIG_PATH': '/etc/fonts'}
+    env.update(TEXMFVAR='/tmp/texmf-var',TEXMFCONFIG='/tmp/texmf-config',TEXMFCACHE='/texmf-cache:/usr/local/texlive/2025/texmf-var:/tmp/texmf-var',openin_any='r',openout_any='p')
+    if job['task']=='latex_compile':
+        argv=['/usr/local/bin/scribe-tex-runner',job['engine'],job['path']]
+        code,output,truncated,timed_out=run_command(argv,started+165,env)
+        try:
+            parsed=json.loads(output)
+            if not isinstance(parsed,dict) or not isinstance(parsed.get('output'),str):raise ValueError('Invalid runner response')
+        except (ValueError,TypeError):
+            parsed={'ok':False,'exitCode':code or 70,'output':output or 'TeX runner did not produce a result'}
+        result={'ok':bool(parsed.get('ok')) and code==0,'exitCode':parsed.get('exitCode',code),'output':clean_output(parsed['output'])[:65536],'truncated':truncated,'timedOut':timed_out,'cancelled':False,'durationMs':round((time.monotonic()-started)*1000),'artifacts':{}}
+        total=0;stem=Path(job['path']).stem
+        for suffix,limit in [('pdf',24*1024*1024),('synctex.gz',4*1024*1024),('log',1024*1024),('bbl',2*1024*1024)]:
+            artifact=ROOT/(stem+'.'+suffix)
+            if artifact.is_file() and not artifact.is_symlink():
+                size=artifact.stat().st_size
+                if size>limit or total+size>32*1024*1024:raise ValueError('Compile artifact exceeds limit')
+                data=artifact.read_bytes();total+=len(data)
+                if suffix=='pdf' and not data.startswith(b'%PDF'):raise ValueError('Invalid PDF output')
+                result['artifacts'][suffix]=base64.b64encode(data).decode('ascii')
+        aux=ROOT/(stem+'.aux')
+        aux_text=aux.read_bytes()[:1024*1024] if aux.is_file() else b''
+        needs_bibliography=b'\\citation{' in aux_text or b'\\abx@aux@cite{' in aux_text
+        blg=ROOT/(stem+'.blg')
+        if result['ok'] and needs_bibliography and blg.is_file() and bibliography_failed(blg.read_text(errors='replace')[:1024*1024]):
+            result.update(ok=False,exitCode=1,output=result['output']+'\nBibliography processing reported errors; PDF is incomplete.')
+        if result['ok'] and needs_bibliography and not (ROOT/(stem+'.bbl')).is_file():
+            result.update(ok=False,exitCode=1,output=result['output']+'\nBibliography processing did not produce a BBL; PDF is incomplete.')
+        if result['ok'] and 'pdf' not in result['artifacts']:result.update(ok=False,exitCode=1,output=result['output']+'\nNo PDF produced')
+        return result
     deadline = started + 45
     task = job['task']
     if task == 'latex_check':

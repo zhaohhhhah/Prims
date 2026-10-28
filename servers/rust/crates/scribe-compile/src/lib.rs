@@ -11,6 +11,7 @@
 pub mod chktex;
 pub mod engine;
 pub mod latexmk;
+pub mod isolated;
 pub mod log_parser;
 pub mod queue;
 pub mod tectonic;

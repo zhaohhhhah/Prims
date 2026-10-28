@@ -1,9 +1,16 @@
 import { API_URL,supabase } from './supabase';
 import { useAuthStore } from '../stores/auth';
-export interface ProjectActionInput {type:'create_file'|'create_directory'|'move_file';path:string;content?:string;newPath?:string}
-export interface ProjectActionOperation {type:ProjectActionInput['type'];path:string;newPath?:string;fileId?:string}
-export interface PreparedProjectAction {id:string;action:ProjectActionInput;status:'pending'|'applied'|'rejected';result:null|{operation:ProjectActionOperation;textVersionId:string;note:string}}
+export type CompilerName='tectonic'|'pdflatex'|'xelatex'|'lualatex';
+export interface CompileSettings {compiler:CompilerName;mainFile:string}
+export interface FileActionInput {type:'create_file'|'create_directory'|'move_file';path:string;content?:string;newPath?:string}
+export interface CompileSettingsAction extends CompileSettings {type:'set_compile_settings';expected:CompileSettings}
+export type ProjectActionInput=FileActionInput|CompileSettingsAction;
+export type ProjectActionOperation=({type:FileActionInput['type'];path:string;newPath?:string;fileId?:string})|({type:'set_compile_settings';before:CompileSettings}&CompileSettings);
+export interface PreparedProjectAction {id:string;action:ProjectActionInput;status:'pending'|'applied'|'rejected';result:null|{operation:ProjectActionOperation;textVersionId:string|null;note:string}}
 export interface PreparedProjectActions {planId:string;actions:PreparedProjectAction[]}
+export function projectActionPath(action:ProjectActionInput):string{return action.type==='set_compile_settings'?action.mainFile:action.path;}
+export function compilerLabel(value:CompilerName):string{return {tectonic:'Tectonic',pdflatex:'pdfLaTeX',xelatex:'XeLaTeX',lualatex:'LuaLaTeX'}[value];}
+function compilerValid(value:unknown):value is CompilerName{return ['tectonic','pdflatex','xelatex','lualatex'].includes(value as string);}
 export interface RestorePlan {versionId:string;historyKind:'text';edits:{fileId:string;path:string;before:string;after:string}[];missingPaths:string[];unsupportedPaths:string[];note:string}
 function pathValid(value:unknown):value is string{return typeof value==='string'&&value.length>0&&new TextEncoder().encode(value).length<=512&&!value.startsWith('/')&&!/[\\:\x00-\x1f\x7f]/.test(value)&&!value.split('/').some(p=>!p||p==='.'||p==='..')&&value.split('/')[0]!=='.git';}
 export function parseProjectActions(value:unknown):ProjectActionInput[]{
@@ -11,8 +18,14 @@ export function parseProjectActions(value:unknown):ProjectActionInput[]{
  const array=Array.isArray(source)?source:(source as {actions?:unknown}|null)?.actions;
  if(array===undefined)return [];if(!Array.isArray(array)||array.length>12)throw new Error('文件操作计划最多包含 12 项');let total=0;const targets=new Set<string>();
  return array.map(raw=>{if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('文件操作计划格式无效');const action=raw as Record<string,unknown>;
+  if(action.type==='set_compile_settings'){
+   const expected=action.expected as Record<string,unknown>|undefined;
+   if(!compilerValid(action.compiler)||!pathValid(action.mainFile)||!/\.tex$/i.test(action.mainFile)||!expected||typeof expected!=='object'||Array.isArray(expected)||!compilerValid(expected.compiler)||!pathValid(expected.mainFile)||Object.keys(expected).some(k=>!['compiler','mainFile'].includes(k))||Object.keys(action).some(k=>!['type','compiler','mainFile','expected'].includes(k)))throw new Error('编译设置建议格式无效，请重新生成');
+   if(targets.has('\0compile-settings'))throw new Error('每轮只能有一项编译设置建议');targets.add('\0compile-settings');
+   return {type:'set_compile_settings',compiler:action.compiler,mainFile:action.mainFile,expected:{compiler:expected.compiler,mainFile:expected.mainFile}};
+  }
   if(!pathValid(action.path))throw new Error('文件路径必须位于当前项目内，不能包含上级目录或绝对路径');const path=action.path;total+=path.length;
-  let parsed:ProjectActionInput;
+  let parsed:FileActionInput;
   if(action.type==='create_file'&&typeof action.content==='string'&&action.content.length<=40000&&Object.keys(action).every(k=>['type','path','content'].includes(k))){total+=action.content.length;parsed={type:'create_file',path,content:action.content};}
   else if(action.type==='create_directory'&&Object.keys(action).every(k=>['type','path'].includes(k)))parsed={type:'create_directory',path};
   else if(action.type==='move_file'&&pathValid(action.newPath)&&action.newPath!==path&&Object.keys(action).every(k=>['type','path','newPath'].includes(k))){total+=action.newPath.length;parsed={type:'move_file',path,newPath:action.newPath};}

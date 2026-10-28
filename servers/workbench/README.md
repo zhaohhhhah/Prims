@@ -75,3 +75,38 @@ at user documents, private directories, socket paths or secrets. This does not i
 write fonts on the NAS. Font licensing remains the operator's responsibility; font binaries,
 caches and NAS-specific paths must never be copied into the public GitHub repository.
 All original worker isolation flags and the fixed operator-pinned worker image remain intact.
+
+## Project compiler pipeline
+
+Prims project settings can save `tectonic`, `pdflatex`, `xelatex` or `lualatex`
+and the project's main document. Tectonic remains the default and retains its
+existing runner. The other three engines use the existing Rust multi-pass
+orchestrator, including BibTeX/Biber and SyncTeX, through a fixed
+`scribe-tex-runner` entry point in a disposable offline worker.
+
+Build `Dockerfile.texlive` with the approved local runner and Tectonic binary.
+Supply an operator-managed TeX Live tree and prewarmed Lua font database as
+readonly resources. Prewarm the trusted Biber runtime in a fixed readonly
+`PRIMS_WORKBENCH_BIBER_CACHE` as well; job tmp/workspace remain noexec.
+Neither resources nor compiled font caches belong in the
+source repository. Use `compose.compiler.example.yml` for a separate loopback
+19342 broker with its own private token; the existing diagnostic broker can
+stay on 19340. Set the app's private `PRIMS_COMPILE_BROKER_URL` and
+`PRIMS_COMPILE_BROKER_TOKEN` only after the worker has passed real engine tests.
+The app and model never receive a Docker socket or host command interface.
+
+The protocol adds only `task=latex_compile`, a fixed engine enum, a project main
+path and bounded Base64 files. Worker replies contain bounded log, PDF, BBL and
+SyncTeX artifacts. Request fields cannot select commands, mounts or environment
+variables. Native TeX is launched with shell escape disabled; Lua execution is
+contained in the same offline, readonly, credential-free worker. Project input
+remains untrusted. Worker cancellation and total timeout remove the disposable
+container; closing a log stream does not change the app's existing queue-job
+semantics.
+
+The dedicated 19342 instance advertises and accepts only `latex_compile`;
+19340 keeps the original diagnostic capabilities. Project-aware AI receives
+the saved compiler, and its legacy Tectonic-only check refuses native-engine
+projects rather than reporting an incompatible engine as a source error.
+TeX resource reads use `openin_any=r` so Lua font loading can read its fixed
+readonly TeX data; writes stay `openout_any=p`. No host/private data is mounted.

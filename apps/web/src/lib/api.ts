@@ -177,6 +177,7 @@ export const api = {
       }),
   },
   compiles: {
+    engines: (): Promise<{available: string[]; default: string}> => fetchJson('/api/compile/engines'),
     enqueue: (projectId: ProjectId, input: CreateCompileJobInput): Promise<CompileJob> =>
       fetchJson(`/api/projects/${projectId}/compile`, {
         method: 'POST',

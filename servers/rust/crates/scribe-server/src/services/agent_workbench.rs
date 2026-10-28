@@ -62,7 +62,10 @@ async fn bounded_json(response:reqwest::Response)->ApiResult<Value>{
 pub async fn run(state:&AppState,user:UserId,project:ProjectId,call:&Value)->ApiResult<Value>{
  let pool=state.db().ok_or_else(unavailable)?.pool();assert_can_write(pool,user,project).await?;
  if !super::agent_library::AgentLibrary::new(pool.clone()).preferences(user).await?.diagnostics_enabled{return Err(ApiError::forbidden("本账号已关闭隔离诊断"));}
- let input=parse(call)?;let (base,token)=config().ok_or_else(unavailable)?;
+ let input=parse(call)?;
+ let compiler=sqlx::query_scalar::<_,String>("select compiler::text from public.projects where id=$1").bind(project.into_inner()).fetch_one(pool).await.map_err(|_|ApiError::validation("找不到项目编译配置"))?;
+ if input.task=="latex_check"&&compiler!="tectonic"{return Ok(json!({"tool":"run_project_check","task":"latex_check","ok":false,"executed":false,"projectCompiler":compiler,"diagnosticEngine":"tectonic","engineMismatch":true,"untrusted":true,"output":"此项目使用原生TeX编译器；旧隔离检查仅支持Tectonic，本次未运行。引擎不匹配不是项目错误。请参考项目编译面板中对应引擎的实际编译日志，不要据此建议修改源文档。"}));}
+ let (base,token)=config().ok_or_else(unavailable)?;
  let storage=state.inner.storage.clone().ok_or_else(unavailable)?;let files=FileService::new(pool.clone(),storage);
  let all=files.list(user,project).await?;
  let path=if input.task=="latex_check"{let target=if let Some(path)=input.path{path}else{sqlx::query_scalar::<_,String>("select main_file from public.projects where id=$1").bind(project.into_inner()).fetch_one(pool).await.map_err(|_|ApiError::validation("找不到项目主文件"))?};super::project_actions::validate_path(&target)?;if !matches!(target.rsplit('.').next(),Some("tex")|Some("ltx")){return Err(ApiError::validation("LaTeX检查仅接受.tex或.ltx主文件"));}Some(target)}else{input.path};

@@ -179,6 +179,7 @@ async fn run_latex(
     let started = Instant::now();
     let mut cmd = Command::new(config.engine.binary());
     cmd.current_dir(workdir)
+        .arg("-no-shell-escape")
         .arg("-interaction=nonstopmode")
         .arg("-file-line-error")
         // `-halt-on-error` mirrors what latexmk does and what our log
@@ -189,7 +190,9 @@ async fn run_latex(
         .arg("-output-directory")
         .arg(workdir.as_os_str())
         .arg(main_file)
-        .env("MIKTEX_AUTOINSTALL", "t")
+        .env("MIKTEX_AUTOINSTALL", "f")
+        .env("openin_any", "r")
+        .env("openout_any", "p")
         .kill_on_drop(true);
     cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
 
@@ -242,7 +245,9 @@ async fn run_helper(
     let mut cmd = Command::new(binary);
     cmd.current_dir(workdir)
         .args(args)
-        .env("MIKTEX_AUTOINSTALL", "t")
+        .env("MIKTEX_AUTOINSTALL", "f")
+        .env("openin_any", "r")
+        .env("openout_any", "p")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -311,6 +316,7 @@ async fn read_file_hash(path: &Path) -> Option<(u64, Vec<u8>)> {
 }
 
 fn strip_tex_ext(name: &str) -> String {
+    let name = Path::new(name).file_name().and_then(|v|v.to_str()).unwrap_or(name);
     let lower = name.to_ascii_lowercase();
     if let Some(stem) = lower.strip_suffix(".tex") {
         // Use original-case slice based on stem length so e.g.
@@ -325,3 +331,5 @@ fn strip_tex_ext(name: &str) -> String {
 // uses one of the LatexmkConfig fields directly.
 #[allow(dead_code)]
 type _Workdir = PathBuf;
+
+#[cfg(test)]mod tests{use super::*;#[test]fn nested_main_artifacts_use_output_directory_basename(){assert_eq!(strip_tex_ext("chapters/Main.TEX"),"Main");assert_eq!(strip_tex_ext("main.tex"),"main");}#[test]fn only_fixed_engines_are_parsed(){assert!(LatexEngine::parse_name("xelatex").is_some());assert!(LatexEngine::parse_name("lualatex").is_some());assert!(LatexEngine::parse_name("sh -c evil").is_none());}}

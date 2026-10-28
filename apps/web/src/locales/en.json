@@ -324,7 +324,14 @@
     "danger": "Danger zone",
     "deleteProject": "Delete project",
     "deleteProjectConfirm": "Permanently delete this project? This cannot be undone.",
-    "deleteProjectInProgress": "Deleting…"
+    "deleteProjectInProgress": "Deleting…",
+    "compilePipeline": "Compile pipeline",
+    "compiler": "Compiler",
+    "mainDocument": "Main document",
+    "defaultCompiler": "Default",
+    "compilerUnavailable": "Unavailable",
+    "compileSettingsSaved": "Compile settings saved",
+    "saveCompileSettings": "Save compile settings"
   },
   "mentions": {
     "popoverLabel": "Project members",

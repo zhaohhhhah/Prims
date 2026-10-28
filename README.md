@@ -304,3 +304,12 @@ animation. Reduced-motion, resizing and route cleanup cancel visual layers.
 Assistant right and bottom docks use directional geometry for both opening
 and closing. Their layout space remains until closing finishes, so the editor
 resizes with the dock. Floating surfaces keep their independent morph.
+
+Projects can save their main document and compiler: Tectonic (the default),
+XeLaTeX, LuaLaTeX or pdfLaTeX. Native TeX engines run through the isolated
+compiler broker described in `servers/workbench/README.md`. Configure
+`PRIMS_COMPILE_BROKER_URL` and `PRIMS_COMPILE_BROKER_TOKEN` on the server
+to enable the native engines. Existing projects retain their saved settings.
+The assistant can propose compiler and main-document changes for explicit review.
+The compiler workers use read-only TeX resources, no network, no shell escape,
+and bounded per-job resources; API credentials remain outside each worker.

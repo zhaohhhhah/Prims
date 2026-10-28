@@ -36,6 +36,7 @@ pub fn router() -> Router<AppState> {
     // HTTP routes go through standard auth middleware.
     let http = Router::new()
         .route("/api/projects/:project_id/compile", post(enqueue))
+        .route("/api/compile/engines", get(engines))
         .route("/api/projects/:project_id/compiles", get(list))
         .route("/api/compiles/:job_id", get(get_one))
         .route("/api/compiles/:job_id/artifact-url", get(artifact_url))
@@ -48,6 +49,11 @@ pub fn router() -> Router<AppState> {
 }
 
 // -- HTTP handlers ---------------------------------------------------
+
+async fn engines(Authenticated(_user):Authenticated)->Json<serde_json::Value>{
+    let isolated=scribe_compile::isolated::available().await;
+    Json(serde_json::json!({"available":if isolated{vec!["tectonic","pdflatex","xelatex","lualatex"]}else{vec!["tectonic"]},"default":"tectonic"}))
+}
 
 async fn enqueue(
     State(state): State<AppState>,

@@ -63,3 +63,7 @@ pub mod search_connections;
 pub mod skill_install;
 
 pub mod skill_import;
+
+pub mod builtin_skills;
+
+pub mod agent_history;

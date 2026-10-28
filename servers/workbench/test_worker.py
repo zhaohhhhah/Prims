@@ -52,4 +52,25 @@ class WorkerValidation(unittest.TestCase):
         self.assertEqual(code,0);self.assertLessEqual(len(output.encode()),65536);self.assertTrue(truncated);self.assertFalse(timed_out)
     def test_terminal_output_sanitized(self):
         self.assertEqual(clean_output('\x1b[31mERROR\x1b[0m\x00\nline'), 'ERROR\nline')
+class CompileValidation(unittest.TestCase):
+    def test_compile_uses_only_fixed_engines(self):
+        for engine in ('pdflatex','xelatex','lualatex'):
+            value=job();value.update(task='latex_compile',engine=engine);self.assertEqual(validate_job(value)[0][0],'main.tex')
+        for engine in ('tectonic','sh','xelatex -shell-escape',''):
+            value=job();value.update(task='latex_compile',engine=engine)
+            with self.assertRaises(ValueError):validate_job(value)
+    def test_compile_rejects_mounts_env_and_commands(self):
+        for key,value in [('command','id'),('env',{'SECRET':'x'}),('mount','/etc')]:
+            request=job();request.update(task='latex_compile',engine='xelatex');request[key]=value
+            with self.assertRaises(ValueError):validate_job(request)
+    def test_diagnostics_do_not_gain_engine_selection(self):
+        value=job();value['engine']='lualatex'
+        with self.assertRaises(ValueError):validate_job(value)
 if __name__=='__main__':unittest.main()
+
+class BibliographyErrorTests(unittest.TestCase):
+    def test_helper_errors_are_not_silently_treated_as_success(self):
+        for log in ["(There were 2 error messages)", "[2026] ERROR - Cannot find refs.bib", "INFO - ERRORS: 1"]:
+            self.assertTrue(worker.bibliography_failed(log))
+        for log in ["Warning--I didn't find a database entry for ref1", "INFO - ERRORS: 0", "INFO - WARNINGS: 1"]:
+            self.assertFalse(worker.bibliography_failed(log))

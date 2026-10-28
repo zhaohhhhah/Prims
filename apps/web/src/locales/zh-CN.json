@@ -324,7 +324,14 @@
     "danger": "危险操作",
     "deleteProject": "删除项目",
     "deleteProjectConfirm": "永久删除此项目？此操作无法撤销。",
-    "deleteProjectInProgress": "正在删除…"
+    "deleteProjectInProgress": "正在删除…",
+    "compilePipeline": "编译流水线",
+    "compiler": "编译器",
+    "mainDocument": "主文档",
+    "defaultCompiler": "默认",
+    "compilerUnavailable": "未启用",
+    "compileSettingsSaved": "编译设置已保存",
+    "saveCompileSettings": "保存编译设置"
   },
   "mentions": {
     "popoverLabel": "项目成员",

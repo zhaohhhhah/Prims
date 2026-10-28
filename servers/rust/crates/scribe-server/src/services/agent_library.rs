@@ -99,12 +99,14 @@ impl AgentLibrary {
         Ok(p)
     }
     pub async fn list(&self, user: UserId, enabled_only: bool) -> ApiResult<Value> {
-        let rows=sqlx::query("select id,name,description,enabled,updated_at from public.scribe_agent_skills where user_id=$1 and archived_at is null and (not $2 or enabled) order by name limit 32").bind(user.into_inner()).bind(enabled_only).fetch_all(&self.pool).await.map_err(db)?;
+        super::builtin_skills::ensure(&self.pool, user).await?;
+        let rows=sqlx::query("select id,name,description,enabled,updated_at from public.scribe_agent_skills where user_id=$1 and archived_at is null and (not $2 or enabled) order by name limit $3").bind(user.into_inner()).bind(enabled_only).bind(super::builtin_skills::LIST_LIMIT).fetch_all(&self.pool).await.map_err(db)?;
         Ok(
             json!({"skills":rows.into_iter().map(|r|json!({"id":r.get::<Uuid,_>("id"),"name":r.get::<String,_>("name"),"description":r.get::<String,_>("description"),"enabled":r.get::<bool,_>("enabled"),"updatedAt":r.get::<chrono::DateTime<chrono::Utc>,_>("updated_at")})).collect::<Vec<_>>()}),
         )
     }
     pub async fn read(&self, user: UserId, id: Uuid, enabled_only: bool) -> ApiResult<Value> {
+        super::builtin_skills::ensure(&self.pool, user).await?;
         let row=sqlx::query("select id,name,description,content,enabled,updated_at from public.scribe_agent_skills where id=$1 and user_id=$2 and archived_at is null and (not $3 or enabled)").bind(id).bind(user.into_inner()).bind(enabled_only).fetch_optional(&self.pool).await.map_err(db)?.ok_or_else(||ApiError::not_found("Skill not found"))?;
         Ok(
             json!({"id":row.get::<Uuid,_>("id"),"name":row.get::<String,_>("name"),"description":row.get::<String,_>("description"),"content":row.get::<String,_>("content"),"enabled":row.get::<bool,_>("enabled"),"updatedAt":row.get::<chrono::DateTime<chrono::Utc>,_>("updated_at"),"untrusted":true,"permissionsGranted":false}),
@@ -130,8 +132,8 @@ impl AgentLibrary {
             }
             id
         } else {
-            let count:i64=sqlx::query_scalar("select count(*) from public.scribe_agent_skills where user_id=$1 and archived_at is null").bind(user.into_inner()).fetch_one(&mut *tx).await.map_err(db)?;
-            if count >= 32 {
+            let count = super::builtin_skills::personal_count(&mut tx, user).await?;
+            if count >= super::builtin_skills::PERSONAL_LIMIT {
                 return Err(ApiError::validation("最多保存32个个人技能"));
             }
             Uuid::new_v4()

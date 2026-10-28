@@ -22,6 +22,10 @@ CACHE = os.environ.get('PRIMS_WORKBENCH_TEX_CACHE', '')
 SECRET_FILE = os.environ.get('PRIMS_WORKBENCH_TOKEN_FILE', '')
 FONT_DIR = os.environ.get('PRIMS_WORKBENCH_FONT_DIR', '')
 FONT_CACHE = os.environ.get('PRIMS_WORKBENCH_FONT_CACHE', '')
+TEXLIVE = os.environ.get('PRIMS_WORKBENCH_TEXLIVE', '')
+TEXMF_CACHE = os.environ.get('PRIMS_WORKBENCH_TEXMF_CACHE', '')
+BIBER_CACHE = os.environ.get('PRIMS_WORKBENCH_BIBER_CACHE', '')
+COMPILE_ONLY = os.environ.get('PRIMS_WORKBENCH_PORT') == '19342'
 SLOTS = threading.BoundedSemaphore(2)
 LOCK = threading.Lock()
 RUNS = {}
@@ -55,15 +59,24 @@ def optional_font_mounts():
     ]
 
 
-def container_options(name):
+def container_options(name, compile_job=False):
     options = ['create', '--pull', 'never', '-i', '--name', name, '--label', 'prims.workbench=true',
             '--network', 'none', '--user', '10001:10001', '--read-only',
             '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
-            '--memory', '512m', '--memory-swap', '512m', '--cpus', '1', '--pids-limit', '64',
+            '--memory', '1g' if compile_job else '512m', '--memory-swap', '1g' if compile_job else '512m', '--cpus', '1', '--pids-limit', '64',
             '--ulimit', 'nofile=256:256', '--ulimit', 'fsize=67108864:67108864',
-            '--tmpfs', '/workspace:rw,nosuid,nodev,noexec,size=128m,mode=0700,uid=10001,gid=10001',
-            '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=10001,gid=10001',
+            '--tmpfs', '/workspace:rw,nosuid,nodev,noexec,size='+('256m' if compile_job else '128m')+',mode=0700,uid=10001,gid=10001',
+            '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size='+('128m' if compile_job else '32m')+',mode=0700,uid=10001,gid=10001',
             '--mount', f'type=bind,source={CACHE},target=/cache,readonly,bind-propagation=rprivate']
+    if TEXLIVE:
+        if not Path(TEXLIVE).is_absolute() or ',' in TEXLIVE or any(ord(c)<32 for c in TEXLIVE):raise ValueError('Invalid fixed TeX Live resource')
+        options+=['--mount',f'type=bind,source={TEXLIVE},target=/usr/local/texlive,readonly,bind-propagation=rprivate']
+    if TEXMF_CACHE:
+        if not Path(TEXMF_CACHE).is_absolute() or ',' in TEXMF_CACHE or any(ord(c)<32 for c in TEXMF_CACHE):raise ValueError('Invalid fixed TeX font cache resource')
+        options+=['--mount',f'type=bind,source={TEXMF_CACHE},target=/texmf-cache,readonly,bind-propagation=rprivate']
+    if BIBER_CACHE:
+        if not Path(BIBER_CACHE).is_absolute() or ',' in BIBER_CACHE or any(ord(c)<32 or ord(c)==127 for c in BIBER_CACHE):raise ValueError('Invalid fixed Biber resource')
+        options+=['--mount',f'type=bind,source={BIBER_CACHE},target=/biber-cache,readonly,bind-propagation=rprivate']
     return options + optional_font_mounts() + [IMAGE]
 
 
@@ -74,7 +87,7 @@ def execute_job(job, raw, run):
     try:
         if run['cancel'].is_set():
             return stopped(started, cancelled=True)
-        created = docker(container_options(name), timeout=12)
+        created = docker(container_options(name,job['task']=='latex_compile'), timeout=12)
         if created.returncode != 0:
             return failure('Workbench sandbox could not be created', started)
         if run['cancel'].is_set():
@@ -90,7 +103,7 @@ def execute_job(job, raw, run):
         thread = threading.Thread(target=communicate, daemon=True)
         thread.start()
         while thread.is_alive():
-            if run['cancel'].is_set() or time.monotonic() - started >= 90:
+            if run['cancel'].is_set() or time.monotonic() - started >= (180 if job['task']=='latex_compile' else 90):
                 remove(name)
                 if proc.poll() is None:
                     proc.kill()
@@ -100,7 +113,7 @@ def execute_job(job, raw, run):
         if holder.get('error'):
             return failure('Workbench communication failed', started)
         stdout, _stderr = holder.get('result', (b'', b''))
-        if proc.returncode != 0 or len(stdout) > 192 * 1024:
+        if proc.returncode != 0 or len(stdout) > (48*1024*1024 if job['task']=='latex_compile' else 192*1024):
             if run['cancel'].is_set():
                 return stopped(started, cancelled=True)
             return failure('Workbench sandbox exited without a result', started)
@@ -110,6 +123,7 @@ def execute_job(job, raw, run):
             return failure('Workbench returned an invalid result', started)
         allowed = {'ok', 'exitCode', 'command', 'output', 'truncated', 'timedOut', 'cancelled',
                    'durationMs', 'fonts', 'fontScope'}
+        if job['task']=='latex_compile':allowed={'ok','exitCode','output','truncated','timedOut','cancelled','durationMs','artifacts'}
         if not isinstance(result, dict) or set(result) - allowed or not isinstance(result.get('output'), str):
             return failure('Workbench returned an invalid result', started)
         # Defence in depth: the worker never receives this broker credential.
@@ -172,9 +186,10 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, subprocess.TimeoutExpired):
             healthy = False
         self.respond(200 if healthy else 503, {'ok': healthy, 'version': VERSION,
-            'capabilities': ['latex_check', 'font_check', 'list_fonts'] if healthy else [],
+            'capabilities': (([] if COMPILE_ONLY else ['latex_check', 'font_check', 'list_fonts'])+(['latex_compile'] if TEXLIVE else [])) if healthy else [],
             'maxConcurrentJobs': 2, 'snapshotMaxBytes': 32 * 1024 * 1024,
-            'commandTimeoutSeconds': 45, 'jobTimeoutSeconds': 90, 'maxOutputBytes': 65536})
+            'commandTimeoutSeconds': 45, 'jobTimeoutSeconds': 90, 'maxOutputBytes': 65536,
+            'compileJobTimeoutSeconds':180,'compileSnapshotMaxBytes':32*1024*1024,'compileArtifactTotalMaxBytes':32*1024*1024})
 
     def do_POST(self):
         if not self.authorized():
@@ -204,6 +219,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Incomplete request')
             job = json.loads(raw)
             validate_job(job)
+            if COMPILE_ONLY and job['task'] != 'latex_compile':
+                raise ValueError('Dedicated compiler only accepts latex_compile')
         except (ValueError, TypeError, KeyError, OSError, RecursionError):
             if acquired:
                 SLOTS.release()
@@ -258,7 +275,9 @@ def main():
     SECRET = secret_path.read_text().strip()
     if len(SECRET) < 32 or any(c.isspace() for c in SECRET):
         raise SystemExit('Invalid broker token')
-    server = ThreadingHTTPServer(('127.0.0.1', 19340), Handler)
+    port=int(os.environ.get('PRIMS_WORKBENCH_PORT','19340'))
+    if port not in (19340,19342):raise SystemExit('Use an approved loopback broker port')
+    server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     server.daemon_threads = True
     def shutdown(_signum, _frame):
         with LOCK:

@@ -21,7 +21,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use scribe_shared::{
     CompileJobId, CompileJobPayload, CompileJobStatus, CompileLogEntry, CompileLogStreamMessage,
-    ProjectId,
+    ProjectId, CompilerEngine,
 };
 use scribe_storage::{compile_artifact_key, Storage, SupabaseStorage, COMPILE_ARTIFACTS_BUCKET};
 use sqlx::{PgPool, Row};
@@ -184,7 +184,7 @@ impl Worker {
                             .unwrap_or_else(|| {
                                 format!(
                                     "{} exited with code {}",
-                                    self.config.engine.kind.name(),
+                                    payload.engine.as_str(),
                                     compile.exit_code,
                                 )
                             }),
@@ -304,14 +304,19 @@ impl Worker {
 
         // ---- run the compile engine ----
         let t_tex = std::time::Instant::now();
-        let mut outcome = run_compile(&self.config.engine, workdir, &payload.main_file).await;
+        let mut outcome = if payload.engine == CompilerEngine::Tectonic {
+            let mut config=self.config.engine.clone();config.kind=crate::EngineKind::Tectonic;
+            run_compile(&config,workdir,&payload.main_file).await
+        } else {
+            crate::isolated::run_isolated(payload.engine,workdir,&payload.main_file,&files.iter().map(|(p,_,_)|p.clone()).collect::<Vec<_>>()).await
+        };
         let mut engine_used = self.config.engine.kind;
         let mut engine_ms = t_tex.elapsed().as_millis();
         // Fallback path: if the primary engine returned non-zero AND
         // a fallback was configured AND it isn't the same engine,
         // re-run with the fallback and use that outcome instead.
         // We log both attempts so the user can see what happened.
-        if !outcome.success {
+        if !outcome.success && payload.engine == CompilerEngine::Tectonic {
             if let Some(fb_kind) = self.config.fallback_engine {
                 if fb_kind != self.config.engine.kind {
                     tracing::warn!(
@@ -358,11 +363,7 @@ impl Worker {
         // here. The file may not exist on a hard failure; skip
         // silently when that happens.
         let combined = {
-            let base = payload
-                .main_file
-                .rsplit_once('.')
-                .map(|(stem, _)| stem)
-                .unwrap_or(&payload.main_file);
+            let base = output_stem(&payload.main_file);
             let log_path = workdir.join(format!("{base}.log"));
             // 4 MiB cap on what we feed the parser. Real-world
             // project logs run 50-500 KiB; the 32 MiB cap on the
@@ -412,11 +413,7 @@ impl Worker {
 
         // ---- upload artifacts ----
         let t_up = std::time::Instant::now();
-        let base_name = payload
-            .main_file
-            .rsplit_once('.')
-            .map(|(stem, _)| stem)
-            .unwrap_or(&payload.main_file);
+        let base_name = output_stem(&payload.main_file);
         let artifacts = self
             .upload_artifacts(payload.project_id, payload.compile_job_id, workdir, base_name, &combined)
             .await;
@@ -769,3 +766,6 @@ async fn read_capped(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
     }
     fs::read(path).await
 }
+
+fn output_stem(main_file:&str)->&str{Path::new(main_file).file_stem().and_then(|name|name.to_str()).unwrap_or("main")}
+#[cfg(test)]mod pipeline_tests{use super::*;#[test]fn output_paths_use_basename_for_nested_and_unicode_main_documents(){assert_eq!(output_stem("chapters/main.tex"),"main");assert_eq!(output_stem("章节/主文件.tex"),"主文件");assert_eq!(output_stem("main.tex"),"main");}}

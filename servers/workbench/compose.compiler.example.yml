@@ -1,0 +1,36 @@
+# Dedicated compile broker. Keep the existing 19340 diagnostic broker unchanged.
+services:
+  compiler-broker:
+    image: ${COMPILE_BROKER_IMAGE:?pin approved broker image}
+    restart: unless-stopped
+    network_mode: host
+    user: "${COMPILE_BROKER_UID:?token owner uid}:${COMPILE_BROKER_GID:?token owner gid}"
+    group_add: ["${COMPILE_DOCKER_SOCKET_GID:?socket gid}"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1
+    pids_limit: 64
+    tmpfs: ["/tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777"]
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      PRIMS_WORKBENCH_PORT: '19342'
+      PRIMS_WORKBENCH_IMAGE: ${COMPILE_WORKER_IMAGE:?pin approved TeX worker image}
+      PRIMS_WORKBENCH_TOKEN_FILE: /run/secrets/compiler-token
+      PRIMS_WORKBENCH_TEX_CACHE: ${COMPILE_TECTONIC_CACHE:?fixed public cache path}
+      PRIMS_WORKBENCH_TEXLIVE: ${COMPILE_TEXLIVE:?fixed readonly TeX Live tree}
+      PRIMS_WORKBENCH_BIBER_CACHE: ${COMPILE_BIBER_CACHE:?prewarmed readonly Biber runtime}
+      PRIMS_WORKBENCH_TEXMF_CACHE: ${COMPILE_TEXMF_CACHE:?prewarmed readonly Lua font database}
+      PRIMS_WORKBENCH_FONT_DIR: ${COMPILE_FONT_DIR:-}
+      PRIMS_WORKBENCH_FONT_CACHE: ${COMPILE_FONT_CACHE:-}
+    volumes:
+      - ${COMPILE_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - ${COMPILE_TOKEN_FILE:?private mode0600 token}:/run/secrets/compiler-token:ro
+    stop_grace_period: 20s
+# Only this trusted broker receives Docker access. The app receives only
+# PRIMS_COMPILE_BROKER_URL=http://127.0.0.1:19342 and a private
+# PRIMS_COMPILE_BROKER_TOKEN matching the token file. Never expose 19342.
+# Compiles run offline/non-root/readonly/cap-drop, CPU1/memory1GiB/180s,
+# with only a bounded project snapshot and readonly TeX/font resources.
