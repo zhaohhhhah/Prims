@@ -21,5 +21,5 @@ export function useAssistantMorph(ref:RefObject<HTMLDivElement>,key:string) {
  }),[]);
  useLayoutEffect(()=>{const node=ref.current;if(!node){previous.current=null;return;}const next=box(node),old=previous.current;previous.current={key,box:next};if(old?.key===key)return;void run(node,old?.box??compact(next),next);});
  useEffect(()=>{const cancelMotion=()=>cancel.current?.();const media=window.matchMedia('(prefers-reduced-motion: reduce)');window.addEventListener('resize',cancelMotion);media.addEventListener('change',cancelMotion);return()=>{window.removeEventListener('resize',cancelMotion);media.removeEventListener('change',cancelMotion);cancelMotion();};},[]);
- return useCallback(async()=>{const node=ref.current;if(node){const start=box(node);await run(node,start,compact(start));}},[run,ref]);
+ return useCallback(async()=>{const node=ref.current;if(node){node.dataset.primsExitHandled='true';const start=box(node);await run(node,start,compact(start));}},[run,ref]);
 }

@@ -199,3 +199,17 @@ body:has(.prims-editor-workspace) :where([role="menu"],[role="dialog"],[role="li
  .prims-editor-toolbar button,.prims-editor-preview-tabs button,.prims-project-sidebar-header button,.prims-assistant-panel button {transform:none!important;transition:none!important;}
  body:has(.prims-editor-workspace) :where([role="menu"],[role="dialog"],[role="listbox"],[role="tooltip"])[data-state] {animation:none!important;}
 }
+
+/* Radix Presence keeps these real surfaces mounted until animationend.
+   Immediate React unmounts use the inert exit layer from ChromeExitMotion. */
+body:has(.prims-editor-workspace) [data-prims-editor-chrome][data-state="closed"] {
+ animation:prims-editor-chrome-close 170ms cubic-bezier(.35,0,.7,.3)!important;
+ overflow:hidden!important;pointer-events:none!important;box-sizing:border-box;
+}
+@keyframes prims-editor-chrome-close {
+ from {width:var(--prims-chrome-width);height:var(--prims-chrome-height);transform:var(--prims-chrome-transform);opacity:1;}
+ to {width:calc(var(--prims-chrome-width)*.94);height:calc(var(--prims-chrome-height)*.7);transform:var(--prims-chrome-transform) translateY(-7px);border-radius:12px;opacity:0;}
+}
+@media (prefers-reduced-motion: reduce) {
+ body:has(.prims-editor-workspace) [data-prims-editor-chrome][data-state="closed"] {animation:none!important;}
+}

@@ -296,3 +296,7 @@ through the same account/project-scoped bridge. Context updates do not replace
 conversation drafts or pending review plans. In-flight requests retain their
 request-time context. Editor surfaces share geometry-based transitions, with
 immediate drag resizing and reduced-motion support.
+
+Editor portal controls retain a short, inert visual exit when React removes
+them immediately. Radix surfaces retain their real content through the close
+animation. Reduced-motion, resizing and route cleanup cancel visual layers.
