@@ -1,5 +1,5 @@
 //! Site registration administration. Authorization is database-backed, never user metadata.
-use axum::{extract::{Path, State}, middleware::from_fn, routing::{get, post}, Json, Router};
+use axum::{extract::{Path, Query, State}, middleware::from_fn, routing::{get, post}, Json, Router};
 use chrono::{DateTime, Utc};
 use scribe_auth::{require_auth, Authenticated};
 use scribe_shared::{ApiError, ApiResult, ErrorCode};
@@ -12,6 +12,9 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/admin/me", get(me))
         .route("/api/admin/users", get(users))
+        .route("/api/admin/users/:id/deletion-preview", get(deletion_preview))
+        .route("/api/admin/users/:id/delete", post(delete_account))
+        .route("/api/admin/user-deletions/:id", get(deletion_status))
         .route("/api/admin/registration-invites", get(list_invites).post(create_invite))
         .route("/api/admin/registration-invites/:id/revoke", post(revoke_invite))
         .layer(from_fn(require_auth))
@@ -38,10 +41,11 @@ struct Account {
     id: Uuid, email: Option<String>, display_name: Option<String>,
     created_at: DateTime<Utc>, last_sign_in_at: Option<DateTime<Utc>>, is_admin: bool,
 }
-async fn users(State(state): State<AppState>, Authenticated(user): Authenticated) -> ApiResult<Json<Vec<Account>>> {
+#[derive(Deserialize,Default)] struct UserSearch { q: Option<String> }
+async fn users(State(state): State<AppState>, Authenticated(user): Authenticated, Query(search):Query<UserSearch>) -> ApiResult<Json<Vec<Account>>> {
     let db=pool(&state)?; require_admin(&db,user.id.into_inner()).await?;
-    let rows=sqlx::query("select u.id,u.email,u.raw_user_meta_data->>'display_name' as display_name,u.created_at,u.last_sign_in_at,exists(select 1 from public.scribe_site_admins a where a.user_id=u.id) as is_admin from auth.users u where u.deleted_at is null order by u.created_at desc limit 1000")
-        .fetch_all(&db).await.map_err(db_error)?;
+    let rows=sqlx::query("select u.id,u.email,u.raw_user_meta_data->>'display_name' as display_name,u.created_at,u.last_sign_in_at,exists(select 1 from public.scribe_site_admins a where a.user_id=u.id) as is_admin from auth.users u where u.deleted_at is null and ($1='' or strpos(lower(coalesce(u.email,'')),lower($1))>0 or strpos(lower(coalesce(u.raw_user_meta_data->>'display_name','')),lower($1))>0) order by u.created_at desc limit 1000")
+        .bind(search.q.unwrap_or_default().trim().chars().take(200).collect::<String>()).fetch_all(&db).await.map_err(db_error)?;
     Ok(Json(rows.into_iter().map(|r| Account { id:r.get("id"),email:r.get("email"),display_name:r.get("display_name"),created_at:r.get("created_at"),last_sign_in_at:r.get("last_sign_in_at"),is_admin:r.get("is_admin") }).collect()))
 }
 #[derive(Serialize)] #[serde(rename_all="camelCase")]
@@ -80,4 +84,15 @@ async fn revoke_invite(State(state):State<AppState>, Authenticated(user):Authent
     let row=sqlx::query("update public.scribe_registration_invites set revoked_at=coalesce(revoked_at,now()) where id=$1 returning id,hint,label,max_uses,used_count,expires_at,revoked_at,created_at")
         .bind(id).fetch_optional(&db).await.map_err(db_error)?.ok_or_else(||ApiError::not_found("邀请码不存在"))?;
     Ok(Json(invite(row)))
+}
+
+async fn deletion_preview(State(state):State<AppState>,Authenticated(user):Authenticated,Path(id):Path<Uuid>)->ApiResult<Json<crate::services::user_management::Impact>> {
+ let db=pool(&state)?;Ok(Json(crate::services::user_management::impact(&db,user.id.into_inner(),id).await?))
+}
+async fn delete_account(State(state):State<AppState>,Authenticated(user):Authenticated,Path(id):Path<Uuid>,Json(input):Json<crate::services::user_management::DeleteInput>)->ApiResult<Json<crate::services::user_management::Deleted>> {
+ if state.storage().is_none(){return Err(ApiError::new(ErrorCode::ServiceUnavailable,"附件清理服务未配置，不能删除账号"));}
+ let db=pool(&state)?;Ok(Json(crate::services::user_management::delete(&db,user.id.into_inner(),id,input).await?))
+}
+async fn deletion_status(State(state):State<AppState>,Authenticated(user):Authenticated,Path(id):Path<Uuid>)->ApiResult<Json<crate::services::user_management::CleanupStatus>> {
+ let db=pool(&state)?;Ok(Json(crate::services::user_management::status(&db,user.id.into_inner(),id).await?))
 }

@@ -42,24 +42,34 @@ pub async fn serve_socket_with_mode(
     registry: Arc<DocRegistry>,
     read_only: bool,
 ) {
+    serve_socket_with_access(socket, doc_id, registry, read_only, || async { true }).await
+}
+
+/// Revalidate both directions and idle connections. Revoked peers close cleanly,
+/// preserving the normal unregister/awareness cleanup path.
+pub async fn serve_socket_with_access<F, Fut>(
+    socket: WebSocket, doc_id: String, registry: Arc<DocRegistry>, read_only: bool, allowed: F,
+) where F: Fn() -> Fut + Send + Sync, Fut: std::future::Future<Output=bool> + Send {
+    if !allowed().await { return; }
     let shared = registry.get_or_create(&doc_id).await;
     let conn_id = {
         let (sender, receiver) = mpsc::channel::<Bytes>(OUTBOUND_CHANNEL_DEPTH);
         let id = shared.register(sender);
-        run(socket, shared.clone(), id, receiver, read_only).await;
+        run(socket, shared.clone(), id, receiver, read_only, allowed).await;
         id
     };
     shared.unregister(conn_id);
     registry.drop_if_empty(&doc_id);
 }
 
-async fn run(
+async fn run<F, Fut>(
     socket: WebSocket,
     shared: Arc<SharedDoc>,
     conn_id: ConnId,
     mut outbound: mpsc::Receiver<Bytes>,
     read_only: bool,
-) {
+    allowed: F,
+) where F: Fn() -> Fut + Send + Sync, Fut: std::future::Future<Output=bool> + Send {
     let (mut sink, mut stream) = socket.split();
 
     // Send the initial sync messages before entering the main loop so a
@@ -72,11 +82,14 @@ async fn run(
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     ping_interval.tick().await; // skip the immediate first tick
 
+    let mut access_tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         select! {
+            _ = access_tick.tick() => { if !allowed().await { let _ = sink.send(WsMessage::Close(None)).await; break; } }
             // Outbound broadcasts from SharedDoc.
             msg = outbound.recv() => {
                 let Some(bytes) = msg else { break };
+                if !allowed().await { break; }
                 if sink.send(WsMessage::Binary(bytes.to_vec())).await.is_err() {
                     break;
                 }
@@ -85,6 +98,7 @@ async fn run(
             // Inbound frames from the client.
             frame = stream.next() => {
                 let Some(frame) = frame else { break };
+                if !allowed().await { break; }
                 let Ok(frame) = frame else { break };
                 match frame {
                     WsMessage::Binary(data) => {

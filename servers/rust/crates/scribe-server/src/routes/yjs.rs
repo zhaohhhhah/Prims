@@ -77,6 +77,7 @@ async fn upgrade(
     };
     let read_only = matches!(role, MemberRole::Viewer | MemberRole::Commenter);
 
+    let db = db.clone();
     let doc_id = format!("{}/{}", project_id, file_id);
     // Cap per-frame size. Yjs sync messages are normally a few KB; even
     // the initial snap of a large doc rarely exceeds a few hundred KB.
@@ -85,7 +86,11 @@ async fn upgrade(
     ws.max_message_size(4 * 1024 * 1024)
         .max_frame_size(1024 * 1024)
         .on_upgrade(move |socket| async move {
-            scribe_yjs::serve_socket_with_mode(socket, doc_id, registry, read_only).await
+            let pool = db.pool().clone();
+            let allowed = move || { let pool=pool.clone(); let verifier=verifier.clone(); let token=token.clone(); async move {
+                verifier.verify(&token).await.is_ok() && require_role(&pool, user.id, ProjectId::new(project_id)).await.is_ok()
+            }};
+            scribe_yjs::serve_socket_with_access(socket, doc_id, registry, read_only, allowed).await
         })
 }
 

@@ -23,11 +23,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::{Arc, LazyLock},
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::OwnedSemaphorePermit;
 use uuid::Uuid;
-static IMPORTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/projects/import-zip/inspect", post(inspect))
@@ -42,12 +41,7 @@ struct Upload {
     _permit: OwnedSemaphorePermit,
 }
 async fn parse_upload(mut multipart: Multipart) -> ApiResult<Upload> {
-    let permit = IMPORTS.clone().try_acquire_owned().map_err(|_| {
-        ApiError::new(
-            ErrorCode::ServiceUnavailable,
-            "已有ZIP导入正在处理，请稍后重试",
-        )
-    })?;
+    let permit = crate::services::upload_limits::acquire()?;
     let mut bytes = None;
     let mut fields = HashMap::new();
     while let Some(mut field) = multipart
@@ -69,14 +63,14 @@ async fn parse_upload(mut multipart: Multipart) -> ApiResult<Upload> {
             return Err(ApiError::validation("ZIP请求含未知字段"));
         }
         let limit = if is_file { MAX_ZIP_BYTES } else { 4096 };
-        let mut data = Vec::new();
+        let mut data = Vec::with_capacity(limit);
         while let Some(chunk) = field
             .chunk()
             .await
             .map_err(|_| ApiError::validation("上传数据中断"))?
         {
             if data.len() + chunk.len() > limit {
-                return Err(ApiError::validation("ZIP最多20MiB，项目信息最多4096字节"));
+                return Err(ApiError::validation("ZIP最多500MiB，项目信息最多4096字节"));
             }
             data.extend_from_slice(&chunk);
         }
@@ -177,7 +171,7 @@ async fn create_project(
     let description = upload.fields.get("description").cloned();
     if description
         .as_ref()
-        .is_some_and(|value| value.chars().count() > 2000)
+        .is_some_and(|value| value.chars().count() > 10000)
     {
         return Err(ApiError::validation("项目描述最多2000字"));
     }
@@ -284,9 +278,11 @@ async fn upload_project(
     let upload = parse_upload(multipart).await?;
     let (files, _) = services(&state)?;
     let existing = files.list(user.id, project).await?;
-    if existing.len() + upload.archive.files.len() > 2000 {
-        return Err(ApiError::validation("导入后文件数超过2000，请拆分项目"));
+    if existing.len() + upload.archive.files.len() > 10000 {
+        return Err(ApiError::validation("导入后文件数超过10000，请拆分项目"));
     }
+    let used:i64=sqlx::query_scalar("select source_bytes from public.projects where id=$1").bind(id).fetch_one(&pool).await.map_err(|_|ApiError::internal("无法核对项目容量"))?;
+    if used.saturating_add(upload.archive.manifest.total_bytes as i64)>crate::services::upload_limits::PROJECT_QUOTA_BYTES as i64{return Err(ApiError::validation("项目源文件与附件合计最多500MiB，请先删除不需要的文件"));}
     let dirs: Vec<String> = sqlx::query_scalar(
         "select path from public.scribe_project_directories where project_id=$1",
     )

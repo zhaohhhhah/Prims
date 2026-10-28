@@ -28,9 +28,9 @@ describe('project folder import', () => {
     expect(() => planFolderImport([picked('Paper/.DS_Store')])).toThrow('没有可导入');
   });
   it('enforces file, total and entry quotas before reading file contents', () => {
-    expect(() => planFolderImport([{ ...picked('Paper/a'), size: 8 * 1024 * 1024 + 1 }])).toThrow('8MiB');
-    expect(() => planFolderImport(Array.from({ length: 5 }, (_, index) => ({ ...picked(`Paper/${index}`), size: 8 * 1024 * 1024 })))).toThrow('32MiB');
-    expect(() => planFolderImport(Array.from({ length: 257 }, (_, index) => picked(`Paper/${index}`)))).toThrow('256');
+    expect(() => planFolderImport([{ ...picked('Paper/a'), size: 500 * 1024 * 1024 + 1 }])).toThrow('500MiB');
+    expect(() => planFolderImport(Array.from({ length: 2 }, (_, index) => ({ ...picked(`Paper/${index}`), size: 251 * 1024 * 1024 })))).toThrow('500MiB');
+    expect(() => planFolderImport(Array.from({ length: 10001 }, (_, index) => picked(`Paper/${index}`)))).toThrow('10000');
   });
   it('creates a real ZIP with unchanged binary bytes and no extra top-level folder', async () => {
     const binary = new Uint8Array([0, 255, 1, 13, 10]);

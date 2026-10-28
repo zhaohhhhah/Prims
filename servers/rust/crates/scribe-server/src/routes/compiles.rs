@@ -189,7 +189,7 @@ async fn stream(
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
         .on_upgrade(move |socket| async move {
-            if let Err(err) = drive_stream(socket, queue, job_id, replay, already_complete).await {
+            if let Err(err) = drive_stream(socket, queue, job_id, replay, already_complete, verifier, token).await {
                 warn!(?err, %job_id, "compile stream exited");
             }
         })
@@ -201,11 +201,14 @@ async fn drive_stream(
     job_id: CompileJobId,
     replay: Vec<CompileLogStreamMessage>,
     already_complete: bool,
+    verifier: Arc<TokenVerifier>,
+    token: String,
 ) -> anyhow::Result<()> {
     let (mut sink, mut stream) = socket.split();
 
     // Send everything we know about the job so far.
     for msg in &replay {
+        if verifier.verify(&token).await.is_err() { return Ok(()); }
         let json = serde_json::to_string(msg)?;
         sink.send(WsMessage::Text(json)).await?;
     }
@@ -221,11 +224,14 @@ async fn drive_stream(
     pubsub.subscribe(&channel).await?;
     let mut on_message = pubsub.on_message();
 
+    let mut access_tick=tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tokio::select! {
+            _=access_tick.tick()=> { if verifier.verify(&token).await.is_err() { break; } }
             // Live frames from the worker.
             msg = on_message.next() => {
                 let Some(msg) = msg else { break };
+                if verifier.verify(&token).await.is_err() { break; }
                 let payload: String = msg.get_payload().unwrap_or_default();
                 if sink.send(WsMessage::Text(payload.clone())).await.is_err() {
                     break;

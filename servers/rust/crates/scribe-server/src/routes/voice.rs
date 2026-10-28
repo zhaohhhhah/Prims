@@ -100,6 +100,7 @@ async fn upgrade(
     if let Err(err) = require_role(db.pool(), user.id, project).await {
         return api_error(err);
     }
+    let pool = db.pool().clone();
     let hub = state.inner.voice_hub.clone();
     let conn_id = Uuid::new_v4();
     let me = Peer { conn_id, user_id: user.id };
@@ -108,7 +109,7 @@ async fn upgrade(
     ws.max_message_size(64 * 1024)
         .max_frame_size(64 * 1024)
         .on_upgrade(move |socket| async move {
-            serve(socket, project, me, hub).await;
+            serve(socket, project, me, hub, pool).await;
         })
 }
 
@@ -117,6 +118,7 @@ async fn serve(
     project: ProjectId,
     me: Peer,
     hub: crate::voice::VoiceHub,
+    pool: sqlx::PgPool,
 ) {
     let room = hub.room(project);
     let mut rx = room.tx.subscribe();
@@ -147,6 +149,7 @@ async fn serve(
     let room_for_write = room.clone();
     // Write loop: forward broadcast messages to the WS, filtering
     // out anything that isn't relevant to this connection.
+    let write_pool=pool.clone(); let access_user=me.user_id;
     let write_task = tokio::spawn(async move {
         loop {
             let msg = match rx.recv().await {
@@ -178,6 +181,7 @@ async fn serve(
             if !send_it {
                 continue;
             }
+            if require_role(&write_pool, access_user, project).await.is_err() { break; }
             let text = match serde_json::to_string(&msg) {
                 Ok(t) => t,
                 Err(_) => continue,
@@ -195,7 +199,14 @@ async fn serve(
     });
 
     // Read loop: parse inbound messages, broadcast onto the room.
-    while let Some(frame) = stream.next().await {
+    let mut access_tick=tokio::time::interval(std::time::Duration::from_secs(1));
+    loop {
+        let frame=tokio::select! {
+            _=access_tick.tick()=> { if require_role(&pool,me.user_id,project).await.is_err() { break; } continue; },
+            frame=stream.next()=>frame,
+        };
+        let Some(frame)=frame else {break};
+        if require_role(&pool,me.user_id,project).await.is_err() { break; }
         let Ok(frame) = frame else { break };
         let text = match frame {
             Message::Text(t) => t,

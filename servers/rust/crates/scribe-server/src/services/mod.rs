@@ -73,3 +73,7 @@ pub mod context_policy;
 pub mod ai_usage;
 
 pub mod agent_compile_log;
+
+pub mod user_management;
+
+pub mod upload_limits;

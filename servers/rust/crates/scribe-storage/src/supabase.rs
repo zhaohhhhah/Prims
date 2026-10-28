@@ -140,6 +140,7 @@ impl Storage for SupabaseStorage {
         let response = self
             .http
             .post(self.object_url(bucket, key))
+            .timeout(Duration::from_secs(300))
             .headers(headers)
             .body(body)
             .send()

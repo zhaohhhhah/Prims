@@ -1,331 +1,105 @@
+<div align="center">
+
+<img src="apps/web/public/favicon.svg" width="72" height="72" alt="Prims 钢笔图标" />
+
 # Prims
 
-**A self-hosted collaborative LaTeX editor with an AI writing partner.**
+**Compose with AI**
 
-Prims is a personal fork of [Scribe](https://github.com/sunnyallana/Scribe),
-created by [Sunny Shaban Ali](https://github.com/sunnyallana). It keeps the
-upstream React, CodeMirror, Yjs, Rust, Supabase and Tectonic foundation, and
-adds a browser-first workflow for writing with your own AI endpoint.
+把想法写下来，和 AI 一起慢慢写好。
 
-## What's different
+[写作体验](#一起写也一起改) · [界面一览](#把项目放回书架) · [自己部署](#run-from-source) · [来源与许可](#来源与致谢)
 
-- **One project assistant.** Keep it floating or docked, continue a discussion,
-  start a new conversation, or return to a previous one.
-- **Editable suggestions inside the document.** A selection is a clue to the
-  task. The model can suggest precise changes across authorized project files.
-  Review and edit each candidate, apply or reject paragraphs independently,
-  and undo accepted changes. Accept/reject controls sit beside each Git-style
-  red/green preview. Candidates do not become document content until
-  accepted. Ambiguous or conflicting source text blocks application.
-- **Project context.** The assistant can list files, search filenames and text,
-  and read relevant text windows or supported images through bounded,
-  project-authorized tools. A private conversation summary carries writing goals between turns. Long
-  tool conversations use the pinned, Apache-licensed Codex local-compaction
-  prompt and history-rebuilding method; one bounded same-connection summary
-  request replaces old context only after complete success.
-- **Conversation without forced edits.** The model can explain uncertainty or
-  ask a clarifying question. A useful answer without a proposed change is a
-  successful response.
-- **Appearance settings.** A separate Appearance section offers 82 palettes,
-  day/night choices, regional and impression-inspired series, and six coordinated
-  presets. Classic colors and existing text/code fonts remain the initial
-  defaults. Presets are opt-in; individual choices can still be adjusted.
-- **Bring your own API.** Each account configures its own endpoint, API key
-  and model. Stored credentials use the server's encryption key. Explicit
-  image-capability errors trigger one image-free retry with an optional hint;
-  unrelated network, authentication and rate-limit errors remain errors.
-- **Chinese UI and onboarding.** Language settings, first-use API setup and a
-  private, editable LaTeX welcome project with examples and a tutorial.
-- **Invitation administration.** Invite-only registration, an administrator
-  page, and private SMTP settings with QQ-compatible TLS presets. Personal
-  Outlook OAuth is an optional alternative; only one configured mail
-  transport is active at a time.
-- **Chinese PDF preview assets.** PDF.js CMaps and standard fonts are served
-  from the same application origin, with their license files preserved.
+</div>
 
-## Run it yourself
+我想做一个写 LaTeX 时真正用得上的 AI 搭档：能跟着项目看文件，接着之前的讨论往下写，也能把修改摊开，让人看得明白、改得放心。
 
-This fork needs the upstream application services **and the Prims database
-extensions**. Existing Scribe databases must be backed up before migration.
+Prims 是我基于 [Scribe](https://github.com/sunnyallana/Scribe) 持续打磨的自托管协作编辑器。这里的重点是“一起写”：讨论围绕项目继续，建议落到具体文件里，留下什么、撤回什么，仍由写作者决定。
 
-1. Follow the upstream [setup scripts](scripts/README.md) and
-   [self-hosting guide](docs/self-hosting.md) to prepare PostgreSQL/Supabase,
-   Auth, Storage, Redis, Tectonic and the application environment.
-2. Copy `.env.example` to a private `.env`, then fill in your own values.
-   Generate and keep a stable `AI_KEY_ENCRYPTION_KEY`; rotating it makes
-   existing encrypted provider credentials unreadable.
-3. Follow [Prims database setup](supabase/prims/README.md) for the additional
-   private tables, invitation gate and explicit administrator assignment.
-   Create the initial owner through trusted Supabase Auth administration before
-   installing the invitation gate; the Prims signup form already requires an
-   invitation. Complete this before normal use; the original migrations alone are not
-   enough for this fork.
-4. Build the web application and Rust server using the workspace commands
-   below. Serve the web application, API and `/supabase` gateway at the same
-   public origin. Configure HTTPS in your reverse proxy.
-5. Sign in and configure your own model endpoint in Settings. Mail delivery is
-   optional and remains off until an administrator configures it. See the
-   [optional mail controller](deploy/mail/README.md).
+![Prims 的 LaTeX 编辑器、PDF 预览与项目助手](docs/screenshots/prims-editor.webp)
 
-```sh
-corepack enable
-pnpm install --frozen-lockfile
-pnpm exec turbo run build --filter=@scribe/web...
+*截图来自实际运行的 Web 界面，使用专门的演示账号和合成内容。提问框里是尚未发送的示例草稿，没有调用外部模型。*
 
-cd servers/rust
-cargo test -p scribe-ai -p scribe-server
-cargo build --release -p scribe-server
-```
+## 一起写，也一起改
 
-The package scope, crate names, storage keys and compatibility environment
-variables retain their upstream `scribe` identifiers. The visible application
-brand is **Prims**. The added workflow is tested in the web application;
-desktop packaging is inherited from upstream and has not been revalidated for
-all these additions.
+选中一段文字，可以从这里提问；打开项目助手，也可以从整篇文章的目标开始讨论。需要上下文时，助手能在当前项目里查找文件、搜索内容、读取相关片段，继续处理多个文件中的关联修改。
 
-## Tests
+我希望这些帮助最后能变成清楚、可判断的建议：
 
-```sh
-pnpm exec turbo run test --filter=@scribe/editor --filter=@scribe/web
-cd servers/rust
-cargo test -p scribe-ai -p scribe-server
-```
+- **看见改了哪里。** 修改以逐段差异预览呈现，可以先调整候选文字，再分别接受或拒绝。
+- **掌握应用的时机。** 候选不会直接写进正文；接受后仍可撤销，原文发生变化时也会重新核对位置。
+- **把讨论接下去。** 你的项目对话会保留，支持新建、切换和继续讨论；写作目标与上下文会随项目一起延续。
+- **按自己的方式摆放助手。** 停靠在右侧或底部、自由浮动，或放进独立标签页，写作与讨论可以保持在同一个流程里。
 
-Tests cover anchored edits, candidate changes without document writes,
-independent application and guarded undo, cross-target proposal rejection,
-bounded context, image-error classification and private context validation.
-The deployment used disposable-account integration tests for conversation
-isolation/history, read-only project search, image retry limits and mail
-permission checks. Those private deployment fixtures and their credentials
-are not part of this repository.
+解释一个概念、讨论一种表达，或先把问题聊清楚，也都是这个助手的工作。
 
-## Scope and data
+写过的文字也值得留住。自动保存与版本时间线记录写作过程，回头可以看差异、找回旧内容；需要时，也能让 AI 根据改动写一段版本摘要。
 
-Model tools inspect project references and submit pending proposals;
-document writes happen through the real editor after acceptance. Proposals
-can target multiple authorized text files. Exact anchors, overlapping ranges
-and concurrent edits are checked before acceptance. Image
-context supports PNG, JPEG and WebP; PDF, Office and HEIC extraction are not
-implemented by these tools. Project files sent to a model use the signed-in
-account's configured provider. Deployers should configure access, backups,
-retention and model-provider policies for their own installation.
+### 接入你自己的模型
 
-This repository contains source code and example configuration. It does not
-contain a production database, personal documents, provider credentials,
-mailbox authorization codes, certificates or private deployment addresses.
+Prims 使用你自己配置的 API 地址、Key 和模型。一个账号可以保存多组模型连接，每个连接也可以列出多个模型，在提问时选择本轮使用的模型；支持 OpenAI 兼容接口和 Anthropic 格式连接，具体能力取决于所选服务与模型。
 
-## Upstream and license
+连接配置属于各自账号，密钥在服务端加密保存。没有配置 AI 时，仍然可以编辑和编译项目。
 
-Based on Scribe commit
-[`d68b1996e780d906670830bbb4584c2387125ddf`](https://github.com/sunnyallana/Scribe/commit/d68b1996e780d906670830bbb4584c2387125ddf).
-Original author: **Sunny Shaban Ali**. Prims modifications are maintained by
-[@zhaohhhhah](https://github.com/zhaohhhhah).
+个人设置里也有用量视图，可以按天、七天或一个月回顾 Token 消耗；接口提供缓存信息时，会把输入的缓存命中与未命中分开统计。
 
-Prims remains **AGPL-3.0-or-later**. See [LICENSE](LICENSE), the preserved
-[upstream README](docs/UPSTREAM_README.md), and existing third-party notices.
-The upstream history and attribution are retained.
+### 编译报错，就从日志接着改
 
-### Native agent tools and project history
+日志页的 **AI调试并修复** 会把这次编译的日志、主文件和引擎带进项目助手，启动诊断。助手可以继续核对相关文件、提出修改，仍然沿用逐段预览和接受流程。
 
-OpenAI-compatible and Anthropic connections use native project tools and return results in the matching wire format. Assistant replies render Markdown, while LaTeX proposals remain source code with format checks. Review and apply changes per file and per paragraph. Version history includes dates and reviewed text restoration; optional AI summaries receive bounded version differences only. Interface URLs are recognized when unambiguous, otherwise choose the protocol explicitly.
+项目可以选择 Tectonic、XeLaTeX、LuaLaTeX 或 pdfLaTeX。原生 TeX 引擎需要部署对应的[编译工作器](servers/workbench/README.md)，字体和宏包也取决于你的编译环境。
 
-### Incremental proposals and agent controls
+## 把项目放回书架
 
-Small, focused changes are submitted through a pending-proposal tool loop,
-following the Codex patch/feedback/continue workflow. Complete proposals
-survive later output limits or interruptions, are deduplicated, and remain
-individually editable, acceptable, rejectable and undoable. The current file
-also offers batch acceptance with source rechecks. Long-line review controls
-stay within the visible editor. Selection and docked-composer drafts are
-independent while sent messages retain shared conversation context.
+项目在书架上摆开，旁边就能翻阅已经编译的 PDF。回到编辑器，文件、正文、PDF 和讨论各有自己的位置。
 
-The assistant can update a bounded public task plan using the Codex
-`update_plan` argument shape. Repeated tool batches without new results or
-proposals stop automatically. Progress shows actual public actions and
-completed steps, not hidden reasoning. There is one unified assistant menu
-entry; handwriting/OCR entry points have been removed from the web UI.
+![Prims 书架与已编译 PDF 的翻页预览](docs/screenshots/prims-bookshelf.webp)
 
-Each account can configure a separate Doubao, DeepSeek or SearXNG search connection
-in Agent settings, with its own search endpoint and encrypted API key. Any
-configured chat model can call that connection; unrelated chat-model credentials
-are not sent to the search endpoint. Without an independent search configuration,
-the existing official DeepSeek model connection remains an optional fallback.
-Requests use a personal per-request search-call setting (default 3; 0 disables
-that separate count limit), attributed results and separate search-provider
-billing. The client uses the configured search endpoint rather than fetching
-arbitrary result URLs from the application server.
+可以从模板起步，也可以选择文件夹、导入 ZIP，或直接上传文件，继续整理主文档和项目目录。每个项目可保存 **500 MiB 的源文件与附件**，编译产物和版本历史另计。新账号会收到一份可编辑的“纸上微光”教程，里面有排版示例，也介绍了日常使用方式。
 
-The pinned Codex source, adapted portions and Apache-2.0 notices are documented
-in [the compaction origin notice](servers/rust/crates/scribe-server/src/services/vendor/codex_compaction/ORIGIN.md).
+## 也认真做了它的样子
 
+写作工具会被盯着看很久，所以我也希望它舒服一点。明暗主题、书名字体、编辑器字体和 PDF 阅读外观可以分别调整；这些选择改变的是写作空间，文档排版仍由 LaTeX 决定。
 
-### Project import, bookshelf and reading appearance
+登录页上，莫奈的画作慢慢轮换。登录与注册之间切换时，画面会接着走。
 
-Create a project from a ZIP archive, choose its main TeX file, or add multiple
-files and ZIPs to an existing project. Import preserves relative paths and empty
-directories. Name conflicts are checked before writes; existing files are not
-silently overwritten. ZIPs are bounded to 20 MiB compressed, 32 MiB expanded,
-8 MiB per file and 256 entries. Unsafe paths, links, encrypted archives and
-unsupported compression are rejected. An existing-project upload can report
-partial success if a later storage operation fails, preserving completed files.
+![Prims 的莫奈画作登录页](docs/screenshots/prims-login.webp)
 
-The dashboard offers a bookshelf view using actual compiled first-page PDF
-thumbnails. Projects without an available PDF use a plain cover placeholder.
-PDF reading controls sit beside the PDF/Log tabs and offer Original, Soft and
-Night modes plus brightness. These are screen-only filters: PDF bytes, export,
-download and print output keep their original appearance. Reading preferences
-are separate from the application theme.
+截图中的部分中文书名字体由实例自行提供，字体文件不随仓库发布；缺少时会使用回退字体。
 
-The 82 application palettes include classic, impression-inspired, Chinese and
-Japanese traditional-color inspirations, and nature-inspired Mexican, American,
-Icelandic, Turkish and African series. These are design references rather than
-national or continent-wide color standards. Day and night palettes are remembered
-independently; filtering a series does not apply it. Six opt-in presets coordinate
-colors, wordmarks, book titles and icon strokes while retaining the selected
-text/code fonts. High-contrast mode remains available. Appearance preferences
-are local browser settings.
+<a id="run-from-source"></a>
 
-Optional calligraphic wordmark/book-title choices use self-hosted Allura and
-Ma Shan Zheng, distributed with their SIL Open Font License texts in
-`apps/web/public/fonts/appearance/`. Existing application, editor and third-party
-licenses remain in place.
+## 想自己搭起来
 
+Prims 保留了上游的开发脚本和 Docker 配置，也增加了自己的数据库扩展。部署需要准备应用、数据库、认证、存储、Redis 和编译环境；相关文档是起点，仍需按自己的服务器完成配置。
 
-Additional day/night palette pairs draw on Chinese architecture and landscapes,
-regional color scenes, and musical moods. These include Forbidden City, Great
-Wall, Nanjing, Ginkgo, Debussy-inspired Faun and Moonlight, Sunrise at Sea,
-Rachmaninoff I/II/III, Paganini Variations and Tchaikovsky I. Book covers have
-independent foreground/background colors; application text and all cover titles
-retain at least 4.5:1 contrast. Existing custom appearance choices are preserved.
-A PDF theme dropdown and brightness control sit in the preview toolbar, with warm-yellow and
-light-green paper modes in addition to Original, Soft and Night. Filters are
-display-only and do not change exported/downloaded PDFs.
+1. 从[开发脚本说明](scripts/README.md)、[环境变量说明](docs/env-vars.md)和[自托管指南](docs/self-hosting.md)开始，了解各项依赖与运行方式。
+2. 完成上游迁移后，按 [Prims 数据库扩展说明](supabase/prims/README.md)准备附加表和函数。Prims 的手动 SQL 扩展不会由上游迁移器自动执行；初始管理员、邀请码与邮箱验证也需要按文档安排。
+3. 配置并保管好自己的环境变量和持久加密密钥，再构建 Web 与 Rust 服务。实际发布需要处理 HTTPS、WebSocket、存储、备份和升级。
+4. 原生编译引擎参考[工作器文档](servers/workbench/README.md)。需要注册、验证码或重置邮件时，再按[邮件服务说明](deploy/mail/README.md)完成相应配置与投递验证。
 
+如果和同学、朋友一起用，管理员可以在站点管理里配置邮件、生成邀请码、查找用户。需要清理账号时，确认框会先展示涉及的项目与附件，再由管理员输入邮箱确认永久删除。
 
-Appearance now presents theme collections with both day and night previews.
-Choosing a collection applies its matching palette pair atomically, without
-changing personal fonts, icons or the independent light/dark/system color mode.
-Existing custom combinations are retained until a collection is chosen.
+应用运行后，在个人设置里添加自己的模型连接即可开始共写。仓库也保留了[桌面端代码](apps/desktop/README.md)；这个分支目前主要围绕浏览器中的写作体验打磨。
 
-### Agent preferences, skills and private memory
+500 MiB 是项目文件容量；编译工作器有独立的快照、内存与时限预算，部署时也要一起核对。
 
-Settings now has an independent Agent section for personal tool preferences,
-text-only Agent Skills and account-and-project private memory. Import or edit
-SKILL.md with YAML name/description (up to 48 KiB), enable/disable skills, or
-archive them. The Agent can also prepare an install_skill suggestion from complete
-SKILL.md text or a bounded public GitHub SKILL.md URL. This prepares a text-only,
-pending-review card: it does not save or enable a skill. Only the user's Install
-click writes to their personal library; Reject does not write, and same-name
-conflicts never overwrite an existing skill. Scripts are never executed and
-allowed-tools metadata grants no permissions. Completed cards persist in the
-conversation without becoming installation authorization on refresh.
-Memory is bounded to 4,000 characters; revision checks preserve
-unsaved drafts when another session changes it. Existing chat-model connections remain unchanged;
-search credentials are managed separately.
+### 代码在哪里
 
-Project reads stay membership-scoped. Text and file changes require explicit
-acceptance. The assistant has no host-system tool or arbitrary shell/MCP setup.
-Optional diagnostics run fixed LaTeX/font tasks on a saved, authorized snapshot
-in a fresh resource-limited, network-disabled worker; this does not edit project
-files or install system fonts. Operators can optionally supply appropriately
-licensed font resources as read-only mounts to disposable workers. These mounts
-are fixed operator configuration, not model-selected paths or host font installs;
-operator-supplied font binaries and private license files are not distributed here.
-See the [workbench guide](servers/workbench/README.md) and its generic examples.
-Health checks distinguish configured services from workers that are actually ready. Independent Doubao, DeepSeek or SearXNG search settings are shared
-across the user's chat models and remain controlled by the personal search
-preference. No additional system permissions are granted.
+| 部分 | 入口 |
+| --- | --- |
+| Web 编辑器与界面 | [`apps/web`](apps/web/README.md) |
+| 编辑器组件 | [`packages/editor`](packages/editor) |
+| Rust API、项目协作与 AI 工具 | [`servers/rust`](servers/rust/README.md) |
+| 原生 TeX 编译工作器 | [`servers/workbench`](servers/workbench/README.md) |
+| Prims 数据库扩展 | [`supabase/prims`](supabase/prims/README.md) |
 
-To deploy this addition, apply
-`supabase/migrations/20261027000001_agent_library.sql` after the existing Prims
-schema. The diagnostic workbench is optional: see
-[its installation and isolation guide](servers/workbench/README.md) and public
-examples. Application variables are `PRIMS_WORKBENCH_URL` and
-`PRIMS_WORKBENCH_TOKEN`; worker/broker examples document
-`PRIMS_WORKBENCH_IMAGE`, `PRIMS_WORKBENCH_TEX_CACHE` and
-`PRIMS_WORKBENCH_TOKEN_FILE`. Operators supply private values outside source
-control, pin approved images and provide an approved public TeX cache. The
-application and model do not receive container-runtime access. Existing API
-credentials and application data are not copied into disposable workers.
+主要使用 React、TypeScript、CodeMirror、Yjs、Rust/Axum 与 Supabase。欢迎通过 [Issue](https://github.com/zhaohhhhah/Prims/issues) 分享使用感受，也欢迎按[贡献说明](CONTRIBUTING.md)提交修改。
 
-Editor chrome now uses short, reduced-motion-aware tab/panel/status transitions
-without delaying operations or animating document layout. Assistant UI omits
-redundant tutorial labels while retaining file paths, actual progress, review
-controls and errors. The upstream AGPL attribution, adapted Codex notices and
-font OFL licenses remain unchanged.
+## 来源与致谢
 
+Prims 基于 [Scribe](https://github.com/sunnyallana/Scribe)，原作者是 [Sunny Shaban Ali](https://github.com/sunnyallana)。这个分支由 [@zhaohhhhah](https://github.com/zhaohhhhah) 维护，保留了[上游 README](docs/UPSTREAM_README.md)和历史归属；分支起点为 [`d68b1996`](https://github.com/sunnyallana/Scribe/commit/d68b1996e780d906670830bbb4584c2387125ddf)。感谢上游搭起了协作编辑与编译的基础。
 
-To enable independent search settings, apply
-`supabase/migrations/20261027000002_search_connections.sql` after the Agent
-library migration. Then apply `supabase/migrations/20261028000001_searxng_search.sql`.
-In Settings > Agent, choose the interface type and full HTTPS endpoint. Doubao
-and DeepSeek require their independent search keys. SearXNG uses its standard
-POST form q/format=json protocol; supply your own instance endpoint and enable
-JSON output in that instance. Its optional Bearer key authenticates a user
-gateway, rather than a native mandatory SearXNG key. No instance is deployed
-or public service selected automatically. Keys are
-never returned by the API. An empty password keeps an existing key only for the
-same provider and endpoint. Switching to SearXNG with a blank key creates an
-unauthenticated connection without inheriting the old key; its explicit
-clear-key option removes a saved gateway key. Other providers still require
-a replacement key when the provider or endpoint changes. Clearing the
-independent configuration restores the model-connection fallback. No new
-server-wide search credential is required.
+项目继续采用 **AGPL-3.0-or-later**，详见 [LICENSE](LICENSE)。Prims 中使用的 OpenAI Codex 压缩适配、部分任务规划实现及其来源、改动和 Apache-2.0 LICENSE/NOTICE，保留在 [Codex 来源说明](servers/rust/crates/scribe-server/src/services/vendor/codex_compaction/ORIGIN.md)及相邻文件中。
 
-### Webpage skills and detached project tabs
-
-Agent settings can import a bounded public HTTPS Markdown page or HTML page.
-HTML is converted to text with html2text; the user's own configured model can
-prepare a standard SKILL.md draft. Only an explicit final save adds the skill
-to the personal library. Fetched material remains untrusted data and grants no
-execution permissions. Public-target DNS checks, pinned addresses, byte limits
-and disabled redirects apply; private endpoints and credential-bearing URLs
-are rejected.
-
-The project assistant can be opened in an independent browser tab while sharing
-the project's conversation and review workflow. Proposed changes remain subject
-to explicit acceptance and current-file conflict checks.
-
-Search-call preferences are personal and independent of connection keys and
-the four Agent toggles. Zero removes only the separate search-call limit; the
-overall Agent round and time bounds remain. Changing the four toggles or
-deleting a search connection preserves the search-call preference.
-
-The detached assistant follows the original editor current file and selection
-through the same account/project-scoped bridge. Context updates do not replace
-conversation drafts or pending review plans. In-flight requests retain their
-request-time context. Editor surfaces share geometry-based transitions, with
-immediate drag resizing and reduced-motion support.
-
-Editor portal controls retain a short, inert visual exit when React removes
-them immediately. Radix surfaces retain their real content through the close
-animation. Reduced-motion, resizing and route cleanup cancel visual layers.
-
-Assistant right and bottom docks use directional geometry for both opening
-and closing. Their layout space remains until closing finishes, so the editor
-resizes with the dock. Floating surfaces keep their independent morph.
-
-Projects can save their main document and compiler: Tectonic (the default),
-XeLaTeX, LuaLaTeX or pdfLaTeX. Native TeX engines run through the isolated
-compiler broker described in `servers/workbench/README.md`. Configure
-`PRIMS_COMPILE_BROKER_URL` and `PRIMS_COMPILE_BROKER_TOKEN` on the server
-to enable the native engines. Existing projects retain their saved settings.
-The assistant can propose compiler and main-document changes for explicit review.
-The compiler workers use read-only TeX resources, no network, no shell escape,
-and bounded per-job resources; API credentials remain outside each worker.
-
-The assistant header selects conversations with a compact dropdown. Work status
-appears within the conversation, and opening a conversation shows the latest
-messages while manual history reading keeps its scroll position.
-
-The bookshelf scrolls independently of the project preview and provides owner-only
-rename and confirmed-delete actions. The assistant can check an exact installed
-font name in the compilation environment without requiring a project font upload.
-Native compiler workers reuse a persistent Fontconfig cache.
-
-Named model connections support per-model context windows (default 262144 tokens),
-with window-aware history, source limits and Codex compaction. Explicit provider
-context-limit errors offer a scoped adjustment card. Search has no separate count
-limit by default; user-configured positive limits still apply. Private token usage
-uses provider counters for conversations, continuations, compaction and summaries,
-with daily/7-day/30-day totals, a contribution calendar and a bar chart.
+随仓库提供的 Allura 与 Ma Shan Zheng 保留各自的 [OFL 许可](apps/web/public/fonts/appearance/OFL-Allura.txt)与[许可文本](apps/web/public/fonts/appearance/OFL-MaShanZheng.txt)。其他第三方组件沿用各自许可。

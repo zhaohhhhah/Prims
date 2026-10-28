@@ -2,13 +2,13 @@
 
 These manual SQL files accompany the modified Prims source. They are **not automatically applied** by the upstream migration runner. Existing upstream files in `supabase/migrations` remain unchanged. None of these scripts contains an account ID, invitation code, provider key or deployed database content.
 
-Use a privileged database operator connection (normally `postgres`) and take a backup before applying them. The upstream Supabase roles (`anon`, `authenticated`, `service_role`, `supabase_auth_admin`) and base tables must already exist. In particular, finish **all upstream migrations** first, including `auth.users`, `public.users`, projects, project membership and files. Existing standalone Supabase bootstraps may also need their normal Auth function ownership/role compatibility setup; these extensions do not silently change ownership of Auth's built-in functions.
+Use a privileged database operator connection (normally `postgres`) and take a backup before applying them. The upstream Supabase roles (`anon`, `authenticated`, `service_role`, `supabase_auth_admin`) and base tables must already exist. In particular, finish the **base May schema migrations** first, including `auth.users`, `public.users`, projects, project membership, files and versions. The later October model/context migrations depend on `06-ai-model-profiles.sql`; apply that extension before continuing those migrations, as shown below. Existing standalone Supabase bootstraps may also need their normal Auth function ownership/role compatibility setup; these extensions do not silently change ownership of Auth's built-in functions.
 
 ## Fresh installation order
 
 1. While setup is local/private, create the intended owner's email/password account through your normal Supabase Auth setup. Keep that exact account email for the explicit administrator step. Do this **before** installing the invitation gate; the gate intentionally rejects registrations without an invitation.
-2. Finish the upstream migration runner and any bootstrap grants.
-3. Apply `01-registration.sql`, `02-welcome.sql`, `03-ai-context.sql`, then `04-outlook-mail.sql`, using `psql -v ON_ERROR_STOP=1 -f <file>` for each.
+2. Finish the upstream base May migrations (through `20260524000004_comment_suggestions.sql`) and bootstrap grants. Pause before the October model/context migrations until extension `06` exists.
+3. Apply `01-registration.sql`, `02-welcome.sql`, `03-ai-context.sql`, then `04-outlook-mail.sql`, using `psql -v ON_ERROR_STOP=1 -f <file>` for each. Continue with the complete ordered extension list below; the explicit administrator step is separate and never part of a wildcard loop.
 4. Assign the intended existing account explicitly:
 
    ```sh
@@ -45,6 +45,35 @@ SMTP uses the optional private host mail controller rather than an additional SQ
 
 `06-ai-model-profiles.sql` adds the private per-user named AI configuration table. Apply it after the upstream Auth/roles setup and after blanket bootstrap grants, preserving its RLS/revokes. It is additive and does not copy or change the original `users.ai_config` default API configuration or key. The app encrypts profile keys with the existing persistent encryption key. Each request may select an owned profile; missing/default selection continues using the original default.
 
-Apply `07-ai-profile-defaults.sql` after model profiles for persistent per-user defaults and one-time legacy migration. Then apply `08-project-actions-history.sql` for private file-operation plans, explicit directories, path collision guards, and deduplicated automatic text history. Existing documents are not rewritten.
+## Complete release execution order
 
-Apply `09-version-ai-summaries.sql` for optional per-user AI version summaries. Run the app with `PRIMS_VERSION_SUMMARY_WORKER=enabled` to process opted-in future versions. Summaries send bounded added/removed lines only; the default is off and historical versions are not automatically backfilled.
+Use full filenames. Two independent files begin with `08-` and two begin with `09-`; these are additive features, not alternative versions. A numeric prefix alone is not a migration identifier. Do not execute `supabase/prims/*.sql` as a batch: `05-create-admin.sql` deliberately requires an operator-supplied account email.
+
+After the upstream schema and compatibility grants are ready, apply these extension files explicitly in order:
+
+1. `01-registration.sql`
+2. `02-welcome.sql`
+3. `03-ai-context.sql`
+4. `04-outlook-mail.sql`
+5. `05-create-admin.sql` **only when deliberately assigning an existing administrator**, with the `admin_email` parameter shown above. Existing deployments retain their administrator rows and ordinarily skip this step.
+6. `06-ai-model-profiles.sql`. **Now apply the remaining October upstream migrations in timestamp order through the normal migration runner/history before continuing with `07` below**; `20261028000002_model_context_windows.sql` and `20261028000003_remove_model_count_limit.sql` both directly require this private model-profile table.
+7. `07-ai-profile-defaults.sql` — requires `06`; private default-model preferences and legacy-migration marker.
+8. `08-project-actions-history.sql` — requires upstream files and project versions; private directories, action plans, version state and file/directory namespace checks.
+9. `08-ai-context-transport.sql` — requires `03`; aligns stored private-message content/raw/selection field checks with the existing 8 Mi-character transport boundary; no provider/context budget changes.
+10. `09-version-ai-summaries.sql` — requires upstream users/projects/versions and `08-project-actions-history.sql`; opt-in per-user summary preferences and leased jobs. Installing SQL alone does not enable model requests; the optional worker remains separately configured.
+11. `09-registration-confirmation.sql` — requires `01` and audited GoTrue v2.197.0 behavior. Apply before enabling confirmation; see the transport requirements below.
+12. `10-tutorial-releases.sql` — requires `02` and upstream users/projects; per-user tutorial release bookkeeping. SQL alone does not create PDF artifacts or replace existing projects.
+13. `11-user-management.sql` — requires upstream users/projects/files/Yjs snapshots and the administrator schema. Adds private durable attachment cleanup scopes, retained after account hard deletion, and prevents collaboration updates from recreating a deleted project's snapshots. Deploy with the matching backend; old signed JWTs are rejected by its database-backed account check and live sockets recheck permissions.
+14. `12-project-storage-quota.sql` — requires upstream projects/files/Storage and the quota-aware backend. Atomically reconciles source-file sizes and enforces **524,288,000 bytes (500MiB)** per project for source files plus attachments. Generated compile artifacts, version snapshots and avatars are excluded. Existing oversized projects can shrink; growing them is rejected. It restricts direct authenticated source-object and file-metadata writes to the supported backend API; service-role backend operations, read policies and other Storage buckets retain their behavior. Apply during a coordinated backend rollout so the quota is checked before any physical file overwrite. Raise the deployment's reverse-proxy and Storage upload limits separately.
+
+The three formerly published files `07-ai-profile-defaults.sql`, `08-project-actions-history.sql`, and `09-version-ai-summaries.sql` must also be present in a complete checkout; do not mistake a deployment directory that omitted these files for a complete installation bundle.
+
+## Upstream incremental migrations are also required
+
+Keep `supabase/migrations` in its normal versioned runner/history. Beyond the initial May schema, the current release includes `20261027000001_agent_library.sql`, `20261027000002_search_connections.sql`, `20261028000001_searxng_search.sql`, `20261028000002_model_context_windows.sql`, `20261028000003_remove_model_count_limit.sql`, and `20261028000004_refresh_compile_repair_skill.sql`. For a fresh installation, first run the base May migrations, install manual extensions `01`–`06` (with `05` remaining explicit/optional administrator assignment), then resume the October upstream migrations in timestamp order, and finally continue manual extensions `07`–`12`. In particular, do not run `20261028000002_model_context_windows.sql` or `20261028000003_remove_model_count_limit.sql` before `06-ai-model-profiles.sql`. For an existing installation, apply only unapplied migrations for the exact source version, respecting these dependencies and the normal migration history. They provide agent preferences/skills/memory, search configuration and current model/context behavior; the manual extension list does not replace them. Future releases may add further versioned migrations, so consult the checked-out release and its migration history rather than treating this list as permanent.
+
+## Email-confirmed registration deployment requirements
+
+For `09-registration-confirmation.sql`, keep `GOTRUE_AUDIT_LOG_DISABLE_POSTGRES=false`, `GOTRUE_MAILER_AUTOCONFIRM=false`, `GOTRUE_SMTP_MAX_FREQUENCY=60s`, and one consistent `GOTRUE_MAILER_OTP_LENGTH` (the deployed UI supports 6–10 digits). The `user_confirmation_requested` audit insertion is the pre-send invitation/cooldown gate for the audited GoTrue version. Every initial or resent signup code needs a valid pending invitation; the invitation is consumed only by successful confirmation. Failed SMTP delivery rolls back the cooldown claim. Verify these invariants again before changing GoTrue versions.
+
+Configure the persisted QQ SMTP or Outlook transport through the private mail controller; its existing saved credentials stay outside this repository. Enable `enabled=true` and `requireConfirmation=true` only after SQL, templates, Auth env and matching UI are ready. Verify the confirmation template contains GoTrue's `{{ .Token }}` value and is reachable by Auth. The SMTP provider account, authorization code, token encryption key and deployment secrets are never SQL parameters or public source files. A production rollout should pause signup while changing confirmation settings and reopen it only after health/template/config checks; do not restore automatic confirmation as an error fallback.

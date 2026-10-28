@@ -25,6 +25,10 @@ pub enum VerifyError {
     Decode(#[from] jsonwebtoken::errors::Error),
     #[error("claims missing sub")]
     MissingSub,
+    #[error("account is no longer active")]
+    InactiveAccount,
+    #[error("account status lookup unavailable")]
+    AccountLookupUnavailable,
 }
 
 /// The verifier holds whichever secrets/JWKS endpoints are configured.
@@ -38,6 +42,7 @@ struct Inner {
     hs_secret: Option<DecodingKey>,
     jwks: Option<JwksCache>,
     cache: VerifiedTokenCache,
+    accounts: Option<sqlx::PgPool>,
 }
 
 impl TokenVerifier {
@@ -48,8 +53,24 @@ impl TokenVerifier {
         let hs_secret = hs_secret.map(|s| DecodingKey::from_secret(s.as_bytes()));
         let jwks = jwks_url.map(JwksCache::new);
         Self {
-            inner: Arc::new(Inner { hs_secret, jwks, cache: VerifiedTokenCache::new() }),
+            inner: Arc::new(Inner { hs_secret, jwks, cache: VerifiedTokenCache::new(), accounts: None }),
         }
+    }
+
+    /// Check account existence on every verification, including crypto-cache hits.
+    /// Never cache this result: a deleted account must lose access immediately.
+    pub fn with_accounts(mut self, pool: sqlx::PgPool) -> Self {
+        Arc::get_mut(&mut self.inner).expect("configure before cloning verifier").accounts = Some(pool);
+        self
+    }
+
+    async fn active(&self, user: &AuthUser) -> Result<(), VerifyError> {
+        if let Some(pool) = &self.inner.accounts {
+            let exists: bool = sqlx::query_scalar("select exists(select 1 from auth.users a join public.users u on u.id=a.id where a.id=$1 and a.deleted_at is null)")
+                .bind(user.id.into_inner()).fetch_one(pool).await.map_err(|_| VerifyError::AccountLookupUnavailable)?;
+            if !exists { return Err(VerifyError::InactiveAccount); }
+        }
+        Ok(())
     }
 
     pub async fn verify(&self, token: &str) -> Result<AuthUser, VerifyError> {
@@ -58,6 +79,7 @@ impl TokenVerifier {
         // hot path — a single warm client sends the same JWT for the
         // full life of an access token (~1 hour).
         if let Some(user) = self.inner.cache.get(token) {
+            self.active(&user).await?;
             return Ok(user);
         }
 
@@ -83,6 +105,7 @@ impl TokenVerifier {
             role,
             token: token.to_string(),
         };
+        self.active(&user).await?;
         self.inner.cache.insert(token, user.clone(), exp);
         Ok(user)
     }

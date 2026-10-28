@@ -65,13 +65,13 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/api/projects/:project_id/files/:file_id/content",
-            get(read_content).put(write_content),
+            get(read_content).put(write_content).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route(
             "/api/projects/:project_id/files/:file_id/download-url",
             get(download_url),
         )
-        .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(crate::services::upload_limits::UPLOAD_BODY_BYTES))
         .layer(from_fn(require_auth))
 }
 
@@ -129,6 +129,7 @@ async fn create_dispatch(
             Err(err) => api_error_response(err),
         }
     } else if content_type.starts_with("multipart/form-data") {
+        let _permit=match crate::services::upload_limits::acquire(){Ok(p)=>p,Err(e)=>return api_error_response(e)};
         let multipart = match Multipart::from_request(req, &state.0.clone()).await {
             Ok(m) => m,
             Err(err) => return bad_request(&err.to_string()),
@@ -160,35 +161,37 @@ async fn create_from_multipart(
     Path(project_id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<ProjectFile>> {
+    let db=state.db().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"database unavailable"))?;
+    crate::services::membership::assert_can_write(db.pool(),user.id,ProjectId::new(project_id)).await?;
     let mut requested_path: Option<String> = None;
     let mut bytes: Option<Vec<u8>> = None;
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|err| ApiError::new(ErrorCode::BadRequest, format!("multipart: {err}")))?
     {
         match field.name() {
             Some("path") => {
-                requested_path = Some(
-                    field
-                        .text()
-                        .await
-                        .map_err(|err| ApiError::new(ErrorCode::BadRequest, format!("path: {err}")))?,
-                );
+                let mut path=Vec::new();
+                while let Some(chunk)=field.chunk().await.map_err(|_|ApiError::validation("文件路径读取失败"))?{
+                    if path.len()+chunk.len()>4096{return Err(ApiError::validation("文件路径过长"));}path.extend_from_slice(&chunk);
+                }
+                requested_path=Some(String::from_utf8(path).map_err(|_|ApiError::validation("文件路径必须是UTF8"))?);
             }
             Some("file") => {
                 let filename = field.file_name().map(|s| s.to_string());
                 if requested_path.is_none() {
                     requested_path = filename;
                 }
-                bytes = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|err| ApiError::new(ErrorCode::BadRequest, format!("file: {err}")))?
-                        .to_vec(),
-                );
+                if bytes.is_some(){return Err(ApiError::validation("每次上传只接受一个文件"));}
+                let max=crate::services::upload_limits::PROJECT_QUOTA_BYTES;
+                let mut data=Vec::with_capacity(max);
+                while let Some(chunk)=field.chunk().await.map_err(|_|ApiError::validation("文件上传中断"))?{
+                    if data.len().saturating_add(chunk.len())>max{return Err(ApiError::validation("单文件最多500MiB，且不能超过项目剩余容量"));}
+                    data.extend_from_slice(&chunk);
+                }
+                bytes=Some(data);
             }
             _ => {} // ignore unknown fields
         }
@@ -199,6 +202,7 @@ async fn create_from_multipart(
     let bytes = bytes
         .ok_or_else(|| ApiError::new(ErrorCode::ValidationFailed, "missing 'file' part"))?;
 
+    let path=crate::services::archive_import::safe_path(&path)?;
     let input=CreateFileInput{path,file_type:None,content:None};
     let service=files_service(&state)?;
     let created=service.create_uploaded(user.id,ProjectId::new(project_id),input,bytes).await?;

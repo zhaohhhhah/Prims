@@ -1,7 +1,9 @@
 /** Preflight UX only: the server independently verifies archives and authorization. */
-export const ZIP_MAX_BYTES=20*1024*1024;
-export const FILE_MAX_BYTES=8*1024*1024;
-export const BATCH_MAX_BYTES=32*1024*1024;
+export const PROJECT_MAX_BYTES=500*1024*1024;
+export const MAX_UPLOAD_ENTRIES=10000;
+export const ZIP_MAX_BYTES=500*1024*1024;
+export const FILE_MAX_BYTES=500*1024*1024;
+export const BATCH_MAX_BYTES=500*1024*1024;
 export function uploadPath(raw:string):string{
  if(raw.startsWith('/')||/[\\:\x00-\x1f\x7f]/.test(raw))throw new Error('文件路径不安全，请改名后上传');
  const path=raw.replace(/^(?:\.\/)+/,'').replace(/\/$/,'');
@@ -18,21 +20,21 @@ export function preflightUploadPaths(incoming:readonly string[],existingFiles:re
 }
 
 export interface BatchTransport{
- listFiles():Promise<{path:string}[]>;
+ listFiles():Promise<{path:string;sizeBytes?:number}[]>;
  inspectZip(file:File):Promise<{files:{path:string}[];directories:string[];totalBytes:number}>;
  uploadZip(file:File):Promise<{created:unknown[];complete:boolean;failed:{message:string}|null}>;
  uploadFile(path:string,file:File):Promise<unknown>;
 }
 /** Preflight every selected file/archive before the first write. Runtime failures keep prior new files. */
 export async function uploadBatch(selected:readonly File[],directories:readonly string[],io:BatchTransport):Promise<{uploaded:number;failed:string|null}>{
- if(selected.length>256)throw new Error('每批最多选择256个文件');
+ if(selected.length>MAX_UPLOAD_ENTRIES)throw new Error('每批最多选择10000个文件');
  const plans:({file:File;zip:true}|{file:File;zip:false;path:string})[]=[];const paths:string[]=[];const pendingDirectories:string[]=[];let total=0;let entries=0;
  for(const file of selected){
-  if(file.name.toLowerCase().endsWith('.zip')){if(file.size>ZIP_MAX_BYTES)throw new Error('ZIP压缩包最多20MiB');const manifest=await io.inspectZip(file);total+=manifest.totalBytes;entries+=manifest.files.length+manifest.directories.length;paths.push(...manifest.files.map(item=>item.path));pendingDirectories.push(...manifest.directories);plans.push({file,zip:true});}
-  else{if(file.size>FILE_MAX_BYTES)throw new Error(`单文件最多8MiB：${file.name}`);const path=uploadPath(file.webkitRelativePath||file.name);total+=file.size;entries+=1;paths.push(path);plans.push({file,zip:false,path});}
-  if(total>BATCH_MAX_BYTES||entries>256)throw new Error('每批展开后最多32MiB、256个条目；本次未上传任何文件');
+  if(file.name.toLowerCase().endsWith('.zip')){if(file.size>ZIP_MAX_BYTES)throw new Error('ZIP压缩包最多500MiB');const manifest=await io.inspectZip(file);total+=manifest.totalBytes;entries+=manifest.files.length+manifest.directories.length;paths.push(...manifest.files.map(item=>item.path));pendingDirectories.push(...manifest.directories);plans.push({file,zip:true});}
+  else{if(file.size>FILE_MAX_BYTES)throw new Error(`单文件最多500MiB：${file.name}`);const path=uploadPath(file.webkitRelativePath||file.name);total+=file.size;entries+=1;paths.push(path);plans.push({file,zip:false,path});}
+  if(total>BATCH_MAX_BYTES||entries>MAX_UPLOAD_ENTRIES)throw new Error('每批展开后最多500MiB、10000个条目；本次未上传任何文件');
  }
- const current=await io.listFiles();preflightUploadPaths(paths,current.map(file=>file.path),directories,pendingDirectories);let uploaded=0;
+ const current=await io.listFiles();const used=current.reduce((sum,file)=>sum+Math.max(0,file.sizeBytes??0),0);if(used+total>PROJECT_MAX_BYTES)throw new Error(`项目源文件和附件合计最多500MiB，剩余${Math.max(0,Math.floor((PROJECT_MAX_BYTES-used)/1024/1024))}MiB；本次未上传任何文件`);preflightUploadPaths(paths,current.map(file=>file.path),directories,pendingDirectories);let uploaded=0;
  for(const plan of plans){try{if(plan.zip){const result=await io.uploadZip(plan.file);uploaded+=result.created.length;if(!result.complete)return{uploaded,failed:result.failed?.message??'ZIP部分文件未导入'};}else{await io.uploadFile(plan.path,plan.file);uploaded+=1;}}catch(error){return{uploaded,failed:error instanceof Error?error.message:'上传失败'};}}
  return{uploaded,failed:null};
 }

@@ -32,9 +32,20 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
 }
 export const adminApi = {
   me: () => request<{ isAdmin: boolean }>('/me'),
-  users: () => request<SiteAccount[]>('/users'),
+  users: (q = '') => request<SiteAccount[]>(`/users?q=${encodeURIComponent(q)}`),
+  deletionPreview: (id: string) => request<UserDeletionImpact>(`/users/${id}/deletion-preview`),
+  deleteUser: (id: string, confirmationEmail: string) => request<UserDeleted>(`/users/${id}/delete`, { confirmationEmail, permanentlyDeleteOwnedProjects: true }),
+  deletionStatus: (id: string) => request<UserDeletionStatus>(`/user-deletions/${id}`),
   invites: () => request<RegistrationInvite[]>('/registration-invites'),
   create: (body: { label: string; maxUses: number; expiresDays: number }) =>
     request<{ code: string; invite: RegistrationInvite }>('/registration-invites', body),
   revoke: (id: string) => request<RegistrationInvite>(`/registration-invites/${id}/revoke`, {}),
 };
+
+export interface UserDeletionImpact {
+  userId: string; email: string; ownedProjects: { id: string; name: string }[];
+  attachmentCount: number; joinedProjectCount: number; activeCompileCount: number;
+  canDelete: boolean; blockedReason: string | null;
+}
+export interface UserDeleted { deletionId: string; deleted: boolean; ownedProjectCount: number; cleanupStatus: string }
+export interface UserDeletionStatus { deletionId: string; status: 'pending' | 'cleaned'; pendingScopes: number; lastCheckedAt: string | null }

@@ -23,6 +23,7 @@ url.workspace = true
 uuid.workspace = true
 dashmap.workspace = true
 sha2 = "0.10"
+sqlx.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true

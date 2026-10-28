@@ -6,10 +6,10 @@ use std::{
     io::{Cursor, Read},
 };
 const MIB: usize = 1024 * 1024;
-pub const MAX_ZIP_BYTES: usize = 20 * MIB;
-pub const MAX_FILE_BYTES: usize = 8 * MIB;
-pub const MAX_EXPANDED_BYTES: usize = 32 * MIB;
-pub const MAX_ENTRIES: usize = 256;
+pub const MAX_ZIP_BYTES: usize = 500 * MIB;
+pub const MAX_FILE_BYTES: usize = 500 * MIB;
+pub const MAX_EXPANDED_BYTES: usize = 500 * MIB;
+pub const MAX_ENTRIES: usize = 10000;
 #[derive(Clone, Copy)]
 struct Limits {
     compressed: usize,
@@ -100,12 +100,12 @@ pub fn parse_zip(bytes: Vec<u8>) -> ApiResult<ParsedArchive> {
 }
 fn parse_with_limits(bytes: Vec<u8>, limits: Limits) -> ApiResult<ParsedArchive> {
     if bytes.is_empty() || bytes.len() > limits.compressed {
-        return Err(invalid("ZIP压缩包最多20MiB，且不能为空"));
+        return Err(invalid("ZIP压缩包最多500MiB，且不能为空"));
     }
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|_| invalid("压缩包损坏或不是受支持的ZIP格式"))?;
     if zip.len() == 0 || zip.len() > limits.entries {
-        return Err(invalid("ZIP最多256个条目，包含目录及系统元数据"));
+        return Err(invalid("ZIP最多10000个条目，包含目录及系统元数据"));
     }
     let mut files = vec![];
     let mut directories = BTreeSet::new();
@@ -143,7 +143,7 @@ fn parse_with_limits(bytes: Vec<u8>, limits: Limits) -> ApiResult<ParsedArchive>
         if entry.size() > limits.file as u64
             || entry.size() > limits.total.saturating_sub(total) as u64
         {
-            return Err(invalid("ZIP展开配额超限：单文件最多8MiB，总计最多32MiB"));
+            return Err(invalid("ZIP展开配额超限：单文件及展开合计最多500MiB"));
         }
         // Count actual decompressed bytes, even if central-directory size fields were forged.
         let remaining = limits.file.min(limits.total.saturating_sub(total));

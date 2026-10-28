@@ -82,10 +82,10 @@ impl ProjectActions{
      // The immutable plan item UUID is also the file UUID. Upload retries target the same object,
      // and file metadata plus applied status commit in one DB transaction (no ambiguous second file).
      let id=FileId::new(items[index].id);let storage_key=project_file_key(project,id);let content=action.content.as_deref().unwrap_or("");
-     self.storage.upload(PROJECT_FILES_BUCKET,&storage_key,Bytes::copy_from_slice(content.as_bytes()),"text/plain; charset=utf-8").await?;
      let kind=match infer_file_type(&action.path){FileType::Tex=>"tex",FileType::Bib=>"bib",FileType::Image=>"image",FileType::Other=>"other"};
      let inserted=sqlx::query("insert into public.project_files(id,project_id,path,type,storage_key,size_bytes,created_by) values($1,$2,$3,$4,$5,$6,$7)").bind(id.into_inner()).bind(project.into_inner()).bind(&action.path).bind(kind).bind(&storage_key).bind(content.len() as i64).bind(user.into_inner()).execute(&mut *tx).await;
-     if let Err(error)=inserted{let _=self.storage.remove(PROJECT_FILES_BUCKET,&[storage_key]).await;return Err(conflict_db(error));}
+     if let Err(error)=inserted{return Err(conflict_db(error));}
+     if let Err(error)=self.storage.upload(PROJECT_FILES_BUCKET,&storage_key,Bytes::copy_from_slice(content.as_bytes()),"text/plain; charset=utf-8").await{let _=self.storage.remove(PROJECT_FILES_BUCKET,&[storage_key]).await;return Err(error);}
      json!({"type":action.kind,"path":action.path,"fileId":id})},
     "move_file"=>{let source=items[index].source.as_ref().ok_or_else(||ApiError::internal("缺少原文件校验信息"))?;
      let row=sqlx::query("update public.project_files set path=$1,updated_at=now() where project_id=$2 and id=$3 and path=$4 and updated_at=$5 returning id").bind(action.new_path.as_ref().unwrap()).bind(project.into_inner()).bind(source.id).bind(&source.path).bind(source.updated_at).fetch_optional(&mut *tx).await.map_err(conflict_db)?;

@@ -15,3 +15,14 @@ describe('multiple-file transport boundaries',()=>{
 });
 
  it('preflights empty directories across every ZIP before the first write',async()=>{const io=transport();io.inspectZip=vi.fn(async(file:File)=>file.name==='a.zip'?{files:[],directories:['foo'],totalBytes:0}:{files:[{path:'foo'}],directories:[],totalBytes:1});await expect(uploadBatch([new File(['zip'],'a.zip'),new File(['zip'],'b.zip')],[],io)).rejects.toThrow('冲突');expect(io.uploadZip).not.toHaveBeenCalled();expect(()=>preflightUploadPaths([],['foo'],[],['foo/bar'])).toThrow('冲突');expect(preflightUploadPaths(['foo/a.tex'],[],['foo'],['foo'])).toEqual(['foo/a.tex']);});
+
+import { FILE_MAX_BYTES, ZIP_MAX_BYTES, PROJECT_MAX_BYTES } from './archive-upload';
+it('uses exactly 500MiB for source and attachment limits and rejects remaining-capacity overflow before upload', async () => {
+ expect(FILE_MAX_BYTES).toBe(524288000); expect(ZIP_MAX_BYTES).toBe(PROJECT_MAX_BYTES);
+ const io=transport();io.listFiles=vi.fn(async()=>[{path:'existing.bin',sizeBytes:PROJECT_MAX_BYTES-1}]);
+ await expect(uploadBatch([new File(['xx'],'new.bin')],[],io)).rejects.toThrow('剩余');expect(io.uploadFile).not.toHaveBeenCalled();
+});
+it('accepts a file larger than the former 8MiB boundary without reading it in preflight', async()=>{
+ const io=transport(); const file=new File(['x'],'large.bin');Object.defineProperty(file,'size',{value:9*1024*1024});
+ expect(await uploadBatch([file],[],io)).toEqual({uploaded:1,failed:null});
+});

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 
+import { AdminUserManagement } from '../components/AdminUserManagement';
 import { SiteMailSettings } from '../components/SiteMailSettings';
 
 import { useDocumentTitle } from '../hooks/useDocumentTitle';
@@ -23,7 +24,6 @@ export function AdminPage({ embedded = false }: { embedded?: boolean } = {}) {
   const access = useQuery({ queryKey: ['admin-access', userId], queryFn: adminApi.me, enabled: !!userId });
   const enabled = access.data?.isAdmin === true;
   const invites = useQuery({ queryKey: ['registration-invites', userId], queryFn: adminApi.invites, enabled });
-  const accounts = useQuery({ queryKey: ['site-accounts', userId], queryFn: adminApi.users, enabled });
   const [label, setLabel] = useState('');
   const [maxUses, setMaxUses] = useState(1);
   const [expiresDays, setExpiresDays] = useState(7);
@@ -69,9 +69,7 @@ export function AdminPage({ embedded = false }: { embedded?: boolean } = {}) {
       <section className="space-y-4"><h2 className="text-lg font-medium">邀请码</h2>
         {invites.isPending ? <p>加载中…</p> : invites.isError ? <p role="alert" className="text-destructive">{invites.error.message}</p> : <div className="overflow-x-auto rounded-lg border"><table className="w-full whitespace-nowrap text-left text-sm"><thead className="bg-muted"><tr>{['识别码 / 备注', '状态', '已用 / 总次数', '到期时间', '操作'].map((text) => <th className="p-3 font-medium" key={text}>{text}</th>)}</tr></thead><tbody>{invites.data?.length === 0 && <tr><td colSpan={5} className="p-4 text-muted-foreground">尚未生成邀请码。</td></tr>}{invites.data?.map((invite) => <tr className="border-t" key={invite.id}><td className="p-3"><div className="font-mono">{invite.hint}</div><div className="text-muted-foreground">{invite.label || '无备注'}</div></td><td className="p-3">{status(invite)}</td><td className="p-3">{invite.usedCount} / {invite.maxUses}</td><td className="p-3">{date(invite.expiresAt)}</td><td className="p-3"><Button size="sm" variant="outline" disabled={status(invite) !== '可使用' || revoking !== null} onClick={() => { void revoke(invite.id); }}>{revoking === invite.id ? '停用中…' : '停用'}</Button></td></tr>)}</tbody></table></div>}
       </section>
-      <section className="space-y-4"><h2 className="text-lg font-medium">账号列表</h2>
-        {accounts.isPending ? <p>加载中…</p> : accounts.isError ? <p role="alert" className="text-destructive">{accounts.error.message}</p> : <div className="overflow-x-auto rounded-lg border"><table className="w-full whitespace-nowrap text-left text-sm"><thead className="bg-muted"><tr>{['邮箱', '名称', '权限', '注册时间', '最近登录'].map((text) => <th className="p-3 font-medium" key={text}>{text}</th>)}</tr></thead><tbody>{accounts.data?.map((account) => <tr className="border-t" key={account.id}><td className="p-3">{account.email}</td><td className="p-3">{account.displayName || '—'}</td><td className="p-3">{account.isAdmin ? '管理员' : '成员'}</td><td className="p-3">{date(account.createdAt)}</td><td className="p-3">{date(account.lastSignInAt)}</td></tr>)}</tbody></table></div>}
-      </section>
+      <AdminUserManagement userId={userId!} />
     </div>
   );
 }

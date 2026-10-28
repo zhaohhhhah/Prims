@@ -175,10 +175,12 @@ async fn main() -> anyhow::Result<()> {
     );
     services::version_summaries::start_worker(state.clone());
 
-    let verifier = Arc::new(TokenVerifier::new(
+    let verifier = TokenVerifier::new(
         config.supabase_jwt_secret.as_deref(),
         config.jwks_url().as_deref(),
-    ));
+    );
+    let verifier = Arc::new(match state.db() { Some(db) => verifier.with_accounts(db.pool().clone()), None => verifier });
+    services::user_management::start_cleanup_worker(state.clone());
 
     // Yjs registry: built lazily once we know we have a DB to back it.
     // If the DB isn't configured, the WS route 503s rather than panicking.
@@ -356,7 +358,7 @@ fn build_router(
     use tower_http::cors::CorsLayer;
     use tower_http::limit::RequestBodyLimitLayer;
     use tower_http::services::{ServeDir, ServeFile};
-    use tower_http::timeout::TimeoutLayer;
+
     use tower_http::trace::TraceLayer;
 
     // Routes that orchestrators / scrapers poll heavily. They bypass
@@ -452,12 +454,9 @@ fn build_router(
         // br > gzip on ratio (~20% smaller on JSON); both are negotiated
         // via Accept-Encoding so old clients still get gzip.
         .layer(CompressionLayer::new().br(true).gzip(true))
-        .layer(RequestBodyLimitLayer::new(64 * 1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(services::upload_limits::UPLOAD_BODY_BYTES))
         // `with_status_code` returns 504 on timeout rather than the
         // deprecated overload which returns a generic error.
-        .layer(TimeoutLayer::with_status_code(
-            axum::http::StatusCode::GATEWAY_TIMEOUT,
-            Duration::from_secs(30),
-        ))
+        .layer(axum::middleware::from_fn(services::upload_limits::timeout))
         .layer(TraceLayer::new_for_http())
 }
