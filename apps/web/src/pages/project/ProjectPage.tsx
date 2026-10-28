@@ -27,6 +27,7 @@ import { ExportMenuItems } from '../../components/ProjectActions/ExportMenuItems
 import { useDocumentTitle } from '../../hooks/useDocumentTitle';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
 import { usePanelMotion } from '../../hooks/usePanelMotion';
+import { usePreviewInterest } from '../../hooks/usePreviewInterest';
 import { api, type ApiError } from '../../lib/api';
 import { type LocalFile, desktopDb } from '../../lib/desktopDb';
 import { isTauri } from '../../lib/tauri';
@@ -105,6 +106,7 @@ export function ProjectPage() {
     },
   });
   const { data: project, isLoading, error } = projectQuery;
+  usePreviewInterest(assistantOnly ? null : project?.id ?? null);
 
   useDocumentTitle(project?.name ?? null, true);
 

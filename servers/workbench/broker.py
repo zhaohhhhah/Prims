@@ -14,6 +14,8 @@ import uuid
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pdf_optimizer
+import webp_renderer
+from urllib.parse import urlsplit, parse_qs
 from worker import MAX_BODY, validate_job, read_stream_header, STREAM_MAX_BODY, STREAM_MAX_TOTAL
 
 VERSION = '1.0.0'
@@ -250,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
             healthy = False
         self.respond(200 if healthy else 503, {'ok': healthy, 'version': VERSION,
             'capabilities': ((['font_check','list_fonts','latex_compile'] if TEXLIVE else []) if COMPILE_ONLY else ['latex_check','font_check','list_fonts']) if healthy else [],
-            'pdfPreviewOptimizer': COMPILE_ONLY, 'maxConcurrentPdfPreviews': 1,
+            'pdfPreviewOptimizer': COMPILE_ONLY, 'webpPreviewRenderer': COMPILE_ONLY, 'maxConcurrentPdfPreviews': 1,
             'maxConcurrentJobs': SLOT_COUNT, 'snapshotMaxBytes': 32 * 1024 * 1024,
             'commandTimeoutSeconds': 45, 'jobTimeoutSeconds': 90, 'maxOutputBytes': 65536,
             'sandboxCreateTimeoutSeconds':CREATE_TIMEOUT_SECONDS,'compileJobTimeoutSeconds':180,'compileSnapshotMaxBytes':STREAM_MAX_TOTAL,'compileStreamProtocol':'prims-compile-v1','compileArtifactTotalMaxBytes':32*1024*1024})
@@ -282,8 +284,33 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError, subprocess.TimeoutExpired):
             self.close_connection = True
 
+    def render_pages(self):
+        if not COMPILE_ONLY:
+            self.respond(404, {'error':'Not found'});return
+        try:
+            parts=urlsplit(self.path);params=parse_qs(parts.query,strict_parsing=True)
+            if parts.path!='/render-pages' or set(params)!={'start','count'} or any(len(v)!=1 for v in params.values()):raise ValueError('Invalid range')
+            start=int(params['start'][0]);count=int(params['count'][0])
+            if not 1<=start<=webp_renderer.MAX_PAGES or not 1<=count<=webp_renderer.MAX_BATCH:raise ValueError('Invalid range')
+            length=int(self.headers.get('Content-Length','-1'))
+            if self.headers.get('Transfer-Encoding') or not 8<=length<=pdf_optimizer.MAX_PDF:
+                self.respond(413,{'error':'PDF exceeds preview limit'});self.close_connection=True;return
+            if self.headers.get('Content-Type')!='application/pdf':raise ValueError('PDF required')
+            self.connection.settimeout(30);raw=self.rfile.read(length)
+            if len(raw)!=length:raise ValueError('Incomplete PDF')
+            def busy():
+                with LOCK:return bool(RUNS)
+            code,output=webp_renderer.render(raw,DOCKER,IMAGE,busy,start,count)
+            self.send_response(code);self.send_header('Content-Type','application/zip' if code==200 else 'text/plain');self.send_header('Content-Length',str(len(output)));self.end_headers();self.wfile.write(output)
+        except (ValueError,TypeError):
+            self.respond(400,{'error':'Invalid page batch'});self.close_connection=True
+        except (OSError,subprocess.TimeoutExpired):self.close_connection=True
+
     def do_POST(self):
         if not self.authorized():
+            return
+        if urlsplit(self.path).path == '/render-pages':
+            self.render_pages()
             return
         if self.path == '/optimize':
             self.optimize_pdf()

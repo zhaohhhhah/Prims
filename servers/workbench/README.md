@@ -157,3 +157,38 @@ Tests: `python3 test_compile_stream.py`, `python3 test_compile_broker_stream.py`
 existing `test_worker.py`. Test scripts use synthetic data and do not require user keys.
 Private deployments, images containing private fonts, documents, tokens and fixture ZIPs
 must not be committed. Only copy the public source and configurable deployment examples.
+
+
+## Direct bookshelf WebP pages
+
+The bookshelf now derives page images directly from the immutable successful compile
+PDF. Editor and download APIs retain the original PDF. Dedicated broker `POST
+/render-pages?start=1&count=8` accepts bounded `application/pdf` input and returns a
+bounded stored ZIP with a typed manifest and at most eight WebP pages. All routes
+remain private and Bearer-authenticated. The existing fixed worker must provide
+Ghostscript, qpdf, ImageMagick convert/identify and a WebP encoder; no runtime downloads
+or model-controlled shell commands are accepted. qpdf reads page count only; no PDF
+optimization pass precedes rasterization.
+
+The fixed offline renderer uses144dpi, at most1200x2400 pixels, WebP quality82, CPU1,
+nice19/shares64 and the existing768MiB/no-network/read-only/non-root sandbox. Native
+compilation preempts within250ms; newly higher-interest previews win at the next
+batch boundary. Completed batches persist privately and resume without waiting a
+fixed15seconds between successful batches. Timeout batches shrink toward one page;
+an irreducible failure preserves the original PDF. Up to2048 pages are supported;
+no partial book is advertised as ready.
+
+Apply additive migration16 after15. It preserves legacy PDF columns and adds private
+WebP progress, full-manifest publication,90-second reader/editor interests and durable
+superseded-page cleanup. Reader interest outranks editor interest, which outranks idle
+background work; each class uses first-entry FIFO and heartbeats do not move its place.
+Reader and editor expirations are independent. Only inactive background projects wait
+for the usual idle interval. Original PDF URLs remain available while work is pending,
+failed, disabled or unavailable. Complete images use one batch of300-second Storage
+signatures. Permanent project/user removal reuses durable namespace cleanup; stale
+job image prefixes are separately reclaimed without touching the original PDF.
+
+Run `python3 test_webp_renderer.py` plus the existing PDF optimizer tests. Configure
+`PRIMS_PDF_PREVIEW_WORKER=enabled` only on the intended production app; keep shared-DB
+preview apps disabled. No private documents, image fixtures, credentials, token files
+or local deployment paths belong in the repository.

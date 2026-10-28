@@ -28,6 +28,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/projects/:project_id/dashboard-summary", get(summary))
         .route("/api/projects/:project_id/bookshelf-pdf", get(bookshelf_pdf))
+        .route("/api/projects/:project_id/preview-interest", axum::routing::post(preview_interest))
         .layer(from_fn(require_auth))
 }
 
@@ -36,7 +37,7 @@ pub fn router() -> Router<AppState> {
 struct PreviewQuery { #[serde(default)] original: bool }
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
-struct PreviewUrl { url: String, job_id: Uuid, optimized: bool }
+struct PreviewUrl { url: String, job_id: Uuid, optimized: bool, preview_status: &'static str, #[serde(skip_serializing_if="Option::is_none")]pages:Option<Vec<crate::services::pdf_previews::PageUrl>> }
 async fn bookshelf_pdf(
     State(state): State<AppState>, Authenticated(user): Authenticated,
     Path(id): Path<Uuid>, axum::extract::Query(query): axum::extract::Query<PreviewQuery>,
@@ -48,15 +49,22 @@ async fn bookshelf_pdf(
         .ok_or_else(||ApiError::not_found("No successful PDF"))?;
     let job_id:Uuid=row.get("id"); let original:String=row.get("pdf_key");
     let storage=state.storage().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"storage not configured"))?;
-    if !query.original {
-        if let Some(key)=crate::services::pdf_previews::preview_key(pool,id,job_id).await {
-            if let Ok(url)=storage.signed_url(COMPILE_ARTIFACTS_BUCKET,&key,300).await {
-                return Ok(Json(PreviewUrl{url,job_id,optimized:true}));
-            }
-        }
-    }
     let url=storage.signed_url(COMPILE_ARTIFACTS_BUCKET,&original,300).await?;
-    Ok(Json(PreviewUrl{url,job_id,optimized:false}))
+    let preview=if query.original {crate::services::pdf_previews::Preview{status:"disabled",pages:None}}else{
+        if crate::services::pdf_previews::record_interest(pool,id,job_id,"reader").await.is_err(){tracing::warn!("Preview interest deferred; original PDF remains available");}
+        crate::services::pdf_previews::lookup(pool,storage,id,job_id).await
+    };
+    Ok(Json(PreviewUrl{url,job_id,optimized:preview.pages.is_some(),preview_status:preview.status,pages:preview.pages}))
+}
+
+#[derive(Deserialize)]#[serde(deny_unknown_fields)]struct InterestInput{kind:String}
+async fn preview_interest(State(state):State<AppState>,Authenticated(user):Authenticated,Path(id):Path<Uuid>,Json(input):Json<InterestInput>)->ApiResult<Json<serde_json::Value>>{
+    if !matches!(input.kind.as_str(),"reader"|"editor"){return Err(ApiError::validation("Invalid preview interest"));}
+    let pool=state.db().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"database not configured"))?.pool();
+    assert_member(pool,user.id,ProjectId::new(id)).await?;
+    let job:Option<Uuid>=sqlx::query_scalar("select id from public.compile_jobs where project_id=$1 and status='success' and pdf_key is not null order by enqueued_at desc,id desc limit 1").bind(id).fetch_optional(pool).await.map_err(|_|ApiError::internal("Preview unavailable"))?;
+    if let Some(job)=job{crate::services::pdf_previews::record_interest(pool,id,job,&input.kind).await?;}
+    Ok(Json(serde_json::json!({"ok":true,"kind":input.kind,"expiresIn":90})))
 }
 
 async fn summary(

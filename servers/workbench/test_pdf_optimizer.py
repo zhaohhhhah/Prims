@@ -10,8 +10,12 @@ pdf=importlib.util.module_from_spec(spec);spec.loader.exec_module(pdf)
 class OptimizerTests(unittest.TestCase):
     def test_worker_is_non_root_readonly_networkless_low_priority(self):
         args=pdf.container_options('sha256:fixed','fixed-name')
-        for value in ['none','10001:10001','--read-only','ALL','no-new-privileges:true','0.35','64','/usr/bin/nice','19']:
+        for value in ['none','10001:10001','--read-only','ALL','no-new-privileges:true','1','64','/usr/bin/nice','19']:
             self.assertIn(value,args)
+        self.assertEqual(args[args.index('--cpus')+1],'1')
+        self.assertEqual(args[args.index('--cpu-shares')+1],'64')
+        self.assertEqual(args[args.index('--memory')+1],'768m')
+        self.assertEqual(args[args.index('--memory-swap')+1],'768m')
         self.assertNotIn('--mount',args) # PDF gets stdin, no host paths/credential mounts.
         self.assertIn('--linearize',pdf.WORKER)
         self.assertIn('geometry(candidate)==original',pdf.WORKER)

@@ -68,7 +68,7 @@ def container_options(image, name):
         '--label', 'prims.pdf-preview=true', '--network', 'none',
         '--user', '10001:10001', '--read-only', '--cap-drop', 'ALL',
         '--security-opt', 'no-new-privileges:true', '--memory', '768m',
-        '--memory-swap', '768m', '--cpus', '0.35', '--cpu-shares', '64',
+        '--memory-swap', '768m', '--cpus', '1', '--cpu-shares', '64',
         '--pids-limit', '32', '--ulimit', 'nofile=128:128',
         '--ulimit', 'fsize=67108864:67108864',
         '--tmpfs', '/workspace:rw,nosuid,nodev,noexec,size=320m,mode=0700,uid=10001,gid=10001',

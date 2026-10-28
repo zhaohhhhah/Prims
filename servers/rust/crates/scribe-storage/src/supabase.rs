@@ -125,6 +125,22 @@ impl SupabaseStorage {
         Ok(total)
     }
 
+    /// One bounded request for immutable bookshelf page signatures, preserving caller order.
+    pub async fn signed_urls(&self,bucket:&str,keys:&[String],expires:u32)->ApiResult<Vec<String>> {
+        if keys.is_empty() || keys.len()>2048 {return Err(ApiError::validation("Invalid page signature count"));}
+        let mut response=check_status(self.http.post(format!("{}/storage/v1/object/sign/{}",self.base_url,bucket))
+            .headers(self.base_headers()).json(&serde_json::json!({"paths":keys,"expiresIn":expires})).send().await.map_err(net_err)?,"sign pages").await?;
+        let mut body=Vec::new();while let Some(chunk)=response.chunk().await.map_err(net_err)? {if body.len()+chunk.len()>4*1024*1024{return Err(ApiError::internal("Page signatures exceed limit"));}body.extend_from_slice(&chunk);}
+        #[derive(Deserialize)]struct Entry{path:String,#[serde(rename="signedURL")]signed_url:Option<String>}
+        let entries:Vec<Entry>=serde_json::from_slice(&body).map_err(|_|ApiError::internal("Invalid page signatures"))?;
+        if entries.len()!=keys.len(){return Err(ApiError::internal("Incomplete page signatures"));}
+        let public=std::env::var("SUPABASE_PUBLIC_URL").unwrap_or_else(|_|self.base_url.clone());let mut urls=Vec::with_capacity(keys.len());
+        for key in keys {let entry=entries.iter().find(|entry| &entry.path==key).ok_or_else(||ApiError::internal("Missing page signature"))?;
+            let signed=entry.signed_url.as_deref().filter(|path|path.starts_with("/object/sign/")).ok_or_else(||ApiError::internal("Invalid page signature"))?;
+            urls.push(format!("{}/storage/v1{}",public.trim_end_matches('/'),signed));}
+        Ok(urls)
+    }
+
     fn object_url(&self, bucket: &str, key: &str) -> String {
         format!("{}/storage/v1/object/{}/{}", self.base_url, bucket, key)
     }
