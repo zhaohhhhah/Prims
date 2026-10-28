@@ -300,3 +300,7 @@ immediate drag resizing and reduced-motion support.
 Editor portal controls retain a short, inert visual exit when React removes
 them immediately. Radix surfaces retain their real content through the close
 animation. Reduced-motion, resizing and route cleanup cancel visual layers.
+
+Assistant right and bottom docks use directional geometry for both opening
+and closing. Their layout space remains until closing finishes, so the editor
+resizes with the dock. Floating surfaces keep their independent morph.

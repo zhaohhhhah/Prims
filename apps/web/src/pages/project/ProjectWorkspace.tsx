@@ -63,6 +63,7 @@ import { VersionHistory } from '../../components/VersionHistory/VersionHistory';
 import { VoiceControls } from '../../components/Voice/VoiceControls';
 import { useCompileSession } from '../../hooks/useCompileSession';
 import { useMediaQuery } from '../../hooks/useMediaQuery';
+import { useDockPresence } from '../../hooks/useDockPresence';
 import { useEditorChromeMotion } from '../../hooks/useEditorChromeMotion';
 import { usePanelMotion } from '../../hooks/usePanelMotion';
 import { previewPanelLayout } from '../../lib/panel-motion';
@@ -1348,8 +1349,11 @@ export function ProjectWorkspace({
     return null;
   })();
 
-  const assistantBottomSlot=!assistantOnly&&!assistantAway&&assistantLayout.visible&&assistantMode==='bottom'?<div data-testid="assistant-bottom-host" className="prims-editor-assistant-host relative min-h-0 shrink-0 border-t" style={{height:assistantLayout.bottomHeight}}><div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="调整助手高度" className="absolute -top-1 left-0 z-10 h-2 w-full cursor-row-resize" onPointerDown={event=>resizeAssistant('bottom',event)} onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();updateAssistantLayout({bottomHeight:assistantLayout.bottomHeight+(event.key==='ArrowUp'?20:-20)});}}}/><div ref={setAssistantBottomHost} className="h-full min-h-0"/></div>:null;
-  const assistantRightSlot=!assistantOnly&&!assistantAway&&assistantLayout.visible&&assistantMode==='right'?<aside data-testid="assistant-right-host" className="prims-editor-assistant-host relative min-h-0 shrink-0 border-l" style={{width:assistantLayout.rightWidth}}><div role="separator" tabIndex={0} aria-orientation="vertical" aria-label="调整助手宽度" className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize" onPointerDown={event=>resizeAssistant('right',event)} onKeyDown={event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();updateAssistantLayout({rightWidth:assistantLayout.rightWidth+(event.key==='ArrowLeft'?20:-20)});}}}/><div ref={setAssistantRightHost} className="h-full min-h-0"/></aside>:null;
+  const bottomOpen=!assistantOnly&&!assistantAway&&assistantLayout.visible&&assistantMode==='bottom';
+  const rightOpen=!assistantOnly&&!assistantAway&&assistantLayout.visible&&assistantMode==='right';
+  const bottomDock=useDockPresence(bottomOpen),rightDock=useDockPresence(rightOpen);
+  const assistantBottomSlot=bottomDock.present?<div data-testid="assistant-bottom-host" data-dock="bottom" data-state={bottomDock.closing?"closing":"open"} aria-hidden={bottomDock.closing||undefined} className="prims-editor-assistant-host relative min-h-0 shrink-0 border-t" style={{height:assistantLayout.bottomHeight,"--prims-dock-size":`${assistantLayout.bottomHeight}px`} as React.CSSProperties}><div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label="调整助手高度" className="absolute -top-1 left-0 z-10 h-2 w-full cursor-row-resize" onPointerDown={event=>resizeAssistant('bottom',event)} onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();updateAssistantLayout({bottomHeight:assistantLayout.bottomHeight+(event.key==='ArrowUp'?20:-20)});}}}/><div ref={setAssistantBottomHost} className="h-full min-h-0"/></div>:null;
+  const assistantRightSlot=rightDock.present?<aside data-testid="assistant-right-host" data-dock="right" data-state={rightDock.closing?"closing":"open"} aria-hidden={rightDock.closing||undefined} className="prims-editor-assistant-host relative min-h-0 shrink-0 border-l" style={{width:assistantLayout.rightWidth,"--prims-dock-size":`${assistantLayout.rightWidth}px`} as React.CSSProperties}><div role="separator" tabIndex={0} aria-orientation="vertical" aria-label="调整助手宽度" className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize" onPointerDown={event=>resizeAssistant('right',event)} onKeyDown={event=>{if(event.key==='ArrowLeft'||event.key==='ArrowRight'){event.preventDefault();updateAssistantLayout({rightWidth:assistantLayout.rightWidth+(event.key==='ArrowLeft'?20:-20)});}}}/><div ref={setAssistantRightHost} className="h-full min-h-0"/></aside>:null;
 
   const editorPanel = (
     <div className="flex h-full flex-col">

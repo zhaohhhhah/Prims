@@ -213,3 +213,16 @@ body:has(.prims-editor-workspace) [data-prims-editor-chrome][data-state="closed"
 @media (prefers-reduced-motion: reduce) {
  body:has(.prims-editor-workspace) [data-prims-editor-chrome][data-state="closed"] {animation:none!important;}
 }
+
+/* Assistant docking owns layout space, independently from ordinary popovers. */
+.prims-editor-assistant-host[data-dock="right"][data-state="open"] {animation:prims-dock-right-open 190ms cubic-bezier(.2,.75,.25,1);}
+.prims-editor-assistant-host[data-dock="right"][data-state="closing"] {animation:prims-dock-right-close 170ms cubic-bezier(.35,0,.7,.3) both;pointer-events:none;overflow:hidden;min-width:0;}
+.prims-editor-assistant-host[data-dock="bottom"][data-state="open"] {animation:prims-dock-bottom-open 190ms cubic-bezier(.2,.75,.25,1);}
+.prims-editor-assistant-host[data-dock="bottom"][data-state="closing"] {animation:prims-dock-bottom-close 170ms cubic-bezier(.35,0,.7,.3) both;pointer-events:none;overflow:hidden;min-height:0;}
+@keyframes prims-dock-right-open {from{width:0;}to{width:var(--prims-dock-size);}}
+@keyframes prims-dock-right-close {from{width:var(--prims-dock-size);}to{width:0;}}
+@keyframes prims-dock-bottom-open {from{height:0;}to{height:var(--prims-dock-size);}}
+@keyframes prims-dock-bottom-close {from{height:var(--prims-dock-size);}to{height:0;}}
+@media (prefers-reduced-motion:reduce) {.prims-editor-assistant-host[data-dock][data-state] {animation:none!important;}}
+
+.prims-editor-assistant-host[data-dock][data-state] {overflow:hidden;}

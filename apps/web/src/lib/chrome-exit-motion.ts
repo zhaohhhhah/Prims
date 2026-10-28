@@ -22,8 +22,10 @@ export class ChromeExitMotion {
   Object.assign(clone.style,{position:'fixed',left:`${r.left}px`,top:`${r.top}px`,width:`${r.width}px`,height:`${r.height}px`,margin:'0',maxWidth:'none',maxHeight:'none',minWidth:'0',minHeight:'0',zIndex:'100',pointerEvents:'none',overflow:'hidden',boxSizing:'border-box',transform:'none',animation:'none',transition:'none',visibility:'visible',borderRadius:r.radius,background:r.background,color:r.color,font:r.font,boxShadow:r.shadow,border:r.border});
   this.host.appendChild(clone);
   let finished=false;const finish=()=>{if(finished)return;finished=true;clone.remove();this.active.delete(node);};
+  const mode=node.dataset.layout;
+  const end:Keyframe=mode==='right'?{left:`${r.left+r.width}px`,width:'0px',height:`${r.height}px`,transform:'none',opacity:0}:mode==='bottom'?{top:`${r.top+r.height}px`,width:`${r.width}px`,height:'0px',transform:'none',opacity:0}:{width:`${r.width*.94}px`,height:`${Math.min(r.height,Math.max(24,r.height*.7))}px`,transform:'translateY(-7px)',borderRadius:'12px',opacity:0};
   try {
-   const animation=clone.animate([{width:`${r.width}px`,height:`${r.height}px`,transform:'translateY(0)',opacity:1},{width:`${r.width*.94}px`,height:`${Math.min(r.height,Math.max(24,r.height*.7))}px`,transform:'translateY(-7px)',borderRadius:'12px',opacity:0}],{duration:170,easing:'cubic-bezier(.35,0,.7,.3)',fill:'forwards'});
+   const animation=clone.animate([{width:`${r.width}px`,height:`${r.height}px`,transform:'translateY(0)',opacity:1},end],{duration:170,easing:'cubic-bezier(.35,0,.7,.3)',fill:'forwards'});
    this.active.set(node,{animation,finish});animation.onfinish=finish;animation.oncancel=finish;return true;
   }catch{finish();return false;}
  }
