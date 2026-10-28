@@ -7,7 +7,7 @@ import pdf_optimizer
 
 MAX_BATCH = 8
 MAX_PAGES = 2048
-MAX_ARCHIVE = 33 * 1024 * 1024
+MAX_ARCHIVE = 41 * 1024 * 1024
 WORKER = r'''import json,pathlib,struct,subprocess,sys,zipfile
 root=pathlib.Path('/workspace');source=root/'source.pdf'
 raw=sys.stdin.buffer.read(67108865)
@@ -28,16 +28,20 @@ try:
  if len(pngs)!=last-start+1:raise ValueError('Incomplete raster batch')
  pages=[];size=0
  for number,png in zip(range(start,last+1),pngs):
-  out=root/('page-%06d.webp'%number)
+  out=root/('page-%06d.webp'%number);thumb=root/('page-%06d-thumb.webp'%number)
   run(['/usr/bin/convert','-limit','memory','128MiB','-limit','map','0','-limit','disk','0','PNG:'+str(png),'-resize','1200x2400>','-strip','-quality','82','-define','webp:method=3','WEBP:'+str(out)],20)
   dims=run(['/usr/bin/identify','-format','%w %h','WEBP:'+str(out)],5).decode().split();width,height=map(int,dims)
   length=out.stat().st_size;size+=length
   if not 0<width<=1200 or not 0<height<=2400 or not 0<length<=4194304 or size>33554432:raise ValueError('Preview image exceeds limit')
-  pages.append({'page':number,'width':width,'height':height,'entry':out.name,'size':length});png.unlink()
- manifest={'version':1,'totalPages':total,'startPage':start,'pages':pages}
+  run(['/usr/bin/convert','-limit','memory','128MiB','-limit','map','0','-limit','disk','0','WEBP:'+str(out),'-resize','50%','-strip','-quality','75','-define','webp:method=3','WEBP:'+str(thumb)],20)
+  tw,th=map(int,run(['/usr/bin/identify','-format','%w %h','WEBP:'+str(thumb)],5).decode().split());ts=thumb.stat().st_size
+  if not 0<tw<=600 or not 0<th<=1200 or abs(tw*2-width)>1 or abs(th*2-height)>1 or not 0<ts<=1048576:raise ValueError('Invalid thumbnail')
+  pages.append({'page':number,'width':width,'height':height,'entry':out.name,'size':length,'thumbEntry':thumb.name,'thumbWidth':tw,'thumbHeight':th,'thumbSize':ts});png.unlink()
+ manifest={'version':2,'totalPages':total,'startPage':start,'pages':pages}
  with zipfile.ZipFile(sys.stdout.buffer,'w',compression=zipfile.ZIP_STORED) as archive:
   archive.writestr('manifest.json',json.dumps(manifest,separators=(',',':')))
-  for page in pages:archive.write(root/page['entry'],page['entry'])
+  for page in pages:
+   archive.write(root/page['entry'],page['entry']);archive.write(root/page['thumbEntry'],page['thumbEntry'])
 except subprocess.TimeoutExpired:sys.exit(124)
 except (ValueError,KeyError,TypeError,OSError):sys.exit(2)
 '''

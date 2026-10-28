@@ -3,24 +3,30 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&url';
 import {ChevronLeft,ChevronRight,FileText,Loader2} from 'lucide-react';
 import {useCallback,useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {spreadStart,bookTurnPages} from '../../lib/book-spreads';
+import {PageBlobCache,type PageQuality} from './page-blob-cache';
 import {useDashboardCopy} from './dashboard-copy';
 pdfjs.GlobalWorkerOptions.workerSrc=workerSrc;
-export interface ReaderPage {url:string;width:number;height:number}
+export interface ReaderPage {url:string;width:number;height:number;thumbUrl?:string;thumbWidth?:number;thumbHeight?:number}
 type Turn={id:number;forward:boolean;front:string|null;back:string|null;stationary:string|null;duration:number};
 interface Props{documentKey?:string;url:string|null;pages?:ReaderPage[]|undefined;filter:string;onPageCount:(count:number|null)=>void;onRetryUrl?:()=>Promise<void>;onLoadError?:()=>void;}
 type Resource={pdf:pdfjs.PDFDocumentProxy|null;pages:ReaderPage[]|null};
-type QueuedPage={page:number;generation:number;resolve:(ready:boolean)=>void;reject:(error:unknown)=>void};
+type QueuedPage={page:number;quality:PageQuality;upgrade:boolean;generation:number;resolve:(ready:boolean)=>void;reject:(error:unknown)=>void};
 export function BookReader({documentKey,url,pages,filter,onPageCount,onRetryUrl,onLoadError}:Props){
  const copy=useDashboardCopy();const stage=useRef<HTMLDivElement>(null),leaf=useRef<HTMLDivElement>(null),stationary=useRef<HTMLDivElement>(null);
  const visibleImages=useRef(new Map<number,string>());
- const allUrls=useRef(new Set<string>()),heldUrls=useRef(new Set<string>()),cache=useRef(new Map<number,string>()),inFlight=useRef(new Map<number,Promise<boolean>>()),queue=useRef<QueuedPage[]>([]),rendering=useRef(false),generation=useRef(0),tasks=useRef<pdfjs.RenderTask[]>([]),controllers=useRef(new Set<AbortController>());
+ const decodedThumbs=useRef(new Map<string,HTMLImageElement>()),protectedUrls=useRef(new Set<string>()),activeClear=useRef<AbortController|null>(null),clearTimer=useRef<ReturnType<typeof setTimeout>|null>(null),fadeTimers=useRef(new Set<ReturnType<typeof setTimeout>>()),fadeUrls=useRef(new Set<string>());
+ const [fadeRevision,setFadeRevision]=useState(0);void fadeRevision;
+ const allUrls=useRef(new Set<string>()),heldUrls=useRef(new Set<string>()),cache=useRef(new PageBlobCache(src=>{URL.revokeObjectURL(src);allUrls.current.delete(src);const image=decodedThumbs.current.get(src);if(image)image.src='';decodedThumbs.current.delete(src);})),inFlight=useRef(new Map<string,Promise<boolean>>()),queue=useRef<QueuedPage[]>([]),rendering=useRef(false),generation=useRef(0),tasks=useRef<pdfjs.RenderTask[]>([]),controllers=useRef(new Set<AbortController>());
  const resource=useRef<Resource>({pdf:null,pages:null}),epoch=useRef(0),position=useRef(0),requested=useRef(0),spread=useRef(2),loadedDocument=useRef<string|null>(null),loadedMode=useRef('');
  const animation=useRef<Animation|null>(null),stationaryAnimation=useRef<Animation|null>(null);
  const [revision,setRevision]=useState(0),[total,setTotal]=useState(0),[current,setCurrent]=useState(0),[pendingPage,setPendingPage]=useState<number|null>(null),[images,setImages]=useState(new Map<number,string>()),[turn,setTurn]=useState<Turn|null>(null),[error,setError]=useState(false),[loading,setLoading]=useState(false),[retry,setRetry]=useState(0),[ratio,setRatio]=useState(.7071),[narrow,setNarrow]=useState(()=>window.matchMedia('(max-width:660px)').matches),[reduced,setReduced]=useState(()=>window.matchMedia('(prefers-reduced-motion:reduce)').matches),[size,setSize]=useState({width:600,height:430});
  visibleImages.current=images;
+ protectedUrls.current=new Set([images.get(current+1),...(narrow?[]:[images.get(current+2)]),turn?.front,turn?.back,turn?.stationary].filter((src):src is string=>!!src));
+ for(const page of [current+1,...(narrow?[]:[current+2])]){const thumb=cache.current.peek(page,'thumb');if(thumb&&fadeUrls.current.has(images.get(page)??''))protectedUrls.current.add(thumb);}
+ const trimCache=useCallback(()=>{const protectedSet=new Set(protectedUrls.current);for(let page=requested.current+1;page<=requested.current+spread.current;page++){for(const quality of ['thumb','clear'] as const){const src=cache.current.peek(page,quality);if(src)protectedSet.add(src);}}cache.current.prune(protectedSet);},[]);
  const step=narrow?1:2;spread.current=step;const last=spreadStart(total-1,step,total);const hasSource=!!pages?.length||url!==null;
- const stop=useCallback(()=>{epoch.current++;animation.current?.cancel();stationaryAnimation.current?.cancel();animation.current=null;stationaryAnimation.current=null;setTurn(null);},[]);
- const clearPages=useCallback((keep?:Set<string>)=>{generation.current++;for(const task of tasks.current)task.cancel();tasks.current=[];for(const controller of controllers.current)controller.abort();controllers.current.clear();for(const item of queue.current)item.resolve(false);queue.current=[];inFlight.current.clear();for(const src of allUrls.current)if(!keep?.has(src)){URL.revokeObjectURL(src);allUrls.current.delete(src);}heldUrls.current=keep??new Set();cache.current.clear();},[]);
+ const stop=useCallback(()=>{epoch.current++;activeClear.current?.abort();activeClear.current=null;if(clearTimer.current!==null){clearTimeout(clearTimer.current);clearTimer.current=null;}animation.current?.cancel();stationaryAnimation.current?.cancel();animation.current=null;stationaryAnimation.current=null;setTurn(null);},[]);
+ const clearPages=useCallback((keep?:Set<string>)=>{generation.current++;for(const task of tasks.current)task.cancel();tasks.current=[];for(const controller of controllers.current)controller.abort();controllers.current.clear();for(const item of queue.current)item.resolve(false);queue.current=[];inFlight.current.clear();for(const image of decodedThumbs.current.values())image.src='';decodedThumbs.current.clear();for(const timer of fadeTimers.current)clearTimeout(timer);fadeTimers.current.clear();fadeUrls.current.clear();for(const src of allUrls.current)if(!keep?.has(src)){URL.revokeObjectURL(src);allUrls.current.delete(src);}heldUrls.current=keep??new Set();cache.current.clear();},[]);
  useEffect(()=>{const n=window.matchMedia('(max-width:660px)'),r=window.matchMedia('(prefers-reduced-motion:reduce)');const change=()=>{stop();setNarrow(n.matches);setReduced(r.matches);};n.addEventListener('change',change);r.addEventListener('change',change);return()=>{n.removeEventListener('change',change);r.removeEventListener('change',change);};},[stop]);
  useEffect(()=>{if(!stage.current)return;const observer=new ResizeObserver(entries=>{const box=entries[0]?.contentRect;if(box)setSize({width:box.width,height:box.height});});observer.observe(stage.current);return()=>observer.disconnect();},[]);
  // Signed WebP URL renewal retains decoded blobs and page position for the same job.
@@ -28,7 +34,7 @@ export function BookReader({documentKey,url,pages,filter,onPageCount,onRetryUrl,
   const mode=pages?.length?'images':'pdf';const identity=documentKey??url;
   const same=identity!==null&&loadedDocument.current===identity;
   if(mode==='images'&&same&&loadedMode.current===mode){resource.current.pages=pages!;setError(false);setRevision(n=>n+1);return;}
-  let disposed=false;stop();const retainedImages=same?new Map(visibleImages.current):new Map<number,string>();clearPages(new Set(retainedImages.values()));resource.current={pdf:null,pages:null};setImages(retainedImages);setTotal(0);setError(false);setPendingPage(null);
+  let disposed=false;stop();const retainedImages=same?new Map([...visibleImages.current].filter(([page])=>page>=position.current+1&&page<=position.current+spread.current)):new Map<number,string>();clearPages(new Set(retainedImages.values()));resource.current={pdf:null,pages:null};setImages(retainedImages);setTotal(0);setError(false);setPendingPage(null);
   const retained=same?position.current:0;position.current=retained;requested.current=retained;setCurrent(retained);loadedDocument.current=identity;loadedMode.current=mode;setLoading(hasSource);onPageCount(null);
   if(pages?.length){resource.current.pages=pages;setTotal(pages.length);onPageCount(pages.length);setRatio(pages[0]!.width/pages[0]!.height);setRevision(n=>n+1);return;}
   if(!url)return;
@@ -38,34 +44,35 @@ export function BookReader({documentKey,url,pages,filter,onPageCount,onRetryUrl,
  },[url,pages,documentKey,retry,stop,clearPages,onPageCount,onLoadError,hasSource]);
  useEffect(()=>{const displayed=new Set(images.values());for(const src of heldUrls.current)if(!displayed.has(src)){URL.revokeObjectURL(src);allUrls.current.delete(src);heldUrls.current.delete(src);}},[images]);
  useEffect(()=>()=>{stop();clearPages();},[stop,clearPages]);
- const wanted=useCallback((page:number)=>{const s=spread.current;return(page>=requested.current-s+1&&page<=requested.current+s*2)||(page>=position.current+1&&page<=position.current+s);},[]);
+ const wanted=useCallback((page:number,upgrade=false)=>{const s=spread.current;if(upgrade)return requested.current===position.current&&page>=position.current+1&&page<=position.current+s;return(page>=requested.current-s+1&&page<=requested.current+s*2)||(page>=position.current+1&&page<=position.current+s);},[]);
  const pump=useCallback(async()=>{
   if(rendering.current)return;rendering.current=true;
   try{while(queue.current.length){
-   const s=spread.current;let index=queue.current.findIndex(item=>item.page>=requested.current+1&&item.page<=requested.current+s);if(index<0)index=0;
+   const s=spread.current;let index=queue.current.findIndex(item=>!item.upgrade&&item.page>=requested.current+1&&item.page<=requested.current+s);if(index<0)index=0;
    const item=queue.current.splice(index,1)[0]!;
-   if(item.generation!==generation.current||!wanted(item.page)){if(item.generation===generation.current)inFlight.current.delete(item.page);item.resolve(false);continue;}
-   let objectUrl:string|null=null;
+   if(item.generation!==generation.current||!wanted(item.page,item.upgrade)){if(item.generation===generation.current)inFlight.current.delete(`${item.page}:${item.quality}`);item.resolve(false);continue;}
+   let objectUrl:string|null=null;let blobBytes=0;let decodedImage:HTMLImageElement|null=null;
    try{
     const imagePage=resource.current.pages?.[item.page-1];
     if(imagePage){
-     const controller=new AbortController();controllers.current.add(controller);
-     try{const response=await fetch(imagePage.url,{signal:controller.signal});if(!response.ok)throw new Error('Page image unavailable');objectUrl=URL.createObjectURL(await response.blob());allUrls.current.add(objectUrl);const image=new Image();image.src=objectUrl;controller.signal.addEventListener('abort',()=>{image.src='';},{once:true});await image.decode();}finally{controllers.current.delete(controller);}
+     const controller=new AbortController();controllers.current.add(controller);if(item.upgrade)activeClear.current=controller;
+     try{const response=await fetch(item.quality==='thumb'?imagePage.thumbUrl!:imagePage.url,{signal:controller.signal});if(!response.ok)throw new Error('Page image unavailable');const blob=await response.blob();if(item.generation!==generation.current||!wanted(item.page,item.upgrade)){item.resolve(false);continue;}blobBytes=blob.size;objectUrl=URL.createObjectURL(blob);allUrls.current.add(objectUrl);const image=new Image();image.src=objectUrl;controller.signal.addEventListener('abort',()=>{image.src='';},{once:true});await image.decode();decodedImage=image;}finally{controllers.current.delete(controller);if(activeClear.current===controller)activeClear.current=null;}
     }else{
      const pdf=resource.current.pdf;if(!pdf){item.resolve(false);continue;}
-     const page=await pdf.getPage(item.page);if(item.generation!==generation.current||!wanted(item.page)){item.resolve(false);continue;}
+     const page=await pdf.getPage(item.page);if(item.generation!==generation.current||!wanted(item.page,item.upgrade)){item.resolve(false);continue;}
      const view=page.getViewport({scale:1});const scale=Math.min(2,window.devicePixelRatio||1)*Math.min(560/view.width,780/view.height);const viewport=page.getViewport({scale});const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
-     try{const context=canvas.getContext('2d');if(!context)throw new Error('Canvas unavailable');const task=page.render({canvasContext:context,viewport});tasks.current.push(task);try{await task.promise;}finally{tasks.current=tasks.current.filter(x=>x!==task);}if(item.generation===generation.current){const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,'image/webp',.88));if(!blob)throw new Error('Page raster unavailable');objectUrl=URL.createObjectURL(blob);allUrls.current.add(objectUrl);}}finally{canvas.width=0;canvas.height=0;}
+     try{const context=canvas.getContext('2d');if(!context)throw new Error('Canvas unavailable');const task=page.render({canvasContext:context,viewport});tasks.current.push(task);try{await task.promise;}finally{tasks.current=tasks.current.filter(x=>x!==task);}if(item.generation===generation.current){const blob=await new Promise<Blob|null>(resolve=>canvas.toBlob(resolve,'image/webp',.88));if(!blob)throw new Error('Page raster unavailable');blobBytes=blob.size;objectUrl=URL.createObjectURL(blob);allUrls.current.add(objectUrl);}}finally{canvas.width=0;canvas.height=0;}
     }
-    if(item.generation===generation.current&&wanted(item.page)&&objectUrl){cache.current.set(item.page,objectUrl);objectUrl=null;item.resolve(true);}else item.resolve(false);
-   }catch(error){item.reject(error);}finally{if(objectUrl){URL.revokeObjectURL(objectUrl);allUrls.current.delete(objectUrl);}if(item.generation===generation.current)inFlight.current.delete(item.page);}
+    if(item.generation===generation.current&&wanted(item.page,item.upgrade)&&objectUrl){cache.current.set(item.page,objectUrl,blobBytes,item.quality);if(item.quality==='thumb'&&decodedImage){decodedThumbs.current.set(objectUrl,decodedImage);decodedImage=null;}objectUrl=null;trimCache();item.resolve(true);}else item.resolve(false);
+   }catch(error){item.reject(error);}finally{if(decodedImage)decodedImage.src='';if(objectUrl){URL.revokeObjectURL(objectUrl);allUrls.current.delete(objectUrl);}if(item.generation===generation.current)inFlight.current.delete(`${item.page}:${item.quality}`);}
   }}finally{rendering.current=false;}
- },[wanted]);
- const renderPages=useCallback(async(start:number,s:number)=>{
+ },[wanted,trimCache]);
+ const renderPages=useCallback(async(start:number,s:number,upgrade=false)=>{
   for(const page of Array.from({length:s},(_,i)=>start+i+1).filter(p=>p<=total)){
-   if(cache.current.has(page))continue;
-   let pending=inFlight.current.get(page);
-   if(!pending){pending=new Promise<boolean>((resolve,reject)=>queue.current.push({page,generation:generation.current,resolve,reject}));inFlight.current.set(page,pending);void pump();}
+   const quality:PageQuality=upgrade?'clear':resource.current.pages?.[page-1]?.thumbUrl?'thumb':'clear';
+   if(cache.current.has(page,upgrade?'clear':undefined))continue;
+   const key=`${page}:${quality}`;let pending=inFlight.current.get(key);
+   if(!pending){pending=new Promise<boolean>((resolve,reject)=>queue.current.push({page,quality,upgrade,generation:generation.current,resolve,reject}));inFlight.current.set(key,pending);void pump();}
    if(!await pending)return false;
   }return true;
  },[total,pump]);
@@ -79,16 +86,36 @@ export function BookReader({documentKey,url,pages,filter,onPageCount,onRetryUrl,
    const faces=bookTurnPages(previous,target,step);const front=cache.current.get(faces.front)??null;
    position.current=target;setCurrent(target);setPendingPage(null);setError(false);setLoading(false);setImages(new Map(cache.current));
    if(!reduced&&target!==previous&&front)setTurn({id,forward:faces.forward,front,back:cache.current.get(faces.back)??null,stationary:cache.current.get(faces.stationary)??null,duration:scrub?360:440});
-   // Three neighbouring spreads plus the outgoing spread: at most eight raster blobs.
-   for(const [page,src] of cache.current)if((page<target-step+1||page>target+step*2)&&(page<previous+1||page>previous+step)){cache.current.delete(page);URL.revokeObjectURL(src);allUrls.current.delete(src);}
+   // Keep visited compressed pages under both LRU limits; only nearby pages are decoded.
+   trimCache();
    setImages(new Map(cache.current));
    for(const neighbour of [target+step,target-step])if(neighbour>=0&&neighbour<total){void renderPages(neighbour,step).catch(()=>{});}
   }catch(e){if(epoch.current===id&&!(e instanceof Error&&e.name==='RenderingCancelledException')){setError(true);setLoading(false);onLoadError?.();}}
- },[total,step,reduced,stop,renderPages,onLoadError]);
+ },[total,step,reduced,stop,renderPages,onLoadError,trimCache]);
+ useEffect(()=>{
+  if(!resource.current.pages?.some(page=>page.thumbUrl)||pendingPage!==null||loading)return;
+  const target=current;
+  clearTimer.current=setTimeout(()=>{clearTimer.current=null;void(async()=>{
+   const fresh=new Set<string>();for(let page=target+1;page<=Math.min(total,target+step);page++){if(!cache.current.peek(page,'clear')){const thumb=cache.current.peek(page,'thumb');if(thumb)fresh.add(String(page));}}
+   try{if(!await renderPages(target,step,true)||requested.current!==target||position.current!==target)return;
+    for(const pageText of fresh){const src=cache.current.peek(Number(pageText),'clear');if(src){fadeUrls.current.add(src);const timer=setTimeout(()=>{fadeUrls.current.delete(src);fadeTimers.current.delete(timer);setFadeRevision(n=>n+1);trimCache();},220);fadeTimers.current.add(timer);}}
+    setImages(new Map(cache.current));trimCache();
+   }catch{/* A failed optional clear upgrade keeps the already decoded thumbnail. */}
+  })();},180);
+  return()=>{if(clearTimer.current!==null){clearTimeout(clearTimer.current);clearTimer.current=null;}activeClear.current?.abort();};
+ },[current,pendingPage,loading,revision,step,total,renderPages,trimCache]);
+ useEffect(()=>{trimCache();},[turn,current,images,trimCache]);
  useEffect(()=>{if(total)void go(spreadStart(requested.current,step,total));},[revision,total,step,go]);
  useLayoutEffect(()=>{if(!turn||!leaf.current)return;const angle=turn.forward?-180:180;const effect=leaf.current.animate([{transform:'rotateY(0deg)'},{transform:`rotateY(${angle/2}deg)`,offset:.5},{transform:`rotateY(${angle}deg)`}],{duration:turn.duration,easing:'cubic-bezier(.3,.1,.2,1)',fill:'forwards'});animation.current=effect;if(stationary.current)stationaryAnimation.current=stationary.current.animate([{visibility:'visible'},{visibility:'visible',offset:.499},{visibility:'hidden',offset:.5},{visibility:'hidden'}],{duration:turn.duration,easing:'cubic-bezier(.3,.1,.2,1)',fill:'forwards'});void effect.finished.then(()=>{if(epoch.current===turn.id)setTurn(null);}).catch(()=>{});return()=>{effect.cancel();stationaryAnimation.current?.cancel();};},[turn]);
  const width=Math.max(40,Math.min(760,size.width-72,(size.height-28)*ratio*step));const height=width/(ratio*step);
- const picture=(src:string|null|undefined,hidden=false)=>src?<img src={src} alt="" draggable={false} aria-hidden={hidden} style={{filter}}/>:<div className="reader-blank"/>;
+ const picture=(src:string|null|undefined,hidden=false)=>{
+  if(!src)return <div className="reader-blank"/>;
+  const page=[...cache.current].find(([,url])=>url===src)?.[0];
+  const thumb=page===undefined?undefined:cache.current.peek(page,'thumb');
+  const low=thumb&&thumb!==src?thumb:undefined;
+  const high=<img src={src} alt="" draggable={false} aria-hidden={hidden} style={{filter,...(low?{position:'absolute' as const,inset:0}:{} )}} onLoad={event=>{if(low&&fadeUrls.current.has(src)&&!reduced&&typeof event.currentTarget.animate==='function')event.currentTarget.animate([{opacity:0},{opacity:1}],{duration:200,easing:'ease-out'});}}/>;
+  return low?<span style={{display:'block',position:'relative',width:'100%',height:'100%'}}><img src={low} alt="" draggable={false} aria-hidden={hidden} style={{filter}}/>{high}</span>:high;
+ };
  const text=total?`${copy.page} ${current+1}${step===2&&current+2<=total?`–${current+2}`:''} ${copy.of} ${total}`:hasSource?copy.loading:copy.noPdf;
  return <div className="book-reader-content"><div className="real-book-stage" ref={stage}>
  {!hasSource?<div className="reader-empty"><FileText size={32}/><strong>{copy.noPdf}</strong><p>{copy.noPdfHint}</p></div>:error&&images.size===0?<div className="reader-empty"><p>{copy.pdfError}</p><button onClick={()=>{if(!onRetryUrl){setRetry(n=>n+1);return;}setLoading(true);void onRetryUrl().then(()=>setRetry(n=>n+1)).catch(()=>{setError(true);setLoading(false);});}} disabled={loading}>{copy.retry}</button></div>:<>

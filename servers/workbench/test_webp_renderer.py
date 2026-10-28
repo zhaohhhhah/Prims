@@ -13,7 +13,7 @@ class RendererTests(unittest.TestCase):
   finally:webp.pdf_optimizer.SLOT.release()
   self.assertEqual(webp.render(b'%PDF-x',[],'',lambda:True,1,1)[0],429)
  def test_uses_fixed_offline_worker_and_same_isolation(self):
-  self.assertNotIn('--linearize',webp.WORKER);self.assertIn('png16m',webp.WORKER);self.assertIn("'-quality','82'",webp.WORKER)
+  self.assertNotIn('--linearize',webp.WORKER);self.assertIn('png16m',webp.WORKER);self.assertIn("'-quality','82'",webp.WORKER);self.assertIn("'-resize','50%'",webp.WORKER);self.assertIn("'thumbEntry'",webp.WORKER)
   p=Mock(returncode=0);p.communicate.return_value=(b'PK\x03\x04zip',None);p.poll.return_value=0
   with patch.object(webp.subprocess,'run',return_value=Mock(returncode=0)) as run,patch.object(webp.subprocess,'Popen',return_value=p):
    self.assertEqual(webp.render(b'%PDF-x',['docker'],'fixed',lambda:False,9,8)[0],200)

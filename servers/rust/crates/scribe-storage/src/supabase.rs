@@ -127,7 +127,7 @@ impl SupabaseStorage {
 
     /// One bounded request for immutable bookshelf page signatures, preserving caller order.
     pub async fn signed_urls(&self,bucket:&str,keys:&[String],expires:u32)->ApiResult<Vec<String>> {
-        if keys.is_empty() || keys.len()>2048 {return Err(ApiError::validation("Invalid page signature count"));}
+        if keys.is_empty() || keys.len()>4096 {return Err(ApiError::validation("Invalid page signature count"));}
         let mut response=check_status(self.http.post(format!("{}/storage/v1/object/sign/{}",self.base_url,bucket))
             .headers(self.base_headers()).json(&serde_json::json!({"paths":keys,"expiresIn":expires})).send().await.map_err(net_err)?,"sign pages").await?;
         let mut body=Vec::new();while let Some(chunk)=response.chunk().await.map_err(net_err)? {if body.len()+chunk.len()>4*1024*1024{return Err(ApiError::internal("Page signatures exceed limit"));}body.extend_from_slice(&chunk);}

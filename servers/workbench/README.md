@@ -192,3 +192,20 @@ Run `python3 test_webp_renderer.py` plus the existing PDF optimizer tests. Confi
 `PRIMS_PDF_PREVIEW_WORKER=enabled` only on the intended production app; keep shared-DB
 preview apps disabled. No private documents, image fixtures, credentials, token files
 or local deployment paths belong in the repository.
+
+
+### Dual cached pages, profile v2
+
+Each v2 page keeps the existing144dpi/max1200x2400 clear WebP and derives a second
+half-width/half-height thumbnail from it. The thumbnail does not rerender the PDF.
+Both images must be uploaded and validated before the complete book becomes ready.
+The existing page `url/width/height` describe the clear image; optional
+`thumbUrl/thumbWidth/thumbHeight` describe its cached thumbnail. Page signatures are
+requested together in one bounded batch. ZIP batches contain at most17 entries
+(one manifest plus two images per page), with a41MiB response limit.
+
+v2 uses a separate immutable job/profile namespace. Until it is complete, the
+original PDF remains the fallback. Current-job v1 page objects are reclaimed only
+after the state moves to v2; superseded-job cleanup covers both version prefixes.
+Original PDFs are outside those image prefixes and are never removed by migration.
+Reader/editor priority, FIFO, Native preemption and sandbox limits remain unchanged.
