@@ -40,7 +40,7 @@ export function validTabState(value:unknown):value is AssistantTabState {
  if(!value||typeof value!=='object')return false;const state=value as AssistantTabState;
  if(typeof state.threadId!=='string'||typeof state.modelChoice!=='string'||typeof state.filePath!=='string'||!state.drafts||typeof state.drafts.panel!=='string'||typeof state.drafts.selection!=='string'||state.drafts.panel.length>16000||state.drafts.selection.length>4000||!Array.isArray(state.fileActions)||state.fileActions.length>12)return false;
  if(state.target!==null&&(!state.target||!Number.isInteger(state.target.from)||!Number.isInteger(state.target.to)||state.target.from<0||state.target.to<state.target.from||typeof state.target.text!=='string'||state.target.text.length>16000))return false;
- if(state.plan!==null&&(!state.plan||typeof state.plan.id!=='string'||state.plan.threadId!==state.threadId||!Array.isArray(state.plan.edits)||state.plan.edits.length>48||state.plan.edits.some(edit=>!edit||typeof edit.id!=='string'||typeof edit.filePath!=='string'||typeof edit.before!=='string'||typeof edit.after!=='string'||!['pending','applied','rejected','undone'].includes(edit.state))))return false;
+ if(state.plan!==null&&(!state.plan||typeof state.plan.id!=='string'||state.plan.threadId!==state.threadId||!Array.isArray(state.plan.edits)||state.plan.edits.some(edit=>!edit||typeof edit.id!=='string'||typeof edit.filePath!=='string'||typeof edit.before!=='string'||typeof edit.after!=='string'||!['pending','applied','rejected','undone'].includes(edit.state))))return false;
  try{return JSON.stringify(state).length<=240000;}catch{return false;}
 }
 

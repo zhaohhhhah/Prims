@@ -1,3 +1,4 @@
+import type {ProjectTextPlan} from './project-edit-plan';
 import {afterAll,describe,expect,it,vi} from 'vitest';
 import {decisionRaw,mergeCommittedProposal,parseCommittedProposal,proposalMessage,proposalRunMessage,restoreCommittedPlan,type CommittedProposal} from './incremental-proposals';
 vi.stubGlobal('crypto',{randomUUID:()=>cryptoId++ + '-fixture'});let cryptoId=1;
@@ -12,3 +13,5 @@ describe('complete streamed proposals are independent from final text',()=>{
  it('restores durable event order even when database timestamps return the same batch in a different order',()=>{const run=proposalRunMessage('run'),candidate=proposalMessage('run',a),accepted={id:'accepted',role:'action' as const,content:'accepted',raw:decisionRaw('run','a','applied')},undone={id:'undone',role:'action' as const,content:'undone',raw:decisionRaw('run','a','undone')};expect(restoreCommittedPlan([undone,candidate,accepted,run],['main.tex'],'thread')?.edits[0]!.state).toBe('undone');});
  it('does not revive a rejected or undone segment during refresh or duplicate final merge',()=>{for(const state of ['rejected','undone'] as const){const restored=restoreCommittedPlan([proposalRunMessage('run'),proposalMessage('run',a),{id:'decision',role:'action',content:'单段决定',raw:decisionRaw('run','a',state)}],['main.tex'],'thread')!;expect(mergeCommittedProposal(restored,'run','thread',a).plan.edits[0]!.state).toBe(state);}});
 });
+
+it('streams and restores more than the old count and total-text quotas',()=>{let plan:ProjectTextPlan|null=null;const messages=[proposalRunMessage('many')];for(let i=0;i<100;i++){const proposal={...a,id:'candidate-'+i,before:'Unique '+i,after:'replacement '.repeat(150)};plan=mergeCommittedProposal(plan,'many','thread',proposal).plan;messages.push(proposalMessage('many',proposal));}expect(plan?.edits).toHaveLength(100);expect(restoreCommittedPlan(messages,['main.tex'],'thread')?.edits).toHaveLength(100);});

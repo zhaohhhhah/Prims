@@ -16,7 +16,7 @@ function pathValid(value:unknown):value is string{return typeof value==='string'
 export function parseProjectActions(value:unknown):ProjectActionInput[]{
  const source=typeof value==='string'?JSON.parse(value) as unknown:value;
  const array=Array.isArray(source)?source:(source as {actions?:unknown}|null)?.actions;
- if(array===undefined)return [];if(!Array.isArray(array)||array.length>12)throw new Error('文件操作计划最多包含 12 项');let total=0;const targets=new Set<string>();
+ if(array===undefined)return [];if(!Array.isArray(array))throw new Error('文件操作计划必须是数组');let total=0;const targets=new Set<string>();
  return array.map(raw=>{if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('文件操作计划格式无效');const action=raw as Record<string,unknown>;
   if(action.type==='set_compile_settings'){
    const expected=action.expected as Record<string,unknown>|undefined;
@@ -26,11 +26,11 @@ export function parseProjectActions(value:unknown):ProjectActionInput[]{
   }
   if(!pathValid(action.path))throw new Error('文件路径必须位于当前项目内，不能包含上级目录或绝对路径');const path=action.path;total+=path.length;
   let parsed:FileActionInput;
-  if(action.type==='create_file'&&typeof action.content==='string'&&action.content.length<=40000&&Object.keys(action).every(k=>['type','path','content'].includes(k))){total+=action.content.length;parsed={type:'create_file',path,content:action.content};}
+  if(action.type==='create_file'&&typeof action.content==='string'&&action.content.length<=8388608&&Object.keys(action).every(k=>['type','path','content'].includes(k))){total+=action.content.length;parsed={type:'create_file',path,content:action.content};}
   else if(action.type==='create_directory'&&Object.keys(action).every(k=>['type','path'].includes(k)))parsed={type:'create_directory',path};
   else if(action.type==='move_file'&&pathValid(action.newPath)&&action.newPath!==path&&Object.keys(action).every(k=>['type','path','newPath'].includes(k))){total+=action.newPath.length;parsed={type:'move_file',path,newPath:action.newPath};}
   else throw new Error('仅支持新建文本文件、目录和移动文件，不能删除或覆盖');
-  const target=parsed.newPath??parsed.path;if(targets.has(target))throw new Error('多个操作不能使用同一个目标路径');targets.add(target);if(total>80000)throw new Error('文件操作计划文本总量不能超过 80000 字符');return parsed;
+  const target=parsed.newPath??parsed.path;if(targets.has(target))throw new Error('多个操作不能使用同一个目标路径');targets.add(target);if(total>8388608)throw new Error('文件操作计划文本总量不能超过 80000 字符');return parsed;
  });
 }
 async function request<T>(projectId:string,suffix:string,body?:unknown,method=body===undefined?'GET':'POST'):Promise<T>{

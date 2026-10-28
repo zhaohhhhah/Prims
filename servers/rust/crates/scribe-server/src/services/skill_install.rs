@@ -6,7 +6,7 @@ use std::time::Duration;
 use uuid::Uuid;
 
 pub const MAX_BYTES: usize = 48 * 1024;
-const MAX_PROPOSAL_BYTES: usize = 60_000;
+const MAX_PROPOSAL_BYTES: usize = 8*1024*1024;
 
 /// Ambiguous slash-containing GitHub refs must be supplied as an explicit raw URL.
 pub fn public_skill_url(value: &str) -> ApiResult<reqwest::Url> {
@@ -85,13 +85,11 @@ async fn fetch_public(url: reqwest::Url) -> ApiResult<String> {
 }
 
 #[derive(Default)]
-pub struct SkillInstallQueue { attempts: usize, pub items: Vec<Value> }
+pub struct SkillInstallQueue { pub items: Vec<Value> }
 impl SkillInstallQueue {
     pub fn bytes(&self) -> usize { self.items.iter().map(|item| item.to_string().len()).sum() }
     pub fn metadata(&self) -> Value { json!(self.items.iter().map(|item| json!({"id":item["id"],"name":item["name"],"status":"pending_review","installed":false})).collect::<Vec<_>>()) }
     pub async fn prepare(&mut self, call: &Value, text_bytes: usize) -> ApiResult<(Value, bool)> {
-        if self.attempts >= 3 { return Err(ApiError::validation("本轮最多准备3次技能安装建议")); }
-        self.attempts += 1;
         validate_call(call)?;
         let (content, source) = if let Some(content) = call.get("content").and_then(Value::as_str) {
             (content.to_string(), None)
@@ -134,13 +132,13 @@ mod tests {
         let (first, added) = queue.submit(DOC, None, 0).unwrap(); assert!(added);
         assert_eq!(first["status"], "pending_review"); assert_eq!(first["installed"], false); assert_eq!(first["permissionsGranted"], false);
         let (same, added) = queue.submit(DOC, None, 0).unwrap(); assert!(!added); assert_eq!(first["id"], same["id"]);
-        assert!(queue.submit(&DOC.replace("safe-workflow", "another-workflow"), None, 60_000).is_err());
+        assert!(queue.submit(&DOC.replace("safe-workflow", "another-workflow"), None, MAX_PROPOSAL_BYTES).is_err());
         assert_eq!(queue.items.len(), 1);
     }
-    #[tokio::test] async fn three_attempts_are_bounded_without_any_http_or_database() {
+    #[tokio::test] async fn repeated_preparation_has_no_attempt_quota_and_still_deduplicates() {
         let mut queue = SkillInstallQueue::default();
-        for _ in 0..3 { queue.prepare(&json!({"tool":"install_skill","content":DOC}), 0).await.unwrap(); }
-        assert!(queue.prepare(&json!({"tool":"install_skill","content":DOC}), 0).await.is_err());
+        for _ in 0..20 { queue.prepare(&json!({"tool":"install_skill","content":DOC}), 0).await.unwrap(); }
+        assert!(queue.prepare(&json!({"tool":"install_skill","content":DOC}), 0).await.is_ok());
         assert_eq!(queue.items.len(), 1);
     }
 }

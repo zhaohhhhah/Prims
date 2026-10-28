@@ -187,7 +187,7 @@ impl AIService {
         // tool execution results after the original question, so this is a real continuation.
         if inline && !native_mode && input.options.as_ref().and_then(|o|o.get("projectTools")).is_some_and(|v|v=="enabled") {
             if let Some(turns)=input.options.as_ref().and_then(|o|o.get("projectContinuation")).and_then(|raw|serde_json::from_str::<Vec<ChatMessage>>(raw).ok()) {
-                messages.extend(turns.into_iter().filter(|message|matches!(message.role,ChatRole::User|ChatRole::Assistant)).take(64));
+                messages.extend(turns.into_iter().filter(|message|matches!(message.role,ChatRole::User|ChatRole::Assistant)));
             }
         }
 

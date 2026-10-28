@@ -99,7 +99,7 @@ fn public_item(item:&Item)->Value{json!({"id":item.id,"action":item.action,"stat
 pub fn validate_path(path:&str)->ApiResult<()>{if path.is_empty()||path.len()>512||path.starts_with('/')||path.contains('\\')||path.chars().any(|c|c.is_control()||c==':')||path.split('/').any(|p|p.is_empty()||p=="."||p=="..")||path.split('/').next()==Some(".git"){return Err(ApiError::validation("路径必须是项目内的安全相对路径，不能含上级目录、空段或控制字符"));}Ok(())}
 fn validate_main(path:&str,files:&[scribe_shared::ProjectFile])->ApiResult<()>{validate_path(path)?;if !path.to_ascii_lowercase().ends_with(".tex")||!files.iter().any(|file|file.path==path){return Err(ApiError::validation("主文件必须是当前项目中已存在的.tex文件"));}Ok(())}
 pub fn validate_actions(actions:&[ActionInput])->ApiResult<()>{
- if actions.is_empty()||actions.len()>12{return Err(ApiError::validation("每轮仅可预览 1–12 个项目操作"));}
+ if actions.is_empty(){return Err(ApiError::validation("项目操作不能为空"));}
  let mut total=0;let mut targets=HashSet::new();
  for a in actions{
   if a.kind=="set_compile_settings"{
@@ -110,10 +110,10 @@ pub fn validate_actions(actions:&[ActionInput])->ApiResult<()>{
   }
   if a.compiler.is_some()||a.main_file.is_some()||a.expected.is_some(){return Err(ApiError::validation("文件操作不能更改编译设置"));}
   validate_path(&a.path)?;total+=a.path.chars().count()+a.new_path.as_deref().unwrap_or("").chars().count();
-  match a.kind.as_str(){"create_file"=>{if a.new_path.is_some()||a.content.is_none()||a.content.as_ref().is_some_and(|c|c.chars().count()>40000){return Err(ApiError::validation("新建文本文件需要不超过 40000 字符的内容"));}total+=a.content.as_ref().unwrap().chars().count();},"create_directory"=>{if a.content.is_some()||a.new_path.is_some(){return Err(ApiError::validation("创建目录不能带文件内容或目标路径"));}},"move_file"=>{let new=a.new_path.as_deref().ok_or_else(||ApiError::validation("移动文件需要目标路径"))?;validate_path(new)?;if new==a.path||a.content.is_some(){return Err(ApiError::validation("移动目标需不同，且不能修改文件内容"));}},_=>return Err(ApiError::validation("不支持的项目操作"))}
+  match a.kind.as_str(){"create_file"=>{if a.new_path.is_some()||a.content.is_none()||a.content.as_ref().is_some_and(|c|c.len()>8*1024*1024){return Err(ApiError::validation("新建文本文件需要不超过 40000 字符的内容"));}total+=a.content.as_ref().unwrap().chars().count();},"create_directory"=>{if a.content.is_some()||a.new_path.is_some(){return Err(ApiError::validation("创建目录不能带文件内容或目标路径"));}},"move_file"=>{let new=a.new_path.as_deref().ok_or_else(||ApiError::validation("移动文件需要目标路径"))?;validate_path(new)?;if new==a.path||a.content.is_some(){return Err(ApiError::validation("移动目标需不同，且不能修改文件内容"));}},_=>return Err(ApiError::validation("不支持的项目操作"))}
   if !targets.insert(a.new_path.as_deref().unwrap_or(&a.path)){return Err(ApiError::validation("多个操作不能写向同一路径"));}
  }
- if total>80000{return Err(ApiError::validation("本轮新文件文本总量不能超过 80000 字符"));}Ok(())
+ if total>8*1024*1024{return Err(ApiError::validation("本轮新文件文本总量不能超过 80000 字符"));}Ok(())
 }
 fn collision(path:&str,_directory:bool,files:&[&str],dirs:&[String])->ApiResult<()>{if files.iter().any(|f|*f==path||f.starts_with(&(path.to_string()+"/")))||dirs.iter().any(|d|d==path||d.starts_with(&(path.to_string()+"/")))||path.split('/').scan(String::new(),|base,part|{if !base.is_empty(){base.push('/');}base.push_str(part);Some(base.clone())}).any(|parent|files.contains(&parent.as_str())){return Err(ApiError::new(ErrorCode::Conflict,"目标路径或其父路径已存在文件/目录，未覆盖任何内容"));}Ok(())}
 fn db(_:sqlx::Error)->ApiError{ApiError::internal("文件计划服务暂时不可用")}

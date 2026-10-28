@@ -20,6 +20,7 @@ describe('scoped assistant tab transfer',()=>{
   const clone:unknown=JSON.parse(JSON.stringify(state));expect(validTabState(clone)).toBe(true);
   if(!validTabState(clone))throw new Error('invalid fixture');
   expect(clone.drafts.panel).toBe('A fixed draft');expect(clone.drafts.selection).toBe('A separate selection draft');
+  expect(validTabState({...state,plan:{...state.plan,edits:Array.from({length:100},(_,i)=>({...state.plan!.edits[0]!,id:'edit-'+i}))}})).toBe(true);
   expect(clone.plan?.edits[0]?.after).toBe('manually adjusted');expect(clone.plan?.edits[0]?.state).toBe('pending');
  });
  it('refuses cross-thread plans and oversized or malformed transfer data',()=>{

@@ -7,7 +7,7 @@ const validId=(value:unknown):value is string=>typeof value==='string'&&value.le
 export function parseCommittedProposal(value:unknown,allowed:readonly string[]):CommittedProposal {
  if(!value||typeof value!=='object')throw new Error('候选修改格式不完整');const item=value as Record<string,unknown>;
  if(!validId(item.id)||typeof item.filePath!=='string'||!allowed.includes(item.filePath)||item.filePath.startsWith('/')||item.filePath.includes('\\')||item.filePath.includes(':')||item.filePath.split('/').some(part=>!part||part==='.'||part==='..')||item.filePath.split('/')[0]==='.git'||new TextEncoder().encode(item.filePath).length>512||/[\u0000-\u001f\u007f]/.test(item.filePath))throw new Error('候选只允许当前项目已授权的文本文件');
- if(typeof item.before!=='string'||!item.before.trim()||item.before.length>16000||typeof item.after!=='string'||item.after.length>24000||item.status!=='pending_review')throw new Error('候选修改为空、过长或未完整提交');
+ if(typeof item.before!=='string'||!item.before.trim()||item.before.length>8388608||typeof item.after!=='string'||item.after.length>8388608||item.status!=='pending_review')throw new Error('候选修改为空、过长或未完整提交');
  return {id:item.id,filePath:item.filePath,before:item.before,after:item.after,status:'pending_review'};
 }
 export function mergeCommittedProposal(plan:ProjectTextPlan|null,requestId:string,threadId:string,proposal:CommittedProposal,selectionId?:string):{plan:ProjectTextPlan;added:boolean}{
@@ -16,9 +16,8 @@ export function mergeCommittedProposal(plan:ProjectTextPlan|null,requestId:strin
  const sameId=current.edits.find(edit=>edit.id===proposal.id);
  if(sameId){if(sameId.filePath!==proposal.filePath||sameId.before!==proposal.before||(sameId.sourceAfter??sameId.after)!==proposal.after)throw new Error('重复候选的内容不一致，已保留原建议');return {plan:current,added:false};}
  if(current.edits.some(edit=>edit.filePath===proposal.filePath&&edit.before===proposal.before&&(edit.sourceAfter??edit.after)===proposal.after))return {plan:current,added:false};
- if(current.edits.length>=48)throw new Error('本轮候选已达到 48 处，请分次修改');
  const edits=[...current.edits,{id:proposal.id,filePath:proposal.filePath,before:proposal.before,after:proposal.after,sourceAfter:proposal.after,state:'pending' as const}];
- if(new TextEncoder().encode(JSON.stringify(edits.map(({filePath,before,sourceAfter})=>({filePath,before,after:sourceAfter})))).length>70000)throw new Error('本轮候选总量过长，请分次修改');
+ if(new TextEncoder().encode(JSON.stringify(edits.map(({filePath,before,sourceAfter})=>({filePath,before,after:sourceAfter})))).length>8388608)throw new Error('本轮候选总量过长，请分次修改');
  return {plan:{...current,edits},added:true};
 }
 export function proposalRunMessage(requestId:string):ProjectAIMessage{return {id:crypto.randomUUID(),role:'action',content:'本轮 AI 修改仍需用户逐段确认；待审候选不能视作已应用。',raw:JSON.stringify({kind:'prims.proposal_run',requestId,order:nextOrder()})};}

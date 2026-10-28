@@ -9,8 +9,8 @@ use super::membership::assert_member;
 
 pub const MAX_BRIEF:usize=8000;
 pub const MAX_SUMMARY:usize=2000;
-pub const MAX_CONTENT:usize=24000;
-pub const MAX_RAW:usize=80000;
+pub const MAX_CONTENT:usize=8*1024*1024;
+pub const MAX_RAW:usize=8*1024*1024;
 pub const MAX_RESPONSE_HISTORY:usize=160;
 pub const MAX_RESPONSE_RAW_CHARS:usize=80_000;
 pub const MAX_RESPONSE_CONTENT_CHARS:usize=160_000;
