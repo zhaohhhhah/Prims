@@ -28,7 +28,7 @@ impl SearchConnections{
  pub fn new(pool:PgPool,crypto:Arc<CryptoBox>)->Self{Self{pool,crypto}}
  pub async fn max_calls(&self,user:UserId)->ApiResult<u32>{
   let value:Option<i64>=sqlx::query_scalar("select max_calls_per_request from public.scribe_search_options where user_id=$1").bind(user.into_inner()).fetch_optional(&self.pool).await.map_err(db)?;
-  value.map(|value|u32::try_from(value).map_err(|_|ApiError::internal("搜索次数设置无效"))).transpose().map(|value|value.unwrap_or(3))
+  value.map(|value|u32::try_from(value).map_err(|_|ApiError::internal("搜索次数设置无效"))).transpose().map(|value|value.unwrap_or(0))
  }
  pub async fn set_options(&self,user:UserId,input:SearchOptionsInput)->ApiResult<()>{
   sqlx::query("insert into public.scribe_search_options(user_id,max_calls_per_request) values($1,$2) on conflict(user_id) do update set max_calls_per_request=$2,updated_at=now()")

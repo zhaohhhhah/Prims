@@ -117,17 +117,17 @@ impl EventState{
       StreamEvent::ContentBlockStart{index,content_block:StartBlock::ToolUse{id,name,input}}=>{
        if !input.is_object(){return Some(Err(AdapterError::Stream("Anthropic tool input must be an object".into())));}
        let arguments=if input.as_object().is_some_and(|v|!v.is_empty()){Some(input.to_string())}else{None};self.tools.insert(index,arguments.is_some());
-       CompletionChunk{text:String::new(),tool_call_deltas:vec![NativeToolCallDelta{index,id:Some(id),name:Some(name),arguments}]}
+       CompletionChunk{usage:None,text:String::new(),tool_call_deltas:vec![NativeToolCallDelta{index,id:Some(id),name:Some(name),arguments}]}
       },
       StreamEvent::ContentBlockDelta{index,delta:Delta::InputJsonDelta{partial_json}}=>{
        let Some(seen)=self.tools.get_mut(&index)else{return Some(Err(AdapterError::Stream("Anthropic tool argument delta without tool start".into())));};
-       if partial_json.is_empty(){return None;}*seen=true;CompletionChunk{text:String::new(),tool_call_deltas:vec![NativeToolCallDelta{index,id:None,name:None,arguments:Some(partial_json)}]}
+       if partial_json.is_empty(){return None;}*seen=true;CompletionChunk{usage:None,text:String::new(),tool_call_deltas:vec![NativeToolCallDelta{index,id:None,name:None,arguments:Some(partial_json)}]}
       },
       StreamEvent::ContentBlockStop{index}=>{
-       if self.tools.remove(&index)==Some(false){CompletionChunk{text:String::new(),tool_call_deltas:vec![NativeToolCallDelta{index,id:None,name:None,arguments:Some("{}".into())}]}}else{return None;}
+       if self.tools.remove(&index)==Some(false){CompletionChunk{usage:None,text:String::new(),tool_call_deltas:vec![NativeToolCallDelta{index,id:None,name:None,arguments:Some("{}".into())}]}}else{return None;}
       },
       StreamEvent::ContentBlockStart{content_block:StartBlock::Text{text},..}|StreamEvent::ContentBlockDelta{delta:Delta::TextDelta{text},..}=>{
-       if text.is_empty(){return None;}CompletionChunk{text,tool_call_deltas:vec![]}
+       if text.is_empty(){return None;}CompletionChunk{usage:None,text,tool_call_deltas:vec![]}
       },
       StreamEvent::MessageDelta{delta} if delta.stop_reason.as_deref()==Some("max_tokens")=>return Some(Err(AdapterError::OutputLimit)),
       StreamEvent::MessageStop{}=>{self.stopped=true;return None;},
@@ -224,6 +224,7 @@ impl Adapter for AnthropicAdapter {
         let stream=async_stream::stream!{
          let mut lines=Box::pin(anthropic_sse(response.bytes_stream()));let mut state=EventState::default();
          while let Some(line)=lines.next().await{let line=match line{Ok(line)=>line,Err(error)=>{yield Err(error);return;}};let Some(payload)=line.strip_prefix("data:").map(str::trim_start)else{continue;};
+          if let Ok(value)=serde_json::from_str::<Value>(payload){if let Some(usage)=crate::adapter::usage_from_json(&value,"anthropic"){yield Ok(CompletionChunk{usage:Some(usage),..Default::default()});}}
           if let Some(result)=state.consume(payload){let failed=result.is_err();yield result;if failed{return;}}
          }
          if !state.stopped{yield Err(AdapterError::Stream("Anthropic response ended before message_stop".into()));}

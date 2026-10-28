@@ -141,6 +141,7 @@ impl CompleteRequest {
 pub struct CompletionChunk {
     pub text: String,
     pub tool_call_deltas:Vec<NativeToolCallDelta>,
+    pub usage:Option<TokenUsage>,
 }
 
 #[async_trait]
@@ -188,3 +189,33 @@ pub fn chunks_to_sse_lines(
  #[tokio::test]async fn actual_network_error_never_allows_retry(){let error=reqwest::Client::builder().no_proxy().build().unwrap().get("http://127.0.0.1:0").send().await.unwrap_err();assert!(!AdapterError::Network(error).is_image_unsupported());}
  #[test]fn request_echoes_cannot_trigger_a_capability_retry(){let message=r#"{"error":{"message":"bad request","request":{"message":"images unsupported"}}}"#;assert!(!AdapterError::HttpStatus{status:400,message:message.into()}.is_image_unsupported());}
 }
+
+/// Provider-reported cumulative counters. Never estimate missing usage from text length.
+#[derive(Debug,Clone,Default)]
+pub struct TokenUsage{pub input:Option<u64>,pub output:Option<u64>,pub total:Option<u64>,pub cached:Option<u64>}
+impl TokenUsage{
+ pub fn merge(&mut self,next:&Self){fn merge(a:&mut Option<u64>,b:Option<u64>){if let Some(b)=b{*a=Some(a.unwrap_or(0).max(b));}}merge(&mut self.input,next.input);merge(&mut self.output,next.output);merge(&mut self.total,next.total);merge(&mut self.cached,next.cached);}
+ pub fn reported(&self)->bool{self.input.is_some()||self.output.is_some()||self.total.is_some()}
+ pub fn complete(&self)->bool{self.input.is_some()&&self.output.is_some()}
+ pub fn total(&self)->u64{self.total.unwrap_or_else(||self.input.unwrap_or(0).saturating_add(self.output.unwrap_or(0)))}
+}
+pub fn usage_from_json(value:&Value,format:&str)->Option<TokenUsage>{
+ let count=|v:&Value,key:&str|v.get(key).and_then(Value::as_u64).filter(|n|*n<=1_000_000_000_000);
+ let mut result=TokenUsage::default();
+ match format{
+  "openai"=>{let u=value.get("usage")?;result.input=count(u,"prompt_tokens");result.output=count(u,"completion_tokens");result.total=count(u,"total_tokens");result.cached=u.get("prompt_tokens_details").and_then(|v|count(v,"cached_tokens")).or_else(||count(u,"prompt_cache_hit_tokens"));},
+  "anthropic"=>{let u=value.get("usage").or_else(||value.get("message").and_then(|m|m.get("usage")))?;result.input=count(u,"input_tokens").map(|n|n.saturating_add(count(u,"cache_read_input_tokens").unwrap_or(0)).saturating_add(count(u,"cache_creation_input_tokens").unwrap_or(0)));result.output=count(u,"output_tokens");result.cached=count(u,"cache_read_input_tokens");},
+  "gemini"=>{let u=value.get("usageMetadata")?;result.input=count(u,"promptTokenCount");result.output=count(u,"candidatesTokenCount").map(|n|n.saturating_add(count(u,"thoughtsTokenCount").unwrap_or(0)));result.total=count(u,"totalTokenCount");result.cached=count(u,"cachedContentTokenCount");},_=>return None,
+ }
+ result.reported().then_some(result)
+}
+impl AdapterError{
+ pub fn is_context_too_long(&self)->bool{
+  let raw=match self{Self::HttpStatus{status:400|413|422,message}|Self::Stream(message)=>message,_=>return false};
+  fn fields(v:&Value,depth:usize)->String{if depth>2{return String::new();}if let Some(s)=v.as_str(){return s.chars().take(4096).collect();}if let Some(v)=v.as_object(){return ["code","type","message","error"].iter().filter_map(|k|v.get(*k)).map(|v|fields(v,depth+1)).collect::<Vec<_>>().join(" ");}String::new()}
+  let text=serde_json::from_str::<Value>(raw).map(|v|fields(&v,0)).unwrap_or_else(|_|raw.chars().take(4096).collect()).to_lowercase();
+  if ["invalid_api_key","authentication","unauthorized","rate_limit","rate limit","permission","forbidden"].iter().any(|v|text.contains(v)){return false;}
+  ["context_length_exceeded","maximum context length","context window exceeded","prompt is too long","prompt too long","input is too long","input token count exceeds","上下文长度超","上下文过长"].iter().any(|v|text.contains(v))||(text.contains("input token count")&&text.contains("exceed"))
+ }
+}
+#[cfg(test)]mod usage_tests{use super::*;use serde_json::json;#[test]fn counters_are_cumulative_and_cached_tokens_not_double_counted(){let a=usage_from_json(&json!({"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":50}}}),"openai").unwrap();assert_eq!(a.total(),120);assert_eq!(a.cached,Some(50));let mut b=usage_from_json(&json!({"message":{"usage":{"input_tokens":10,"cache_read_input_tokens":50,"cache_creation_input_tokens":20,"output_tokens":0}}}),"anthropic").unwrap();b.merge(&usage_from_json(&json!({"usage":{"output_tokens":25}}),"anthropic").unwrap());assert_eq!(b.input,Some(80));assert_eq!(b.total(),105);b.merge(&b.clone());assert_eq!(b.total(),105);assert!(usage_from_json(&json!({}),"openai").is_none());}#[test]fn context_errors_are_narrow(){assert!(AdapterError::HttpStatus{status:400,message:r#"{"error":{"code":"context_length_exceeded"}}"#.into()}.is_context_too_long());for (status,message) in [(401,"maximum context length"),(429,"prompt too long"),(500,"prompt too long"),(400,r#"{"error":{"message":"bad request","request":{"text":"prompt too long"}}}"#),(400,"invalid_api_key context_length_exceeded")]{assert!(!AdapterError::HttpStatus{status,message:message.into()}.is_context_too_long());}}}

@@ -26,6 +26,8 @@ struct ChatRequest<'a> {
     max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<RequestTool<'a>>,
+    #[serde(skip_serializing_if="Option::is_none")]
+    stream_options: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -91,6 +93,8 @@ struct ImageUrl {
 struct StreamFrame {
     #[serde(default)]
     choices: Vec<StreamChoice>,
+    #[serde(default)]
+    usage:Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -125,9 +129,10 @@ struct StreamFunctionDelta {
 }
 
 fn chunk_from_frame(frame:StreamFrame)->Option<Result<CompletionChunk,AdapterError>>{
-    let choice=frame.choices.into_iter().next()?;
+    let usage=crate::adapter::usage_from_json(&serde_json::json!({"usage":frame.usage}),"openai");
+    let Some(choice)=frame.choices.into_iter().next()else{return usage.map(|usage|Ok(CompletionChunk{usage:Some(usage),..Default::default()}))};
     if choice.finish_reason.as_deref()==Some("length"){return Some(Err(AdapterError::OutputLimit));}
-    let delta=choice.delta?;
+    let Some(delta)=choice.delta else{return usage.map(|usage|Ok(CompletionChunk{usage:Some(usage),..Default::default()}))};
     let text=delta.content.unwrap_or_default();
     // Keep each index/id/name/arguments fragment intact. The bounded project
     // agent owns accumulation, validation and sequential execution, not this adapter.
@@ -135,7 +140,7 @@ fn chunk_from_frame(frame:StreamFrame)->Option<Result<CompletionChunk,AdapterErr
         let function=call.function;
         NativeToolCallDelta {index:call.index,id:call.id,name:function.as_ref().and_then(|f|f.name.clone()),arguments:function.and_then(|f|f.arguments)}
     }).collect::<Vec<_>>();
-    if text.is_empty()&&tool_call_deltas.is_empty(){None}else{Some(Ok(CompletionChunk{text,tool_call_deltas}))}
+    if text.is_empty()&&tool_call_deltas.is_empty()&&usage.is_none(){None}else{Some(Ok(CompletionChunk{usage,text,tool_call_deltas}))}
 }
 
 fn base_url(req: &CompleteRequest) -> Result<String, AdapterError> {
@@ -197,6 +202,7 @@ fn build_request(req: &CompleteRequest) -> ChatRequest<'_> {
         model: &req.model,
         messages,
         stream: true,
+        stream_options:Some(serde_json::json!({"include_usage":true})),
         temperature: req.temperature.clamp(0.0, 2.0),
         max_tokens: req.max_tokens,
         // Omission preserves ordinary chat compatibility. With tools present,
@@ -214,19 +220,22 @@ impl Adapter for OpenAIAdapter {
         req: CompleteRequest,
     ) -> Result<BoxStream<'static, Result<CompletionChunk, AdapterError>>, AdapterError> {
         let url = format!("{}/v1/chat/completions", base_url(&req)?);
-        let body = serde_json::to_vec(&build_request(&req))?;
+        let mut body = serde_json::to_value(build_request(&req))?;
         let client = reqwest::Client::new();
-        let response = client
+        let mut response = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", req.api_key))
             .header("Content-Type", "application/json")
-            .body(body)
+            .json(&body)
             .send()
             .await?;
-        let status = response.status();
-        if !status.is_success() {
-            let text = response.text().await.unwrap_or_default();
-            return Err(AdapterError::HttpStatus { status: status.as_u16(), message: text });
+        let status=response.status();
+        if !status.is_success(){
+         let text=response.text().await.unwrap_or_default();let lower=text.to_ascii_lowercase();
+         if matches!(status.as_u16(),400|422)&&lower.contains("stream_options")&&["unsupported","not supported","unknown parameter","unrecognized","extra inputs"].iter().any(|word|lower.contains(word))&&!lower.contains("api_key"){
+          body.as_object_mut().unwrap().remove("stream_options");response=client.post(&url).header("Authorization",format!("Bearer {}",req.api_key)).json(&body).send().await?;
+          if !response.status().is_success(){let status=response.status().as_u16();return Err(AdapterError::HttpStatus{status,message:response.text().await.unwrap_or_default()});}
+         }else{return Err(AdapterError::HttpStatus{status:status.as_u16(),message:text});}
         }
 
         // OpenAI streams Server-Sent Events: each frame begins with `data: `
@@ -271,7 +280,7 @@ where S:Stream<Item=Result<String,AdapterError>> {
     async_stream::stream! {
         let mut lines=std::pin::pin!(lines);
         let mut has_native_calls=false;
-        let mut complete=false;
+        let mut complete=false;let mut output_limited=false;
         while let Some(line_result)=lines.next().await {
             let line=match line_result {Ok(line)=>line,Err(error)=>{yield Err(error);return;}};
             let Some(payload)=line.strip_prefix("data:").map(str::trim_start) else {continue;};
@@ -279,11 +288,14 @@ where S:Stream<Item=Result<String,AdapterError>> {
             if let Ok(value)=serde_json::from_str::<serde_json::Value>(payload) {
                 if let Some(error)=value.get("error").filter(|error|!error.is_null()) {yield Err(AdapterError::Stream(error.to_string()));return;}
             }
+            if complete{if let Ok(value)=serde_json::from_str::<serde_json::Value>(payload){if let Some(usage)=crate::adapter::usage_from_json(&value,"openai"){yield Ok(CompletionChunk{usage:Some(usage),..Default::default()});}}continue;}
             let frame:StreamFrame=match serde_json::from_str(payload){Ok(frame)=>frame,Err(_)=>continue};
+            if frame.choices.first().and_then(|choice|choice.finish_reason.as_deref())==Some("length"){if let Some(usage)=crate::adapter::usage_from_json(&serde_json::json!({"usage":frame.usage.clone()}),"openai"){yield Ok(CompletionChunk{usage:Some(usage),..Default::default()});}}
             let finished=frame.choices.first().and_then(|choice|choice.finish_reason.as_deref()).is_some_and(|reason|matches!(reason,"tool_calls"|"stop"));
-            if let Some(chunk)=chunk_from_frame(frame){match chunk {Ok(chunk)=>{has_native_calls|=!chunk.tool_call_deltas.is_empty();yield Ok(chunk);},Err(error)=>{yield Err(error);return;}}}
-            if finished {complete=true;break;}
+            if let Some(chunk)=chunk_from_frame(frame){match chunk {Ok(chunk)=>{has_native_calls|=!chunk.tool_call_deltas.is_empty();yield Ok(chunk);},Err(AdapterError::OutputLimit)=>{output_limited=true;complete=true;},Err(error)=>{yield Err(error);return;}}}
+            if finished {complete=true;}
         }
+        if output_limited{yield Err(AdapterError::OutputLimit);return;}
         if has_native_calls&&!complete {yield Err(AdapterError::Stream("provider native tool stream ended before completion".into()));}
     }
 }
@@ -489,3 +501,5 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]mod trailing_usage_tests{use super::*;use futures::StreamExt;#[tokio::test]async fn usage_after_stop_and_output_limit_is_not_dropped(){for finish in ["stop","length"]{let lines=futures::stream::iter(vec![Ok::<_,AdapterError>(format!("data:{}",serde_json::json!({"choices":[{"delta":{"content":"answer"},"finish_reason":finish}]}))),Ok(format!("data:{}",serde_json::json!({"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}))),Ok("data: [DONE]".into())]);let chunks=parse_sse(lines).collect::<Vec<_>>().await;assert!(chunks.iter().any(|c|c.as_ref().ok().and_then(|c|c.usage.as_ref()).is_some_and(|u|u.total()==120)));assert_eq!(chunks.iter().any(|c|matches!(c,Err(AdapterError::OutputLimit))),finish=="length");}}}

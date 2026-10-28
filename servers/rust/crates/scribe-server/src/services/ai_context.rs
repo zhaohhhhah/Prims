@@ -49,12 +49,19 @@ impl AIContextService {
   sqlx::query("insert into public.scribe_ai_context_threads(user_id,project_id,id) select user_id,project_id,thread_id from public.scribe_ai_contexts where user_id=$1 and project_id=$2 on conflict(user_id,project_id,id) do nothing").bind(user.into_inner()).bind(project.into_inner()).execute(&self.pool).await.map_err(db)?;Ok(())
  }
  pub async fn get(&self,user:UserId,project:ProjectId)->ApiResult<ContextState>{
+  self.get_with_policy(user,project,None).await
+ }
+ pub async fn get_for_model(&self,user:UserId,project:ProjectId,policy:super::context_policy::ContextPolicy)->ApiResult<ContextState>{self.get_with_policy(user,project,Some(policy)).await}
+ async fn get_with_policy(&self,user:UserId,project:ProjectId,policy:Option<super::context_policy::ContextPolicy>)->ApiResult<ContextState>{
   self.ensure(user,project).await?;
   let row=sqlx::query("select c.brief,c.thread_id,c.updated_at,p.name,p.description,t.auto_summary,t.summary_updated_at,t.summary_revision from public.scribe_ai_contexts c join public.projects p on p.id=c.project_id join public.scribe_ai_context_threads t on t.user_id=c.user_id and t.project_id=c.project_id and t.id=c.thread_id where c.user_id=$1 and c.project_id=$2").bind(user.into_inner()).bind(project.into_inner()).fetch_one(&self.pool).await.map_err(db)?;
   let thread:Uuid=row.get("thread_id");
-  let rows=sqlx::query("select id,role,content,raw,file_path,selection,selection_id,created_at from public.scribe_ai_context_messages where user_id=$1 and project_id=$2 and thread_id=$3 order by seq desc limit 161").bind(user.into_inner()).bind(project.into_inner()).bind(thread).fetch_all(&self.pool).await.map_err(db)?;
-  let mut earlier=rows.len()>MAX_RESPONSE_HISTORY;
-  let mut messages=rows.into_iter().take(MAX_RESPONSE_HISTORY).map(|r|ContextMessage{id:r.get("id"),role:r.get("role"),content:r.get("content"),raw:r.get("raw"),file_path:r.get("file_path"),selection:r.get("selection"),selection_id:r.get("selection_id"),created_at:Some(r.get("created_at"))}).collect::<Vec<_>>();messages.reverse();earlier|=bound_response_messages(&mut messages);
+  let limit=policy.map(|p|p.history_messages()).unwrap_or(MAX_RESPONSE_HISTORY);
+  let byte_budget=policy.map(|p|p.history_chars().saturating_mul(4)).unwrap_or(32*1024*1024);
+  let rows=sqlx::query("select id,role,content,raw,file_path,selection,selection_id,created_at from (select *,sum(octet_length(content)+octet_length(coalesce(raw,''))+octet_length(coalesce(selection,''))) over(order by seq desc) as cumulative_bytes from (select * from public.scribe_ai_context_messages where user_id=$1 and project_id=$2 and thread_id=$3 order by seq desc limit $4) recent) bounded where cumulative_bytes-(octet_length(content)+octet_length(coalesce(raw,''))+octet_length(coalesce(selection,'')))<$5 order by seq desc").bind(user.into_inner()).bind(project.into_inner()).bind(thread).bind((limit+1) as i64).bind(byte_budget as i64).fetch_all(&self.pool).await.map_err(db)?;
+  let mut earlier=rows.len()>limit;
+  if policy.is_some(){earlier=sqlx::query_scalar::<_,i64>("select count(*) from public.scribe_ai_context_messages where user_id=$1 and project_id=$2 and thread_id=$3").bind(user.into_inner()).bind(project.into_inner()).bind(thread).fetch_one(&self.pool).await.map_err(db)? as usize>rows.len().min(limit);}
+  let mut messages=rows.into_iter().take(limit).map(|r|ContextMessage{id:r.get("id"),role:r.get("role"),content:r.get("content"),raw:r.get("raw"),file_path:r.get("file_path"),selection:r.get("selection"),selection_id:r.get("selection_id"),created_at:Some(r.get("created_at"))}).collect::<Vec<_>>();messages.reverse();if policy.is_none(){earlier|=bound_response_messages(&mut messages);}
   Ok(ContextState{brief:row.get("brief"),thread_id:thread,messages,has_earlier:earlier,project_title:row.get("name"),project_description:row.get("description"),updated_at:row.get("updated_at"),auto_summary:row.get("auto_summary"),summary_updated_at:row.get("summary_updated_at"),summary_revision:row.get("summary_revision")})
  }
  pub async fn update_brief(&self,user:UserId,project:ProjectId,input:BriefInput)->ApiResult<ContextState>{
@@ -149,8 +156,11 @@ fn action_reference(message:&ContextMessage)->serde_json::Value{
 
 /// Model history is bounded independently from stored history; other-target drafts become reference-only.
 pub fn model_history(state:&ContextState,file:&str,selection_id:&str)->(Vec<ChatMessage>,bool){
- let mut kept=Vec::new();let mut remaining=MAX_MODEL_HISTORY_CHARS;let mut truncated=state.has_earlier;let mut decided=std::collections::HashSet::new();
- for m in state.messages.iter().rev().take(MAX_MODEL_HISTORY) {
+ model_history_with_limits(state,file,selection_id,MAX_MODEL_HISTORY,MAX_MODEL_HISTORY_CHARS)
+}
+pub fn model_history_with_limits(state:&ContextState,file:&str,selection_id:&str,max_messages:usize,max_chars:usize)->(Vec<ChatMessage>,bool){
+ let mut kept=Vec::new();let mut remaining=max_chars;let mut truncated=state.has_earlier||state.messages.len()>max_messages;let mut decided=std::collections::HashSet::new();
+ for m in state.messages.iter().rev().take(max_messages) {
   let key=(m.file_path.clone().unwrap_or_default(),m.selection_id.clone().unwrap_or_default());
   if m.role=="action"{decided.insert(key.clone());}
   let same_target=!selection_id.is_empty()&&m.selection_id.as_deref()==Some(selection_id)&&m.file_path.as_deref()==Some(file)&&!decided.contains(&key);
@@ -191,3 +201,5 @@ fn db(error:sqlx::Error)->ApiError{tracing::error!(?error,"private AI context da
  #[test]fn skill_install_history_is_reference_metadata_not_execution_authority(){let mut pending=msg("action");pending.raw=Some(json!({"kind":"prims.skill_proposal","requestId":"r","proposal":{"id":"p","name":"sample-skill","content":"PRIVATE_UNCONFIRMED_BODY","status":"pending_review"}}).to_string());let mut decision=msg("action");decision.raw=Some(json!({"kind":"prims.skill_decision","requestId":"r","proposalId":"p","state":"installed","skillId":"s"}).to_string());let text=model_history(&state(vec![pending,decision]),"a.tex","old").0.iter().map(|m|m.content.clone()).collect::<String>();assert!(!text.contains("PRIVATE_UNCONFIRMED_BODY"));assert!(text.contains("pendingSkillInstall")&&text.contains("pastSkillInstallDecision")&&text.contains("permissionsGranted"));}
 
 }
+
+#[cfg(test)]mod custom_history_tests{use super::*;#[test]fn configured_budget_keeps_more_than_forty_turns(){let now=Utc::now();let messages=(0..100).map(|i|ContextMessage{id:Uuid::new_v4(),role:"user".into(),content:format!("Instruction {i} ")+&"context ".repeat(90),raw:None,file_path:None,selection:None,selection_id:None,created_at:Some(now)}).collect();let state=ContextState{brief:String::new(),thread_id:Uuid::new_v4(),messages,has_earlier:false,project_title:String::new(),project_description:None,updated_at:now,auto_summary:String::new(),summary_updated_at:None,summary_revision:0};let(history,truncated)=model_history_with_limits(&state,"","",200,300000);assert_eq!(history.len(),100);assert!(!truncated);assert!(history[0].content.contains("Instruction 0"));let(small,truncated)=model_history_with_limits(&state,"","",40,50000);assert!(small.len()<=40&&truncated);}}

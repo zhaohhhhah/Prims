@@ -166,6 +166,7 @@ impl Adapter for GeminiAdapter {
                     return Some(Err(AdapterError::Stream(error.to_string())));
                 }
             }
+            let usage=serde_json::from_str::<serde_json::Value>(payload).ok().and_then(|v|crate::adapter::usage_from_json(&v,"gemini"));
             let frame: StreamFrame = match serde_json::from_str(payload) {
                 Ok(f) => f,
                 Err(_) => return None,
@@ -173,13 +174,11 @@ impl Adapter for GeminiAdapter {
             let text: String = frame
                 .candidates
                 .into_iter()
-                .next()?
-                .content?
-                .parts
+                .next().and_then(|v|v.content).map(|v|v.parts).unwrap_or_default()
                 .into_iter()
                 .filter_map(|p| p.text)
                 .collect();
-            if text.is_empty() { None } else { Some(Ok(CompletionChunk { text,tool_call_deltas:vec![] })) }
+            if text.is_empty()&&usage.is_none(){None}else{Some(Ok(CompletionChunk{usage,text,tool_call_deltas:vec![]}))}
         });
         Ok(Box::pin(stream))
     }

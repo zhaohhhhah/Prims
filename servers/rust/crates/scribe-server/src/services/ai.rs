@@ -23,7 +23,7 @@ use std::time::Instant;
 pub enum AIStreamStartError { Request(ApiError), Provider(AdapterError) }
 impl From<ApiError> for AIStreamStartError {fn from(error:ApiError)->Self{Self::Request(error)}}
 impl AIStreamStartError {
- pub fn into_api_error(self)->ApiError{match self{Self::Request(error)=>error,Self::Provider(AdapterError::OutputLimit)=>ApiError::validation(AdapterError::OutputLimit.to_string()),Self::Provider(_)=>ApiError::new(ErrorCode::ServiceUnavailable,"模型接口请求失败，请检查接口配置、模型权限及网络后重试")}}
+ pub fn into_api_error(self)->ApiError{match self{Self::Request(error)=>error,Self::Provider(AdapterError::OutputLimit)=>ApiError::validation(AdapterError::OutputLimit.to_string()),Self::Provider(ref error) if error.is_context_too_long()=>ApiError::validation("[context_window_exceeded] 模型接口拒绝了过长上下文，请调低该模型的上下文长度后重试"),Self::Provider(_)=>ApiError::new(ErrorCode::ServiceUnavailable,"模型接口请求失败，请检查接口配置、模型权限及网络后重试")}}
  pub fn is_tools_unsupported(&self)->bool{matches!(self,Self::Provider(error) if error.is_tools_unsupported())}
  pub fn is_image_unsupported(&self)->bool{matches!(self,Self::Provider(error) if error.is_image_unsupported())}
 }
@@ -38,6 +38,8 @@ impl AIService {
     pub fn new(pool: PgPool, crypto: Arc<CryptoBox>) -> Self {
         Self { pool, crypto }
     }
+
+    pub fn usage_context(&self,user:UserId,request:&CompleteRequest,purpose:&str)->super::ai_usage::UsageContext{super::ai_usage::UsageContext::new(self.pool.clone(),user,request,purpose)}
 
     pub async fn official_search_available(&self,user:UserId)->ApiResult<bool>{
         let Some(stored)=super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).resolve_default(user).await? else{return Ok(false)};
@@ -115,7 +117,7 @@ impl AIService {
         input: AICompleteInput,
     ) -> ApiResult<BoxStream<'static, Result<CompletionChunk, AdapterError>>> {
         let stream=self.complete_stream_for_agent(user,input).await.map_err(AIStreamStartError::into_api_error)?;
-        Ok(Box::pin(stream.map(|chunk|chunk.map_err(|error|match error{AdapterError::OutputLimit=>AdapterError::OutputLimit,_=>AdapterError::Stream("模型接口返回错误，请检查接口配置、权限及网络后重试".into())}))))
+        Ok(Box::pin(stream.map(|chunk|chunk.map_err(|error|match error{AdapterError::OutputLimit=>AdapterError::OutputLimit,error if error.is_context_too_long()=>AdapterError::Stream("[context_window_exceeded] 模型接口拒绝了过长上下文，请调整该模型的上下文长度".into()),_=>AdapterError::Stream("模型接口返回错误，请检查接口配置、权限及网络后重试".into())}))))
     }
 
     pub async fn complete_stream_for_agent(
@@ -124,7 +126,7 @@ impl AIService {
         input: AICompleteInput,
     ) -> Result<BoxStream<'static, Result<CompletionChunk, AdapterError>>,AIStreamStartError> {
         let request=self.prepare_agent_request(user,input).await?;
-        adapter_for(request.provider).stream(request).await.map_err(AIStreamStartError::Provider)
+        super::ai_usage::UsageContext::new(self.pool.clone(),user,&request,"conversation").stream(request).await.map_err(AIStreamStartError::Provider)
     }
 
     /// Internal only: retain the authenticated user's selected connection and model.
@@ -151,12 +153,12 @@ impl AIService {
         // sessions can otherwise drag many MB of context through every
         // request — costs money and risks hitting provider limits.
         // Keep the most recent N turns (trim from the front).
-        const MAX_HISTORY_MESSAGES: usize = 40;
+        let max_history_messages=super::ai_profiles::AIProfiles::new(self.pool.clone(),self.crypto.clone()).context_policy(user,&input).await?.history_messages();
         let inline_text = inline.then(|| super::inline_prompt::inline_message(&input));
         let history = input.history.unwrap_or_default();
-        let history_skip = history.len().saturating_sub(MAX_HISTORY_MESSAGES);
+        let history_skip = history.len().saturating_sub(max_history_messages);
         let mut messages: Vec<ChatMessage> =
-            Vec::with_capacity(history.len().min(MAX_HISTORY_MESSAGES) + 2);
+            Vec::with_capacity(history.len().min(max_history_messages) + 2);
         messages.push(ChatMessage { role: ChatRole::System, content: system.to_string() });
         messages.extend(history.into_iter().skip(history_skip).filter(|message| message.role != ChatRole::System));
         let mut user_text = if inline {
@@ -217,7 +219,7 @@ impl AIService {
         }
         let selected_search=if inline{self.resolve_search(user,&req).await.ok().flatten()}else{None};
         let search_available=agent_preferences.search_enabled&&selected_search.is_some();
-        if inline{if let Some(message)=req.messages.iter_mut().rev().find(|message|message.role==ChatRole::User){message.content.push_str("\n\nServer search availability (configuration metadata only): ");message.content.push_str(&serde_json::json!({"tool":"web_search","available":search_available,"provider":selected_search.as_ref().map(|config|config.provider.name()),"queryMaxCharacters":if selected_search.as_ref().is_some_and(|config|config.provider==super::search_connections::SearchProvider::Doubao){100}else{128},"maxResults":5,"maxCallsPerRequest":self.search_max_calls(user).await.unwrap_or(3),"chatModelIndependent":true}).to_string());}}
+        if inline{if let Some(message)=req.messages.iter_mut().rev().find(|message|message.role==ChatRole::User){message.content.push_str("\n\nServer search availability (configuration metadata only): ");message.content.push_str(&serde_json::json!({"tool":"web_search","available":search_available,"provider":selected_search.as_ref().map(|config|config.provider.name()),"queryMaxCharacters":if selected_search.as_ref().is_some_and(|config|config.provider==super::search_connections::SearchProvider::Doubao){100}else{128},"maxResults":5,"maxCallsPerRequest":self.search_max_calls(user).await.unwrap_or(0),"chatModelIndependent":true}).to_string());}}
         if native_mode&&search_available{let mut schema=super::web_search::web_search_schema();if selected_search.as_ref().is_some_and(|config|config.provider==super::search_connections::SearchProvider::Doubao){schema["properties"]["query"]["maxLength"]=serde_json::json!(100);}
             req.native_tools.push(scribe_ai::adapter::NativeToolDefinition{name:"web_search".into(),description:"Search public web references using this authenticated user's independent search connection. This is independent of the chat model/provider. Use minimal public keywords, never project paragraphs or credentials. Max5 results; follow the user-configured maxCallsPerRequest (0 means no separate search-count limit within the bounded agent run); cite actual supplied URLs. Cannot change endpoint/headers/key through tool arguments. Does not fetch whole pages or write files.".into(),parameters:schema});}
 

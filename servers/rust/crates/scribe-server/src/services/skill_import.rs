@@ -118,10 +118,10 @@ pub async fn refine(state: &AppState, user: UserId, input: RefineInput) -> ApiRe
     if let Some(id)=input.model_profile_id { options.insert("modelProfileId".into(),json!(id.to_string())); }
     if let Some(name)=input.model_name { options.insert("modelName".into(),json!(name)); }
     let ai_input: AICompleteInput=serde_json::from_value(json!({"feature":"chat","selection":"","options":options})).map_err(|_|ApiError::validation("模型选择无效"))?;
-    let request=AIService::new(pool,crypto).prepare_agent_request(user,ai_input).await.map_err(|e|e.into_api_error())?;
+    let request=AIService::new(pool.clone(),crypto).prepare_agent_request(user,ai_input).await.map_err(|e|e.into_api_error())?;
     let request=prepare_draft_request(request,&input.content,instruction);
     tokio::time::timeout(Duration::from_secs(90), async {
-        let mut stream=adapter_for(request.provider).stream(request).await.map_err(|_|ApiError::validation("模型连接失败，请检查本人API配置；尚未安装技能"))?;
+        let mut stream=super::ai_usage::UsageContext::new(pool,user,&request,"skill_import").stream(request).await.map_err(|_|ApiError::validation("模型连接失败，请检查本人API配置；尚未安装技能"))?;
         let mut text=String::new();
         while let Some(chunk)=stream.next().await {
             let chunk=chunk.map_err(|_|ApiError::validation("模型输出失败或达到上限，技能未安装；请缩短来源后重试"))?;

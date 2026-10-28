@@ -148,10 +148,11 @@ async fn normalized_results_filter_internal_urls_duplicates_and_large_whole_page
 }
 
 #[tokio::test]
-async fn failed_requests_use_the_same_three_attempt_budget() {
+async fn explicit_three_attempt_budget_still_bounds_failed_requests() {
     let (url, worker) = mock(vec![(401, json!({"error":"credential echo must not forward"})); 3]);
     let config = connection(SearchProvider::Deepseek, 1, "fake-fixture-key");
     let mut session = SearchSession::default();
+    session.set_max_calls(3);
     for _ in 0..4 {
         let error = session.search_connection_at(Some(&config), &json!({"query":"public query"}), &url).await.unwrap_err();
         assert!(!error.contains("credential echo"));

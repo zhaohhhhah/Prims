@@ -10,6 +10,7 @@ create table if not exists public.scribe_ai_model_profiles (
  api_key_cipher text,
  updated_at timestamptz not null default now()
 );
+alter table public.scribe_ai_model_profiles add column if not exists context_windows jsonb not null default '{}'::jsonb check(jsonb_typeof(context_windows)='object');
 -- Additive compatibility if the initial single-model profile table was already installed.
 alter table public.scribe_ai_model_profiles add column if not exists models text[] not null default '{}'::text[];
 alter table public.scribe_ai_model_profiles drop constraint if exists scribe_ai_model_profiles_model_check;

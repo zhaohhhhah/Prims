@@ -322,3 +322,10 @@ The bookshelf scrolls independently of the project preview and provides owner-on
 rename and confirmed-delete actions. The assistant can check an exact installed
 font name in the compilation environment without requiring a project font upload.
 Native compiler workers reuse a persistent Fontconfig cache.
+
+Named model connections support per-model context windows (default 262144 tokens),
+with window-aware history, source limits and Codex compaction. Explicit provider
+context-limit errors offer a scoped adjustment card. Search has no separate count
+limit by default; user-configured positive limits still apply. Private token usage
+uses provider counters for conversations, continuations, compaction and summaries,
+with daily/7-day/30-day totals, a contribution calendar and a bar chart.

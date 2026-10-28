@@ -8,13 +8,15 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 use scribe_ai::adapter::{NativeToolCall,NativeToolCallDelta,NativeToolTurn};
 use crate::state::AppState;
-use super::{ai::{AIService,AIStreamStartError},ai_context::{AIContextService,model_history,take_generated_summary,MAX_CONTENT,MAX_RAW},files::FileService,project_context::ProjectContext};
+use super::{ai::{AIService,AIStreamStartError},ai_context::{AIContextService,model_history_with_limits,take_generated_summary,MAX_CONTENT,MAX_RAW},files::FileService,project_context::ProjectContext};
 
 pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiResult<Response>{
  let raw=input.options.as_ref().and_then(|o|o.get("projectId")).ok_or_else(||ApiError::validation("缺少项目编号"))?;
  let project=ProjectId::new(Uuid::parse_str(raw).map_err(|_|ApiError::validation("项目编号无效"))?);
  let pool=state.db().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"database unavailable"))?.pool().clone();
- let memory=AIContextService::new(pool.clone());let saved=memory.get(user,project).await?;
+ let crypto=state.inner.ai_crypto.clone().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"AI unavailable"))?;
+ let policy=super::ai_profiles::AIProfiles::new(pool.clone(),crypto).context_policy(user,&input).await?;
+ let memory=AIContextService::new(pool.clone());let saved=memory.get_for_model(user,project,policy).await?;
  let library=super::agent_library::AgentLibrary::new(pool.clone());
  let initial_preferences=library.preferences(user).await?;let preference_revision=library.preference_revision(user).await?;
  let project_memory=library.memory(user,project).await?;
@@ -23,7 +25,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  let current=input.options.as_ref().and_then(|o|o.get("filePath")).cloned().unwrap_or_default();
  let selection_id=input.options.as_ref().and_then(|o|o.get("selectionId")).cloned().unwrap_or_default();
  let allow_files=!input.options.as_ref().and_then(|o|o.get("allowProjectFiles")).is_some_and(|v|v=="false");
- let (history,history_truncated)=model_history(&saved,&current,&selection_id);let history_count=history.len();input.history=Some(history);
+ let (history,history_truncated)=model_history_with_limits(&saved,&current,&selection_id,policy.history_messages(),policy.history_chars());let history_count=history.len();input.history=Some(history);
  let (project_compiler,project_main): (String,String)=sqlx::query_as("select compiler::text,main_file from public.projects where id=$1").bind(project.into_inner()).fetch_one(&pool).await.map_err(|_|ApiError::validation("找不到项目编译配置"))?;
  let available_engines=if scribe_compile::isolated::available().await{vec!["tectonic","pdflatex","xelatex","lualatex"]}else{vec!["tectonic"]};
  let options=input.options.get_or_insert_with(Default::default);options.insert("projectMainFile".into(),project_main);options.insert("projectAvailableEngines".into(),serde_json::to_string(&available_engines).unwrap());options.insert("projectCompiler".into(),project_compiler);options.insert("writingBrief".into(),saved.brief.clone());options.insert("projectTitle".into(),saved.project_title.clone());options.insert("projectDescription".into(),saved.project_description.clone().unwrap_or_default());options.insert("autoSummary".into(),saved.auto_summary.clone());
@@ -31,8 +33,9 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
  for key in ["agentLibraryReference","agentFileToolsAllowed","agentPreferences","agentCapabilities","projectMemory","skillContent","skills","diagnosticsEnabled","skillsEnabled","memoryEnabled","searchEnabled"]{options.remove(key);}
  options.insert("agentFileToolsAllowed".into(),allow_files.to_string());
  options.insert("agentLibraryReference".into(),library.reference(user,project,&initial_preferences).await?.to_string());
- options.remove("projectTools");options.remove("projectContext");options.remove("projectContinuation");options.remove("projectEditsAllowed");options.remove("projectNativeTools");options.remove("projectNativeTurns");options.remove("projectCompaction");options.remove("projectPendingProposals");options.remove("contextCompaction");options.remove("projectSkillInstalls");options.remove("projectCompacted");options.remove("projectPlan");options.remove("projectSearchSources");options.remove("webReferences");
+ options.remove("projectContextWindowTokens");options.remove("projectTools");options.remove("projectContext");options.remove("projectContinuation");options.remove("projectEditsAllowed");options.remove("projectNativeTools");options.remove("projectNativeTurns");options.remove("projectCompaction");options.remove("projectPendingProposals");options.remove("contextCompaction");options.remove("projectSkillInstalls");options.remove("projectCompacted");options.remove("projectPlan");options.remove("projectSearchSources");options.remove("webReferences");
  if !allow_files{options.remove("documentOutline");}
+ options.insert("projectContextWindowTokens".into(),policy.window.to_string());
  let mut context_used=json!({"brief":!saved.brief.trim().is_empty(),"autoSummary":!saved.auto_summary.trim().is_empty(),"historyMessages":history_count,"historyTruncated":history_truncated,"fileTools":allow_files,"currentSection":options.get("currentSection"),"selectionStartLine":options.get("selectionStartLine"),"selectionEndLine":options.get("selectionEndLine"),"documentWindowStartLine":if allow_files{options.get("documentWindowStartLine")}else{None},"documentWindowEndLine":if allow_files{options.get("documentWindowEndLine")}else{None}});
  let storage=state.inner.storage.clone().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"storage unavailable"))?;
  let files=FileService::new(pool.clone(),storage);
@@ -74,13 +77,13 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
     input.options.as_mut().unwrap().insert("projectSkillInstalls".into(),skill_installs.metadata().to_string());
     input.options.as_mut().unwrap().insert("projectSearchSources".into(),search_session.metadata().to_string());
     let request=ai.prepare_agent_request(user,input.clone()).await.map_err(AIStreamStartError::into_api_error)?;
-    let actual_budget=actual_request_budget(&request);
+    let actual_budget=actual_request_budget(&request,policy);
     if !compaction_attempted&&actual_budget.should_compact{
      compaction_attempted=true;emit(&tx,json!({"status":"正在整理长对话上下文…"})).await?;
      let result=tokio::select!{_=tx.closed()=>return Ok(()),result=run_codex_compaction(&ai,user,&mut input,&mut native_turns,&mut continuation,&pending,context.as_ref())=>result};
      match result{Ok(metadata)=>{emit(&tx,json!({"status":"上下文已整理，继续处理剩余段落","contextCompaction":metadata})).await?;},Err(_)=>{emit(&tx,json!({"warning":{"code":"context_compaction_failed","message":"上下文整理未完成，原始上下文和已有候选均已保留；本轮不会重试摘要。"}})).await?;}}
     }
-    if serde_json::to_string(&native_turns).map_or(true,|value|value.len()>800000){return Err(ApiError::validation("本轮工具上下文已达安全上限，请处理已有候选后继续提问"));}
+    if serde_json::to_string(&native_turns).map_or(true,|value|value.len()>policy.window.saturating_mul(4).min(8*1024*1024)){return Err(ApiError::validation("本轮工具上下文已达安全上限，请处理已有候选后继续提问"));}
     if let Some(status)=plan.current_status(){emit(&tx,json!({"status":status})).await?;}else if !pending.items.is_empty(){emit(&tx,json!({"status":format!("已提交{}处待审修改，正在处理后续修改",pending.items.len())})).await?;}else if step==0{emit(&tx,json!({"status":"正在确定需要读取的文件和修改范围"})).await?;}else if context.as_ref().is_some_and(|context|context.results.iter().any(|result|result.get("kind").and_then(Value::as_str)==Some("text"))){emit(&tx,json!({"status":"正在核对已读取内容与修改要求"})).await?;}
     let (raw,native_calls)=loop{
      let round=async{
@@ -243,6 +246,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
   }).await;
   let error=match result{Ok(Err(err))=>Some(err.message),Err(_)=>Some("本轮对话超时，请重试".into()),_=>None};
   if let Some(error)=error{
+   if error.contains("[context_window_exceeded]"){let _=tx.send(json!({"error":error})).await;}
    if (!pending.items.is_empty()||!skill_installs.items.is_empty())&&!tx.is_closed(){
     let message=format!("后续生成中断，已保留{}处文字建议与{}项待确认技能建议。",pending.items.len(),skill_installs.items.len());
     let mut output=json!({"reply":message,"replacement":null,"edits":[],"actions":[],"partial":true});pending.merge(&mut output);skill_installs.merge(&mut output);
@@ -285,18 +289,19 @@ fn parse_model_output(raw:&str)->ApiResult<Value>{
   }
  }
 }
-fn actual_request_budget(request:&scribe_ai::CompleteRequest)->super::context_compaction::ContextBudget{
- let text=json!({"messages":request.messages,"tools":request.native_tools,"nativeTurns":request.native_turns}).to_string();super::context_compaction::context_budget(&[],&[],&text)
+fn actual_request_budget(request:&scribe_ai::CompleteRequest,policy:super::context_policy::ContextPolicy)->super::context_compaction::ContextBudget{
+ let text=json!({"messages":request.messages,"tools":request.native_tools,"nativeTurns":request.native_turns}).to_string();super::context_compaction::context_budget_with_policy(&[],&[],&text,policy)
 }
 async fn run_codex_compaction(ai:&AIService,user:UserId,input:&mut AICompleteInput,turns:&mut Vec<NativeToolTurn>,continuation:&mut Vec<Value>,pending:&ProposalQueue,context:Option<&ProjectContext>)->ApiResult<Value>{
- let request=ai.prepare_agent_request(user,input.clone()).await.map_err(AIStreamStartError::into_api_error)?;let before=actual_request_budget(&request);
+ let policy=super::context_policy::ContextPolicy::from_input(input);
+ let request=ai.prepare_agent_request(user,input.clone()).await.map_err(AIStreamStartError::into_api_error)?;let before=actual_request_budget(&request,policy);
  let latest=input.options.as_ref().and_then(|options|options.get("message")).cloned().unwrap_or_default();let history=input.history.clone().unwrap_or_default();
  let options=input.options.as_ref().unwrap();let clues=context.map(|context|context.results.iter().map(|result|json!({"path":result.get("path"),"kind":result.get("kind"),"startLine":result.get("startLine"),"endLine":result.get("endLine")})).collect::<Vec<_>>()).unwrap_or_default();
  let pins=json!({"currentFile":options.get("filePath"),"selectionId":options.get("selectionId"),"selectionStartLine":options.get("selectionStartLine"),"selectionEndLine":options.get("selectionEndLine"),"pendingProposals":pending.metadata(),"readFileClues":clues,"plan":options.get("projectPlan").and_then(|raw|serde_json::from_str::<Value>(raw).ok()),"searchSources":options.get("projectSearchSources").and_then(|raw|serde_json::from_str::<Value>(raw).ok())});
- let result=super::context_compaction::compact_with_codex(request,&history,turns,&latest,&pins).await.map_err(|error|AIStreamStartError::Provider(error).into_api_error())?;
+ let result=super::context_compaction::compact_with_codex_policy(request.clone(),&history,turns,&latest,&pins,policy,Some(ai.usage_context(user,&request,"compaction"))).await.map_err(|error|AIStreamStartError::Provider(error).into_api_error())?;
  let mut next=input.clone();next.history=Some(result.history);let next_turns=result.native_turns;let options=next.options.as_mut().unwrap();options.insert("projectCompaction".into(),result.metadata.to_string());options.insert("projectCompacted".into(),"true".into());options.insert("projectContinuation".into(),"[]".into());options.insert("projectNativeTurns".into(),serde_json::to_string(&next_turns).map_err(|_|output_format_error())?);
  if let Some(context)=context{context.sync(&mut next);}
- let after_request=ai.prepare_agent_request(user,next.clone()).await.map_err(AIStreamStartError::into_api_error)?;let after=actual_request_budget(&after_request);
+ let after_request=ai.prepare_agent_request(user,next.clone()).await.map_err(AIStreamStartError::into_api_error)?;let after=actual_request_budget(&after_request,policy);
  *input=next;*turns=next_turns;continuation.clear();
  Ok(json!({"ok":true,"method":"codex_local_compaction","before":before,"after":after,"summaryChars":result.summary.chars().count(),"pendingProposals":pending.items.len(),"note":"User-level recap only. Original current request, read evidence and pending IDs/states remain authoritative; no candidate was applied."}))
 }

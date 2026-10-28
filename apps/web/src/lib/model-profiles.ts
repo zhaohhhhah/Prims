@@ -2,9 +2,9 @@ import type { AIProvider } from '@scribe/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../stores/auth';
 import { API_URL, supabase } from './supabase';
-export interface ModelProfile {id:string;name:string;provider:AIProvider;model:string;models?:string[];baseUrl:string|null;apiKeySet:boolean;ready:boolean;updatedAt:string}
+export interface ModelProfile {id:string;name:string;provider:AIProvider;model:string;models?:string[];contextWindows?:Record<string,number>;baseUrl:string|null;apiKeySet:boolean;ready:boolean;updatedAt:string}
 export interface ModelProfileList {profiles:ModelProfile[];defaultProfileId?:string|null;defaultModel?:string|null;migration?:{status:'migrated'|'none'|'capacity'|'invalid'|'decrypt_failed';message:string|null}}
-export interface ModelProfileDraft {name:string;provider:AIProvider;model:string;models?:string[];baseUrl?:string|null;apiKey?:string}
+export interface ModelProfileDraft {name:string;provider:AIProvider;model:string;models?:string[];contextWindows?:Record<string,number>;baseUrl?:string|null;apiKey?:string}
 export function profileModelNames(profile:Pick<ModelProfile,'model'|'models'>):string[]{const source=profile.models?.length?profile.models:[profile.model];return [...new Set(source.map(name=>name.trim()).filter(Boolean))];}
 /** One complete model ID per line: commas inside a model ID are deliberately preserved. */
 export function parseModelNamesInput(input:string):string[]{
@@ -33,5 +33,12 @@ async function request<T>(suffix='',body?:unknown,method=body===undefined?'GET':
  return value as T;
 }
 function path(id:string):string {const valid=normalizeModelProfileId(id);if(!valid)throw new Error('默认配置请在上方表单修改');return '/'+valid;}
-export const modelProfilesApi={list:(userId?:string)=>request<ModelProfileList>('',undefined,'GET',userId),setDefault:(profileId:string,modelName:string)=>request<ModelProfileList>('/default',{profileId,modelName},'PUT'),create:(input:ModelProfileDraft)=>request<ModelProfile>('',input),update:(id:string,input:ModelProfileDraft)=>request<ModelProfile>(path(id),input,'PUT'),remove:(id:string)=>request<void>(path(id),undefined,'DELETE')};
+export const modelProfilesApi={updateContextWindow:(id:string,modelName:string,contextWindowTokens:number)=>request<ModelProfile>(path(id)+'/context-window',{modelName,contextWindowTokens},'PUT'),list:(userId?:string)=>request<ModelProfileList>('',undefined,'GET',userId),setDefault:(profileId:string,modelName:string)=>request<ModelProfileList>('/default',{profileId,modelName},'PUT'),create:(input:ModelProfileDraft)=>request<ModelProfile>('',input),update:(id:string,input:ModelProfileDraft)=>request<ModelProfile>(path(id),input,'PUT'),remove:(id:string)=>request<void>(path(id),undefined,'DELETE')};
 export function useModelProfiles(){const userId=useAuthStore(state=>state.user?.id);return useQuery({queryKey:modelProfilesQueryKey(userId),queryFn:()=>modelProfilesApi.list(userId),enabled:!!userId,staleTime:10000,refetchOnWindowFocus:false});}
+
+export const DEFAULT_CONTEXT_WINDOW=262144;
+export function parseContextWindowsInput(models:string[],draft:Record<string,string>):Record<string,number>{
+ const windows:Record<string,number>={};
+ for(const model of models){const value=draft[model]?.trim();if(!value)continue;if(!/^\d+$/.test(value))throw new Error(`${model} 的上下文长度应为整数`);const count=Number(value);if(!Number.isSafeInteger(count)||count<16384||count>2097152)throw new Error(`${model} 的上下文长度需在 16384–2097152 tokens 之间`);windows[model]=count;}
+ return windows;
+}
