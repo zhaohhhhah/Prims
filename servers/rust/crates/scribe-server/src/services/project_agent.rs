@@ -129,7 +129,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
      let mut round_results=vec![];
      for call in &calls{
       let key=call.to_string();
-      if !matches!(call.get("tool").and_then(Value::as_str),Some("web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check")){if let Some(previous)=completed.get(&key){round_results.push(json!({"toolCall":call,"toolResult":previous,"reused":true}));continue;}}
+      if !matches!(call.get("tool").and_then(Value::as_str),Some("web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check")){if let Some(previous)=completed.get(&key).filter(|value|tool_result_succeeded(value)){round_results.push(json!({"toolCall":call,"toolResult":previous,"reused":true}));continue;}}
       let tool=call.get("tool").and_then(Value::as_str).ok_or_else(||ApiError::validation("读取工具缺少名称"))?;
       let preferences=library.preferences(user).await?;
       if let Err(error)=super::agent_library::gate_tool(tool,&preferences,writer,allow_files){round_results.push(json!({"toolCall":call,"toolResult":{"error":error.message}}));continue;}
@@ -357,7 +357,10 @@ fn native_calls_output(calls:&[NativeToolCall])->ApiResult<Value>{
  parse_read_tool_sequence(&json!(normalized).to_string())?.ok_or_else(output_format_error)
 }
 
-fn count_new_read_calls(calls:&[Value],completed:&std::collections::HashMap<String,Value>)->usize{calls.iter().filter(|call|call.get("tool").and_then(Value::as_str).is_some_and(|name|matches!(name,"read_file"|"list_files"|"search_project"|"list_versions"|"read_version_file"|"compare_versions"|"list_skills"|"read_skill"|"read_project_memory"))).map(Value::to_string).filter(|key|!completed.contains_key(key)).collect::<std::collections::HashSet<_>>().len()}
+/// Transient tool failures are observations, not completed reads. Retrying identical
+/// arguments must execute authorization and I/O again rather than replaying a stale error.
+fn tool_result_succeeded(value:&Value)->bool{value.get("error").is_none()&&value.get("ok")!=Some(&Value::Bool(false))}
+fn count_new_read_calls(calls:&[Value],completed:&std::collections::HashMap<String,Value>)->usize{calls.iter().filter(|call|call.get("tool").and_then(Value::as_str).is_some_and(|name|matches!(name,"read_file"|"list_files"|"search_project"|"list_versions"|"read_version_file"|"compare_versions"|"list_skills"|"read_skill"|"read_project_memory"))).map(Value::to_string).filter(|key|!completed.get(key).is_some_and(tool_result_succeeded)).collect::<std::collections::HashSet<_>>().len()}
 fn reserve_read_tools(used:&mut usize,count:usize)->ApiResult<()>{*used=used.saturating_add(count);Ok(())}
 /// Accept complete read-only JSON sequences/arrays; validate the whole batch before any I/O.
 fn parse_read_tool_sequence(raw:&str)->ApiResult<Option<Value>>{
@@ -621,6 +624,7 @@ fn validate_project_edit_targets(output:&Value,context:Option<&ProjectContext>)-
   assert!(parse_model_output(r#"{"tool":"write_file","publicStatus":"trying"}"#).is_err());
   assert!(parse_model_output(r#"{"reply":"safe","publicStatus":"<think>hidden</think>"}"#).is_err()); // The outer hidden-reasoning guard stays stricter than optional metadata filtering.
  }
+ #[test]fn failed_reads_are_not_reused_and_can_recover_on_retry(){let call=json!({"tool":"read_file","path":"a.tex"});let mut completed=std::collections::HashMap::new();for error in [json!({"error":"temporary storage failure"}),json!({"ok":false})]{assert!(!tool_result_succeeded(&error));completed.insert(call.to_string(),error);assert_eq!(count_new_read_calls(&[call.clone()],&completed),1);}let success=json!({"content":"source recovered"});assert!(tool_result_succeeded(&success));completed.insert(call.to_string(),success);assert_eq!(count_new_read_calls(&[call],&completed),0);}
  #[test]fn completed_reads_reuse_results_without_spending_new_budget(){let a=json!({"tool":"read_file","path":"a.tex"});let b=json!({"tool":"read_file","path":"b.tex"});let mut completed=std::collections::HashMap::new();assert_eq!(count_new_read_calls(&[a.clone(),a.clone(),b.clone()],&completed),2);completed.insert(a.to_string(),json!({"content":"authorized"}));assert_eq!(count_new_read_calls(&[a.clone(),b.clone()],&completed),1);completed.insert(b.to_string(),json!({"content":"authorized"}));assert_eq!(count_new_read_calls(&[a,b],&completed),0);}
  #[test]fn complete_read_tool_sequences_execute_as_one_authorized_batch_before_answer(){let first=json!({"tool":"read_file","path":"chapters/a.tex"});let second=json!({"tool":"read_file","path":"chapters/b.tex","startLine":2,"endLine":8});for raw in [format!("{}\n{}",first,second),json!([first.clone(),second.clone()]).to_string(),format!("```json\n{}\n```\n```json\n{}\n```",first,second),format!("{}\n{}\n{}",first,second,json!({"reply":"premature","replacement":"NEVER_APPLY"}))]{let value=parse_model_output(&raw).unwrap();assert_eq!(value["tool"],"_read_batch");assert_eq!(value["calls"].as_array().unwrap().len(),2);assert!(value.get("reply").is_none());}let single=parse_model_output(&first.to_string()).unwrap();assert_eq!(single["tool"],"read_file");}
  #[test]fn personal_tools_work_in_native_and_compatibility_protocol_without_authority_fields(){

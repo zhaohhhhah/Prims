@@ -52,7 +52,7 @@ export function useAssistantTab(options:Options) {
    }
   };
  }
- function openTab(){const o=current.current;if(o.busy||away||moving||!o.userId)return;if(typeof BroadcastChannel==='undefined'){setError('此浏览器不支持独立助手标签页。');return;}setError('');cached.current=null;grant.current=false;const id=crypto.randomUUID();attach(id);marker('parent');setMoving(true);
+ function openTab(){const o=current.current;if(o.busy||away||moving||!o.userId)return;if(typeof BroadcastChannel==='undefined'){setError('此浏览器不支持独立助手标签页。');return;}if(!validTabState(o.state)){setError('对话内容超过标签页迁移容量，请先处理待审建议后再移动；草稿仍保留在此处。');return;}setError('');cached.current=null;grant.current=false;const id=crypto.randomUUID();attach(id);marker('parent');setMoving(true);
   // Retain only a closure handle. Clear opener on the inert blank page before
   // navigating to the app; the child cannot access its original editor.
   const child=window.open('about:blank','_blank');
@@ -60,7 +60,7 @@ export function useAssistantTab(options:Options) {
   else {setMoving(false);setError('请允许弹出窗口后重试。');channel.current?.close();channel.current=null;return;}
   clearTimer();timer.current=setTimeout(()=>{if(!handed.current){setMoving(false);setError('新标签页尚未连接，请允许弹出窗口后重试。');channel.current?.close();channel.current=null;}},7000);
  }
- function returnToEditor(mode?:'right'|'bottom'|'float'){const o=current.current;if(o.busy||moving)return;setError('');if(!o.standalone){setMoving(true);send('request-return');clearTimer();timer.current=setTimeout(()=>{setMoving(false);setError('未连接到助手标签页。关闭它后可恢复。');},3000);return;}setMoving(true);void o.transitionOut().finally(()=>{send('return',current.current.state,mode);clearTimer();timer.current=setTimeout(()=>{grant.current=false;setReady(false);navigateBack();},1500);});}
+ function returnToEditor(mode?:'right'|'bottom'|'float'){const o=current.current;if(o.busy||moving)return;if(o.standalone&&!validTabState(o.state)){setError('对话内容超过标签页迁移容量，请先处理待审建议后再移动；草稿仍保留在此处。');return;}setError('');if(!o.standalone){setMoving(true);send('request-return');clearTimer();timer.current=setTimeout(()=>{setMoving(false);setError('未连接到助手标签页。关闭它后可恢复。');},3000);return;}setMoving(true);void o.transitionOut().finally(()=>{send('return',current.current.state,mode);clearTimer();timer.current=setTimeout(()=>{grant.current=false;setReady(false);navigateBack();},1500);});}
  useEffect(()=>{
   const o=current.current;setReady(!o.standalone);setMoving(false);setError('');markAway(false);grant.current=false;cached.current=null;setEditorContext(null);lastEditorRevision.current=-1;editorRevision.current=0;
   if(o.standalone&&o.userId){const id=assistantTabSession(window.location.search);if(id){attach(id);send('hello');const hello=setInterval(()=>{if(!grant.current&&!receiving.current)send('hello');},500);timer.current=setTimeout(()=>{if(!grant.current&&!receiving.current){const ownership=marker();if(canContinueWithoutParent(ownership)){grant.current=true;setReady(true);setMoving(false);}else setError('原编辑器尚未连接，可放回编辑器重试。');}},4000);const unload=()=>{if(grant.current){const key=closeKey();if(key)try{localStorage.setItem(key,JSON.stringify(current.current.state));}catch{/* Scoped channel still carries the state when storage is unavailable. */}send('closed',current.current.state);}};window.addEventListener('pagehide',unload);return()=>{clearInterval(hello);window.removeEventListener('pagehide',unload);clearTimer();channel.current?.close();channel.current=null;};}setReady(true);}

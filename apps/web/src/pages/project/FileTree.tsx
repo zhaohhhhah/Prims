@@ -33,6 +33,9 @@ import { toast } from 'sonner';
 
 import { api, type ApiError } from '../../lib/api';
 import {uploadBatch} from '../../lib/archive-upload';
+import { batchError } from '../../lib/file-batch';
+import { claimFileTreeDrag, mutateFolder } from '../../lib/file-tree-operations';
+import { withFileOperationGuard } from '../../lib/file-operation-guard';
 import { packageFolderUpload } from '../../lib/folder-upload';
 import { useAuthStore } from '../../stores/auth';
 import { projectActionsApi } from '../../lib/project-actions';
@@ -145,7 +148,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function promptNewFile(prefix = '') {
-    if (!canWrite || batchBusy) return;
+    if (!canWrite || busy) return;
     const seed = prefix === '' ? 'new.tex' : `${prefix}/new.tex`;
     const name = window.prompt(t('project.newFilePrompt'), seed);
     if (name === null || name.trim() === '') return;
@@ -153,7 +156,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function promptNewFolder(prefix = '') {
-    if (!canWrite || batchBusy) return;
+    if (!canWrite || busy) return;
     const seed = prefix === '' ? 'chapters' : `${prefix}/sub`;
     const name = window.prompt(t('project.newFolderPrompt'), seed);
     if (name === null || name.trim() === '') return;
@@ -163,7 +166,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function promptRenameFile(file: ProjectFile) {
-    if (!canWrite || batchBusy) return;
+    if (!canWrite || busy) return;
     const next = window.prompt(t('project.renameFilePrompt'), file.path);
     if (next === null || next.trim() === '' || next.trim() === file.path) return;
     renameMutation.mutate(
@@ -176,46 +179,45 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
     );
   }
 
+  async function changeFolder(folder: FolderNode, kind: 'rename' | 'delete', destination?: string) {
+    setBatchBusy(true);
+    try {
+      const results = await withFileOperationGuard(projectId, true, () => mutateFolder({
+        path: folder.path, expected: filesUnder(files, folder.path), kind, destination,
+        listFiles: () => api.files.list(projectId),
+        listDirectories: async () => (await projectActionsApi.listDirectories(projectId)).directories.map(item => item.path),
+        checkpoint: () => api.versions.snapshot(projectId, { label: `${kind === 'delete' ? '删除目录前' : '目录改名前'} · ${folder.path}` }),
+        rename: (file, newPath) => api.files.rename(projectId, file.id, { newPath }),
+        remove: file => api.files.remove(projectId, file.id),
+        refresh: refreshFiles,
+      }));
+      const failed = results.filter(item => !item.ok);
+      if (failed.length) toast.warning(`已完成 ${results.length - failed.length} 项，${failed.length} 项失败：${failed.map(item => `${item.path}：${item.error}`).join('；')}`);
+      else {
+        if (kind === 'rename' && destination) setExpanded(previous => new Set([...previous, destination]));
+        toast.success(t(kind === 'rename' ? 'project.folderRenamed' : 'project.folderDeleted', { path: destination ?? folder.path }));
+      }
+    } catch (error) { toast.error(batchError(error)); }
+    finally { setBatchBusy(false); }
+  }
+
   async function promptRenameFolder(folder: FolderNode) {
-    if (!canWrite || batchBusy) return;
+    if (!canWrite || busy) return;
     if(protectedDirectory(folder.path)){toast.message('此目录暂不支持整体改名，可单独移动其中的文件。');return;}
     const next = window.prompt(t('project.renameFolderPrompt'), folder.path);
     if (next === null || next.trim() === '' || next.trim() === folder.path) return;
-    const newPath = next.trim().replace(/\/$/, '');
-    const contained = filesUnder(files, folder.path);
-    try {
-      await Promise.all(
-        contained.map((f) => {
-          const rewritten = newPath + f.path.slice(folder.path.length);
-          return api.files.rename(projectId, f.id, { newPath: rewritten });
-        }),
-      );
-      await queryClient.invalidateQueries({ queryKey: ['files', projectId] });
-      toast.success(t('project.folderRenamed', { path: newPath }));
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    }
+    await changeFolder(folder, 'rename', next.trim().replace(/\/$/, ''));
   }
 
   async function confirmDeleteFolder(folder: FolderNode) {
-    if (!canWrite || batchBusy) return;
+    if (!canWrite || busy) return;
     if(protectedDirectory(folder.path)){toast.message('此目录暂不支持删除，可单独管理其中的文件。');return;}
-    const contained = filesUnder(files, folder.path);
-    const ok = window.confirm(
-      t('project.deleteFolderConfirm', { path: folder.path, count: contained.length }),
-    );
-    if (!ok) return;
-    try {
-      await Promise.all(contained.map((f) => api.files.remove(projectId, f.id)));
-      await queryClient.invalidateQueries({ queryKey: ['files', projectId] });
-      toast.success(t('project.folderDeleted', { path: folder.path }));
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    }
+    if (!window.confirm(t('project.deleteFolderConfirm', { path: folder.path, count: filesUnder(files, folder.path).length }))) return;
+    await changeFolder(folder, 'delete');
   }
 
   function handleDelete(file: ProjectFile) {
-    if (!canWrite || batchBusy) return;
+    if (!canWrite || busy) return;
     if (window.confirm(t('project.deleteFileConfirm', { path: file.path }))) {
       deleteMutation.mutate(file, {
         onSuccess: () => {
@@ -226,7 +228,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function handleUploadChange(event:React.ChangeEvent<HTMLInputElement>){
-    if (!canWrite || batchBusy) return;
+    if (!canWrite || busy) return;
     const selected=Array.from(event.target.files??[]);event.target.value='';if(selected.length)uploadMutation.mutate(selected);
   }
 
@@ -257,15 +259,13 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   }
 
   function handleFolderDragOver(e: React.DragEvent<HTMLElement>, folderPath: string) {
-    if (!canWrite || busy || selecting || !e.dataTransfer.types.includes(MIME_FILE_DRAG)) return;
-    e.preventDefault();
+    if (!claimFileTreeDrag(e, MIME_FILE_DRAG) || !canWrite || busy || selecting) return;
     e.dataTransfer.dropEffect = 'move';
     setDropTarget(folderPath);
   }
 
   function handleFolderDrop(e: React.DragEvent<HTMLElement>, folderPath: string) {
-    e.preventDefault();
-    if (!canWrite || busy || selecting) return;
+    if (!claimFileTreeDrag(e, MIME_FILE_DRAG) || !canWrite || busy || selecting) return;
     setDropTarget(null);
     const fileId = e.dataTransfer.getData(MIME_FILE_DRAG);
     const file = files.find((f) => f.id === fileId);
@@ -302,7 +302,8 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
                 onDragOver={(e) => {
                   handleFolderDragOver(e, node.path);
                 }}
-                onDragLeave={() => {
+                onDragLeave={(event) => {
+                  if (event.dataTransfer.types.includes(MIME_FILE_DRAG)) event.stopPropagation();
                   if (dropTarget === node.path) setDropTarget(null);
                 }}
                 onDrop={(e) => {

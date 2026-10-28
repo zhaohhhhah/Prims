@@ -10,11 +10,16 @@ export interface AssistantTabState {
   fileActions: ProjectActionInput[];
   target: { from: number; to: number; text: string } | null;
 }
+// Match the existing project/context transport boundary, including UTF-8 bytes.
+const MAX_TAB_BYTES = 8 * 1024 * 1024;
+function withinTransferLimit(value:unknown):boolean {
+ try{return new TextEncoder().encode(JSON.stringify(value)).length<=MAX_TAB_BYTES;}catch{return false;}
+}
 export interface EditorTabContext { revision:number;fileId:string|null;filePath:string;selection:{from:number;to:number;text:string}|null }
 export function validEditorContext(value:unknown):value is EditorTabContext {
  if(!value||typeof value!=='object')return false;const v=value as EditorTabContext;
  if(!Number.isSafeInteger(v.revision)||v.revision<0||typeof v.filePath!=='string'||v.filePath.length>1024||(v.fileId!==null&&(typeof v.fileId!=='string'||v.fileId.length>128)))return false;
- const r=v.selection;return r===null||!!r&&Number.isSafeInteger(r.from)&&Number.isSafeInteger(r.to)&&r.from>=0&&r.to>r.from&&typeof r.text==='string'&&r.text.length<=16000&&r.to-r.from===r.text.length;
+ const r=v.selection;return r===null||!!r&&Number.isSafeInteger(r.from)&&Number.isSafeInteger(r.to)&&r.from>=0&&r.to>r.from&&typeof r.text==='string'&&r.to-r.from===r.text.length&&withinTransferLimit(v);
 }
 export function restoreInEditor(state:AssistantTabState,editor:Omit<EditorTabContext,'revision'>):AssistantTabState {return {...state,filePath:editor.filePath,target:editor.selection};}
 export type AssistantTabKind = 'hello'|'state'|'active'|'grant'|'sync'|'return'|'return-ack'|'request-return'|'closed'|'parent-closed'|'busy'|'editor-context'|'context-request'|'open-file';
@@ -38,10 +43,10 @@ export function validTabMessage(value:unknown,userId:string,projectId:string,ses
 }
 export function validTabState(value:unknown):value is AssistantTabState {
  if(!value||typeof value!=='object')return false;const state=value as AssistantTabState;
- if(typeof state.threadId!=='string'||typeof state.modelChoice!=='string'||typeof state.filePath!=='string'||!state.drafts||typeof state.drafts.panel!=='string'||typeof state.drafts.selection!=='string'||state.drafts.panel.length>16000||state.drafts.selection.length>4000||!Array.isArray(state.fileActions)||state.fileActions.length>12)return false;
- if(state.target!==null&&(!state.target||!Number.isInteger(state.target.from)||!Number.isInteger(state.target.to)||state.target.from<0||state.target.to<state.target.from||typeof state.target.text!=='string'||state.target.text.length>16000))return false;
+ if(typeof state.threadId!=='string'||typeof state.modelChoice!=='string'||typeof state.filePath!=='string'||!state.drafts||typeof state.drafts.panel!=='string'||typeof state.drafts.selection!=='string'||!Array.isArray(state.fileActions))return false;
+ if(state.target!==null&&(!state.target||!Number.isSafeInteger(state.target.from)||!Number.isSafeInteger(state.target.to)||state.target.from<0||state.target.to<state.target.from||typeof state.target.text!=='string'||state.target.to-state.target.from!==state.target.text.length))return false;
  if(state.plan!==null&&(!state.plan||typeof state.plan.id!=='string'||state.plan.threadId!==state.threadId||!Array.isArray(state.plan.edits)||state.plan.edits.some(edit=>!edit||typeof edit.id!=='string'||typeof edit.filePath!=='string'||typeof edit.before!=='string'||typeof edit.after!=='string'||!['pending','applied','rejected','undone'].includes(edit.state))))return false;
- try{return JSON.stringify(state).length<=240000;}catch{return false;}
+ return withinTransferLimit(state);
 }
 
 export const assistantReturnKey=(userId:string,projectId:string)=>`prims-assistant-return:${encodeURIComponent(userId)}:${encodeURIComponent(projectId)}`;
