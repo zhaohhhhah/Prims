@@ -190,6 +190,15 @@ impl CompileService {
     }
 }
 
+/// Resolve a job only inside the already authorized current project. A caller
+/// cannot use membership in another project to import its compile evidence.
+pub async fn project_job(pool:&PgPool,user:UserId,project:ProjectId,id:Option<Uuid>)->ApiResult<CompileJob>{
+    assert_member(pool,user,project).await?;
+    let row=sqlx::query("select id,project_id,triggered_by,status,engine,main_file,exit_code,pdf_key,log_key,synctex_key,error_message,entries,duration_ms,enqueued_at,started_at,completed_at from public.compile_jobs where project_id=$1 and ($2::uuid is null or id=$2) order by enqueued_at desc,id desc limit 1")
+        .bind(project.into_inner()).bind(id).fetch_optional(pool).await.map_err(internal)?.ok_or_else(||ApiError::not_found("当前项目没有匹配的编译任务"))?;
+    Ok(row_to_job(row))
+}
+
 fn row_to_job(row: sqlx::postgres::PgRow) -> CompileJob {
     let status_str: String = row.get("status");
     let engine_str: String = row.get("engine");

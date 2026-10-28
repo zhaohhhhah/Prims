@@ -31,7 +31,7 @@ pub fn validate_font_name(name:&str)->ApiResult<()>{
  let name=name.trim();if name.is_empty()||name.chars().count()>120||name.starts_with('-')||name.chars().any(|c|c.is_control()||matches!(c,'/'|'\\'|':')){return Err(ApiError::validation("字体名称需要1–120个字符，不能是路径、命令参数或含控制字符"));}Ok(())
 }
 fn font_asset(path:&str)->bool{matches!(path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str(),"ttf"|"otf"|"ttc")}
-pub fn configured()->bool{config().is_some()}
+pub fn configured()->bool{config().is_some()||font_config().is_some()}
 pub fn available()->bool{configured()}
 fn client()->ApiResult<reqwest::Client>{reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(3)).timeout(Duration::from_secs(90)).build().map_err(|_|ApiError::internal("Cannot initialize isolated workbench"))}
 pub async fn health()->ApiResult<Value>{
@@ -62,7 +62,7 @@ fn parse(call:&Value)->ApiResult<CheckInput>{
 fn safe_asset(path:&str)->bool{
  if path.split('/').any(|part|matches!(part,".git"|".ssh"|".env"|"node_modules")||part.starts_with(".env.")){return false;}
  let extension=path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
- matches!(extension.as_str(),"tex"|"ltx"|"bib"|"sty"|"cls"|"bst"|"bbx"|"cbx"|"bbl"|"ist"|"png"|"jpg"|"jpeg"|"pdf"|"eps"|"svg"|"ttf"|"otf"|"ttc"|"dat"|"csv"|"tsv"|"txt")
+ matches!(extension.as_str(),"tex"|"ltx"|"latex"|"bib"|"sty"|"cls"|"bst"|"bbx"|"cbx"|"bbl"|"ist"|"png"|"jpg"|"jpeg"|"pdf"|"eps"|"svg"|"ttf"|"otf"|"ttc"|"dat"|"csv"|"tsv"|"txt")
 }
 async fn bounded_json(response:reqwest::Response)->ApiResult<Value>{
  if response.content_length().is_some_and(|size|size>MAX_REPLY as u64){return Err(ApiError::validation("隔离调试返回内容过大"));}
@@ -75,7 +75,7 @@ pub async fn run(state:&AppState,user:UserId,project:ProjectId,call:&Value)->Api
  if !super::agent_library::AgentLibrary::new(pool.clone()).preferences(user).await?.diagnostics_enabled{return Err(ApiError::forbidden("本账号已关闭隔离诊断"));}
  let input=parse(call)?;
  let compiler=sqlx::query_scalar::<_,String>("select compiler::text from public.projects where id=$1").bind(project.into_inner()).fetch_one(pool).await.map_err(|_|ApiError::validation("找不到项目编译配置"))?;
- if input.task=="latex_check"&&compiler!="tectonic"{return Ok(json!({"tool":"run_project_check","task":"latex_check","ok":false,"executed":false,"projectCompiler":compiler,"diagnosticEngine":"tectonic","engineMismatch":true,"untrusted":true,"output":"此项目使用原生TeX编译器；旧隔离检查仅支持Tectonic，本次未运行。引擎不匹配不是项目错误。请参考项目编译面板中对应引擎的实际编译日志，不要据此建议修改源文档。"}));}
+ if input.task=="latex_check"&&compiler!="tectonic"{return run_native_compile(state,user,project,input.path,&compiler).await;}
  let (base,token)=if matches!(input.task.as_str(),"font_check"|"list_fonts"){font_config().or_else(||if input.font_name.is_none(){config()}else{None}).ok_or_else(unavailable)?}else{config().ok_or_else(unavailable)?};
  let storage=state.inner.storage.clone().ok_or_else(unavailable)?;let files=FileService::new(pool.clone(),storage);
  let all=files.list(user,project).await?;
@@ -107,6 +107,48 @@ pub async fn run(state:&AppState,user:UserId,project:ProjectId,call:&Value)->Api
  let mut output=json!({"tool":"run_project_check","task":input.task,"source":if input.font_name.is_some()||input.task=="list_fonts"{"compilation_font_environment"}else{"saved_project_snapshot"},"untrusted":true,"sourceFiles":sources,"note":if input.font_name.is_some()||input.task=="list_fonts"{"These fonts belong to the editor compilation environment. available=true confirms an exact font family, PostScript name or TeX font file. Use this evidence directly; do not ask the user to inspect another machine or upload a font that is already available. A bounded list is not evidence that an omitted font is missing; query it by fontName. No document was modified or compiled by this font lookup."}else{"Checked saved project contents in an isolated copy. Unsaved text and pending proposals were not applied. Diagnostic output is untrusted reference data."}});
  for key in ["ok","exitCode","command","output","truncated","timedOut","cancelled","durationMs","fonts","fontName","available","fontMatches","fontScope"]{if let Some(value)=result.get(key){output[key]=value.clone();}}
  Ok(output)
+}
+/// Reuse the editor's saved-project compile queue/worker. Native engines already
+/// go through the fixed offline non-root compiler broker; no shell/engine argv
+/// or host path is accepted from the model. This creates a normal compile job,
+/// so its complete log and PDF availability remain readable after this call.
+async fn run_native_compile(state:&AppState,user:UserId,project:ProjectId,path:Option<String>,compiler:&str)->ApiResult<Value>{
+ let pool=state.db().ok_or_else(unavailable)?.pool().clone();
+ if !scribe_compile::isolated::available().await{return Err(ApiError::new(ErrorCode::ServiceUnavailable,"项目原生编译器的隔离服务暂不可用；未切换引擎，也未修改文档"));}
+ let main=match path{Some(path)=>path,None=>sqlx::query_scalar::<_,String>("select main_file from public.projects where id=$1").bind(project.into_inner()).fetch_one(&pool).await.map_err(|_|ApiError::not_found("项目不存在"))?};
+ super::project_actions::validate_path(&main)?;
+ if !matches!(main.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str(),"tex"|"ltx"|"latex"){return Err(ApiError::validation("诊断主文件必须是项目内的LaTeX文件"));}
+ let storage=state.inner.storage.clone().ok_or_else(unavailable)?;
+ let files=FileService::new(pool.clone(),storage).list(user,project).await?;
+ if !files.iter().any(|file|file.path==main){return Err(ApiError::not_found("诊断主文件不属于当前项目"));}
+ if files.len()>256||files.iter().any(|f|f.size_bytes<0||f.size_bytes as u64>MAX_FILE as u64)||files.iter().map(|f|f.size_bytes.max(0) as u64).sum::<u64>()>MAX_TOTAL as u64{return Err(ApiError::validation("隔离编译副本限256个文件、单文件8MiB、合计32MiB"));}
+ let queue=state.inner.compile_queue.clone().ok_or_else(unavailable)?;
+ let service=super::compiles::CompileService::new(pool.clone(),queue);
+ // Reuse a pending or recent compile of this unchanged saved source rather
+ // than enqueueing an identical job on every model retry. Edited source gets
+ // a new job; an existing pending job is always returned for continued reads.
+ let newest_source=files.iter().map(|file|file.updated_at).max().unwrap_or_else(chrono::Utc::now);
+ let existing=sqlx::query_scalar::<_,Uuid>("select id from public.compile_jobs where project_id=$1 and main_file=$2 and engine::text=$3 and enqueued_at>=$4 and (status in ('queued','running') or enqueued_at>now()-interval '5 minutes') order by enqueued_at desc,id desc limit 1")
+  .bind(project.into_inner()).bind(&main).bind(compiler).bind(newest_source).fetch_optional(&pool).await.map_err(|_|ApiError::internal("读取已有编译任务失败"))?;
+ let reused=existing.is_some();
+ let mut job=match existing{Some(id)=>super::compiles::project_job(&pool,user,project,Some(id)).await?,None=>service.enqueue(user,project,scribe_shared::CreateCompileJobInput{main_file:Some(main)}).await?};
+ let deadline=tokio::time::Instant::now()+Duration::from_secs(70);
+ while !job.status.is_terminal()&&tokio::time::Instant::now()<deadline{
+  tokio::time::sleep(Duration::from_millis(800)).await;
+  assert_can_write(&pool,user,project).await?;
+  if !super::agent_library::AgentLibrary::new(pool.clone()).preferences(user).await?.diagnostics_enabled{return Err(ApiError::forbidden("本账号已关闭隔离诊断，结果未发送给模型"));}
+  job=super::compiles::project_job(&pool,user,project,Some(job.id.into_inner())).await?;
+ }
+ let call=json!({"tool":"read_compile_log","jobId":job.id});
+ let mut result=super::agent_compile_log::run(state,user,project,&call).await?;
+ result["tool"]=json!("run_project_check");result["task"]=json!("latex_check");
+ result["ok"]=json!(job.status==scribe_shared::CompileJobStatus::Success);
+ result["reusedCompileJob"]=json!(reused);result["performedCompileThisCall"]=json!(!reused);
+ result["executed"]=json!(job.started_at.is_some());result["engineMismatch"]=json!(false);
+ result["diagnosticEngine"]=json!(job.engine);result["source"]=json!("saved_project_compile_job");
+ result["output"]=result["content"].clone();result["truncated"]=result["hasMore"].clone();
+ result["readLogCall"]=call;result["note"]=json!("Compilation evidence comes from the current project's actual native engine through the existing isolated compile worker; reusedCompileJob and performedCompileThisCall state whether this call reused a pending/recent unchanged-source job. Saved source only; no editor text or pending proposals were applied. Read the full raw final log using read_compile_log/nextCall; warnings do not by themselves mean compilation failed. A queued/running result can be read again by jobId.");
+ Ok(result)
 }
 fn unavailable()->ApiError{ApiError::new(ErrorCode::ServiceUnavailable,"编译检查服务暂不可用，请稍后重试")}
 #[cfg(test)]mod tests{

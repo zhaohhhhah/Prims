@@ -1,0 +1,33 @@
+% 这是一份全新的个人教程副本；修改它不会影响任何其他人的项目。
+% 主文件：main.tex；编译引擎：XeLaTeX。
+\documentclass[UTF8,fontset=fandol,11pt,a4paper]{ctexart}
+\usepackage[margin=24mm]{geometry}
+\usepackage{amsmath,amssymb,graphicx,booktabs,xcolor,hyperref,fancyhdr}
+\definecolor{Ink}{HTML}{283D3B}
+\definecolor{Light}{HTML}{F4F1E7}
+\hypersetup{colorlinks=true,linkcolor=Ink,urlcolor=Ink,citecolor=Ink,pdftitle={纸上微光 · Prims 写作手册}}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.4em}
+\setlength{\headheight}{15pt}
+\pagestyle{fancy}
+\fancyhf{}\fancyhead[L]{\small\color{Ink}纸上微光}\fancyhead[R]{\small Prims}\fancyfoot[C]{\thepage}
+\newcommand{\menu}[1]{\textbf{#1}}
+\newcommand{\tryit}[1]{\par\smallskip\noindent\colorbox{Light}{\parbox{\dimexpr\linewidth-2\fboxsep\relax}{\textbf{动手试试}\quad #1}}\par\smallskip}
+\title{\vspace{-1em}{\Huge\color{Ink}纸上微光}\\[0.5em]{\Large Prims 写作手册}}
+\author{从一页纸，到一份作品}
+\date{2026 年 10 月版}
+\begin{document}
+\maketitle
+\begin{center}\begin{minipage}{0.84\linewidth}
+写作常常从一个还不清楚的念头开始。你可以先写下来，再和助手讨论；先改一句，再慢慢整理整篇。
+
+这份手册也是一个可以编译、编辑和撤销的项目。它属于你，旧项目和旧教程都保留原样。
+\end{minipage}\end{center}
+\tableofcontents
+\input{chapters/01-first-page}
+\input{chapters/02-writing-with-ai}
+\input{chapters/03-latex-workshop}
+\input{chapters/04-history-and-workspace}
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}

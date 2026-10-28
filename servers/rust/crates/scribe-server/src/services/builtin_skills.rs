@@ -64,6 +64,6 @@ mod tests {
         assert!(DOCUMENTS[0].contains("DOI") && DOCUMENTS[0].contains("不得捏造"));
         assert!(DOCUMENTS[5].contains("read_file") && DOCUMENTS[5].contains("propose_edit"));
         assert!(DOCUMENTS[5].contains("list_versions") && DOCUMENTS[5].contains("compare_versions") && DOCUMENTS[5].contains("read_version_file"));
-        assert!(DOCUMENTS[3].contains("engineMismatch") && DOCUMENTS[3].contains("set_compile_settings"));
+        assert!(DOCUMENTS[3].contains("read_compile_log") && DOCUMENTS[3].contains("XeLaTeX") && DOCUMENTS[3].contains("set_compile_settings"));
     }
 }

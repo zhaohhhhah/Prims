@@ -379,13 +379,10 @@ impl Worker {
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(_) => String::new(),
             };
-            // Order is stdout, stderr, then the TeX log. The parser
-            // is line-oriented and stateful (file-token tracking),
-            // so concatenation order only matters for `current_file`
-            // attribution — putting the engine log LAST means entries
-            // it produces inherit `(./path.tex` markers from the
-            // engine log itself, not from tectonic's progress noise.
-            format!("{}\n{}\n{}", outcome.stdout, outcome.stderr, log_text)
+            // A successful multi-pass result is diagnosed from its final log.
+            // On failure, keep stdout/stderr before the log so a failed helper
+            // or engine startup remains visible and file markers still work.
+            diagnostic_text(outcome.success, &outcome.stdout, &outcome.stderr, &log_text)
         };
         let mut entries = log_parser::parse(&combined);
         // chktex pass — runs after the engine even if compile failed,
@@ -769,3 +766,14 @@ async fn read_capped(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
 
 fn output_stem(main_file:&str)->&str{Path::new(main_file).file_stem().and_then(|name|name.to_str()).unwrap_or("main")}
 #[cfg(test)]mod pipeline_tests{use super::*;#[test]fn output_paths_use_basename_for_nested_and_unicode_main_documents(){assert_eq!(output_stem("chapters/main.tex"),"main");assert_eq!(output_stem("章节/主文件.tex"),"主文件");assert_eq!(output_stem("main.tex"),"main");}}
+
+/// Successful multi-pass compiles can emit unresolved-reference warnings on
+/// pass one that are fixed by later passes. The final engine log is current
+/// evidence; aggregate stdout is retained only for failure/missing-log detail.
+fn diagnostic_text(success:bool,stdout:&str,stderr:&str,final_log:&str)->String{
+    if success&&!final_log.trim().is_empty(){final_log.to_owned()}else{format!("{stdout}\n{stderr}\n{final_log}")}
+}
+#[cfg(test)]mod final_pass_diagnostics_tests{use super::*;
+ #[test]fn resolved_first_pass_warnings_are_not_reported_as_final_failures(){let early="LaTeX Warning: Reference `sec:x' undefined on input line 3.";let final_log="This is XeTeX\nOverfull \\hbox (2.0pt too wide) in paragraph at lines 3--4\nOutput written on main.pdf";let actual=diagnostic_text(true,early,"",final_log);assert_eq!(actual,final_log);assert!(!actual.contains("undefined"));assert!(actual.contains("Overfull"));}
+ #[test]fn failed_or_missing_final_log_keeps_engine_failure_evidence(){assert!(diagnostic_text(false,"! Fatal engine error","helper failed","partial log").contains("Fatal engine error"));assert!(diagnostic_text(true,"font warning","","").contains("font warning"));}
+}

@@ -6,13 +6,17 @@ import { useTranslation } from 'react-i18next';
 import type { CompileLogEntry } from '@scribe/compiler-client';
 import type { CompileJobStatus } from '@scribe/shared';
 import type { LucideIcon } from 'lucide-react';
-import { requestCompileAssistant } from '../../lib/compile-assist';
+import { canRequestCompileAssistant, requestCompileAssistant } from '../../lib/compile-assist';
 
 interface CompileLogProps {
   readonly projectId?: string;
   readonly jobProjectId?: string | null;
   readonly knownFilePaths?: readonly string[];
   readonly compileId?: string;
+  readonly mainFile?: string;
+  readonly engine?: string;
+  readonly assistantBusy?: boolean;
+  readonly assistantUnavailable?: boolean;
   readonly status: CompileJobStatus | 'idle';
   readonly entries: readonly CompileLogEntry[];
   readonly durationMs?: number | null;
@@ -132,7 +136,8 @@ function StatusBadge({ status }: { readonly status: CompileLogProps['status'] })
 }
 
 export function CompileLog({
-  projectId, jobProjectId, knownFilePaths, compileId,
+  projectId, jobProjectId, knownFilePaths, compileId, mainFile, engine,
+  assistantBusy = false, assistantUnavailable = false,
   status,
   entries,
   durationMs,
@@ -160,10 +165,17 @@ export function CompileLog({
   // value (dim + parens) while a new compile runs.
   const displayedMs = durationMs ?? stickyMs;
   const isStale = (durationMs === null || durationMs === undefined) && stickyMs !== null;
+  const compiling = status === 'queued' || status === 'running';
+  const canDebug = canRequestCompileAssistant({ projectId, jobProjectId, compileId, status });
+  const debugTitle = compiling ? '等待这次编译完成后即可调试日志'
+    : assistantUnavailable ? '助手已在独立标签页，请先将它放回编辑器'
+    : assistantBusy ? 'AI 正在处理当前请求，请稍后重试'
+    : !canDebug ? '先完成一次编译，再根据它的日志启动 AI 调试'
+    : '读取这次编译日志并启动诊断，修改将保留为逐段预览';
 
   return (
     <div className="flex h-full flex-col border-t bg-background">
-      <div className="flex items-center justify-between border-b px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2">
         <div className="flex items-center gap-3">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             {t('compile.logTitle')}
@@ -181,11 +193,12 @@ export function CompileLog({
           <StatusBadge status={status} />
         </div>
         <div className="flex items-center gap-2">
-        {status === 'error' && projectId && jobProjectId === projectId ? (
-          <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 text-xs" onClick={() => requestCompileAssistant({ projectId, jobProjectId, knownFilePaths, compileId, status, entries, errorMessage })}>
-            <Sparkles className="h-3 w-3" aria-hidden="true" />交给 AI 处理
-          </Button>
-        ) : null}
+        <Button type="button" variant="outline" size="sm" className="h-7 gap-1.5 text-xs"
+          disabled={!canDebug || compiling || assistantBusy || assistantUnavailable} title={debugTitle}
+          onClick={() => requestCompileAssistant({ projectId, jobProjectId, knownFilePaths, compileId, mainFile, engine, status, entries: lintEnabled ? entries : entries.filter(entry => entry.source !== 'chktex'), errorMessage })}>
+          {assistantBusy ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : <Sparkles className="h-3 w-3" aria-hidden="true" />}
+          {assistantBusy ? 'AI 处理中…' : 'AI调试并修复'}
+        </Button>
         {onClose !== undefined ? (
           <Button
             variant="ghost"

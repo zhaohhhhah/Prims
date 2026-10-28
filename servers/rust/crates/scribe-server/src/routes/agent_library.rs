@@ -161,7 +161,7 @@ async fn check(
     }
     crate::services::agent_library::validate_tool(&call)?;
     let result = tokio::time::timeout(
-        std::time::Duration::from_secs(90),
+        std::time::Duration::from_secs(120),
         crate::services::agent_workbench::run(&state, user.id, ProjectId::new(id), &call),
     )
     .await

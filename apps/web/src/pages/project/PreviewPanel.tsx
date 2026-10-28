@@ -22,6 +22,8 @@ interface PreviewPanelProps {
   readonly jobProjectId?: string | null;
   readonly knownFilePaths?: readonly string[];
   readonly compileId?: string;
+  readonly assistantBusy?: boolean;
+  readonly assistantUnavailable?: boolean;
   readonly compileSession: CompileSessionState;
   readonly highlight: {
     readonly page: number;
@@ -43,7 +45,7 @@ interface PreviewPanelProps {
 type View = 'pdf' | 'log';
 
 export function PreviewPanel({
-  projectId, jobProjectId, knownFilePaths, compileId,
+  projectId, jobProjectId, knownFilePaths, compileId, assistantBusy = false, assistantUnavailable = false,
   compileSession,
   highlight,
   onInverseSync,
@@ -200,6 +202,10 @@ export function PreviewPanel({
             jobProjectId={jobProjectId ?? compileSession.job?.projectId ?? null}
             {...(knownFilePaths ? { knownFilePaths } : {})}
             {...(currentCompileId ? { compileId: currentCompileId } : {})}
+            {...(compileSession.job?.mainFile ? { mainFile: compileSession.job.mainFile } : {})}
+            {...(compileSession.job?.engine ? { engine: compileSession.job.engine } : {})}
+            assistantBusy={assistantBusy}
+            assistantUnavailable={assistantUnavailable}
             status={compileSession.status}
             entries={entries}
             durationMs={compileSession.job?.durationMs ?? null}

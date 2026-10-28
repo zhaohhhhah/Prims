@@ -2,7 +2,7 @@ import { type ProjectFile, type ProjectId } from '@scribe/shared';
 import { Button, Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, Input } from '@scribe/ui';
 import { zip } from 'fflate';
 import { Download, FolderInput, Loader2, Trash2, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { api } from '../../lib/api';
@@ -10,6 +10,7 @@ import { BATCH_MAX_BYTES, uploadPath } from '../../lib/archive-upload';
 import { batchError, planFileMoves, runFileBatch, type FileBatchResult } from '../../lib/file-batch';
 import { withFileOperationGuard } from '../../lib/file-operation-guard';
 import { projectActionsApi } from '../../lib/project-actions';
+import { ProjectFolderPicker } from '../../components/project/ProjectFolderPicker';
 
 interface Props {
   projectId: ProjectId;
@@ -17,6 +18,7 @@ interface Props {
   selected: readonly ProjectFile[];
   directories: readonly string[];
   canWrite: boolean;
+  moveRequested?: number;
   onSelection: (ids: ReadonlySet<string>) => void;
   onBusy: (busy: boolean) => void;
   onRefresh: () => Promise<void>;
@@ -27,7 +29,7 @@ function makeZip(entries: Record<string, Uint8Array>): Promise<Uint8Array> {
   return new Promise((resolve, reject) => zip(entries, { level: 6 }, (error, data) => error ? reject(error) : resolve(data)));
 }
 
-export function FileBatchActions({ projectId, files, selected, directories, canWrite, onSelection, onBusy, onRefresh, onClose }: Props) {
+export function FileBatchActions({ projectId, files, selected, directories, canWrite, moveRequested = 0, onSelection, onBusy, onRefresh, onClose }: Props) {
   const { i18n } = useTranslation();
   const text = (zh: string, en: string) => i18n.language.startsWith('zh') ? zh : en;
   const [mode, setMode] = useState<'move' | 'delete' | null>(null);
@@ -37,6 +39,7 @@ export function FileBatchActions({ projectId, files, selected, directories, canW
   const [results, setResults] = useState<FileBatchResult[]>([]);
   const [error, setError] = useState('');
   const [progress, setProgress] = useState(0);
+  useEffect(() => { if (moveRequested > 0) { setMode('move'); setError(''); } }, [moveRequested]);
   const chosen = selected.length;
   const planned = (() => {
     if (mode !== 'move') return { moves: [], error: '' };
@@ -132,7 +135,7 @@ export function FileBatchActions({ projectId, files, selected, directories, canW
     <Dialog open={mode !== null} onOpenChange={open => { if (!busy && !open) { setMode(null); setError(''); } }}>
       <DialogContent className="max-w-lg" onEscapeKeyDown={event => { if (busy) event.preventDefault(); }} onPointerDownOutside={event => { if (busy) event.preventDefault(); }}>
         <DialogHeader><DialogTitle>{mode === 'delete' ? text(`删除 ${chosen} 个文件？`, `Delete ${chosen} files?`) : text(`移动 ${chosen} 个文件`, `Move ${chosen} files`)}</DialogTitle><DialogDescription>{mode === 'delete' ? text('先保存当前编辑内容并创建文本版本，再逐项删除。图片等二进制文件无法从文本版本恢复，请先导出备份。', 'The editor is saved and a text checkpoint is created before deletion. Binary files such as images cannot be recovered from text history; export a backup first.') : text('保留所选文件的相对目录。目标已有同名文件时停止，不覆盖。', 'Preserves relative folders. Existing destination files are never overwritten.')}</DialogDescription></DialogHeader>
-        {mode === 'move' && <label className="space-y-2 text-sm"><span>{text('目标目录（留空为项目根目录）', 'Destination folder (empty for project root)')}</span><Input autoFocus value={directory} disabled={busy} placeholder="chapters/archive" onChange={event => setDirectory(event.target.value)} /></label>}
+        {mode === 'move' && <ProjectFolderPicker files={files} directories={directories} value={directory} disabled={busy} onChange={setDirectory} />}
         <ul className="max-h-52 space-y-1 overflow-auto rounded border p-3 text-sm">{selected.map(file => <li className="break-all" key={file.id}>{file.path}{mode === 'move' && planned.moves.find(move => move.file.id === file.id) ? ` → ${planned.moves.find(move => move.file.id === file.id)?.newPath}` : ''}</li>)}</ul>
         {mode === 'delete' && <label className="space-y-2 text-sm"><span>{text(`输入 ${chosen} 确认删除`, `Type ${chosen} to confirm deletion`)}</span><Input autoFocus value={confirmation} disabled={busy} inputMode="numeric" onChange={event => setConfirmation(event.target.value)} /></label>}
         {(error || planned.error) && <p role="alert" className="break-words text-sm text-destructive">{error || planned.error}</p>}

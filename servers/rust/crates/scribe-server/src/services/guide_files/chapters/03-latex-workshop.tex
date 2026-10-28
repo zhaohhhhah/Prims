@@ -1,0 +1,35 @@
+\section{在 LaTeX 工作台上}
+\subsection{标题、公式与交叉引用}
+正文只需专注内容，章节结构交给 \verb|\section| 和 \verb|\subsection|。公式写在数学环境中；例如，式~\ref{eq:mean} 表示一组观测的算术平均数：
+\begin{equation}
+  \bar{x}=\frac{1}{n}\sum_{i=1}^{n}x_i .
+  \label{eq:mean}
+\end{equation}
+用 \verb|\label| 给公式或章节起一个稳定标记，再用 \verb|\ref| 引用它。改动顺序后，重新编译会更新编号。表~\ref{tab:files} 是这份项目的一个小目录。
+\begin{table}[htbp]
+\centering
+\caption{手册里的几个文件}\label{tab:files}
+\begin{tabular}{ll}\toprule
+文件 & 用途\\\midrule
+\texttt{main.tex} & 入口、样式与章节顺序\\
+\texttt{chapters/} & 分章正文\\
+\texttt{refs.bib} & 参考文献条目\\\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{参考文献与图片}
+本项目的 \texttt{refs.bib} 中放了一条真实的 LaTeX 官方文档入口，可以用 \verb|\cite{latex-docs}| 引用\cite{latex-docs}。新文献可以由你或助手创建条目，但作者、题名、年份和链接仍应核对来源，尤其不要把示例条目当成自己的研究证据。
+
+把图片上传到项目后，可在正文里使用 \verb|\includegraphics{figures/example.png}|。路径要与文件列表一致；图片文件与正文一起保存在项目中。需要 AI 新建 \texttt{refs.bib}、整理图目录或调整引用时，直接说明目标，再检查它的文件操作建议即可。
+
+\subsection{字体与编译引擎}
+这份中文手册用 \texttt{ctexart} 与 TeX 自带的 Fandol 字体，尽量让第一次编译就顺利。项目的文档字体由 LaTeX 源码控制，和网页设置里的编辑器字体是两回事。
+
+使用 XeLaTeX 或 LuaLaTeX 时，可以通过 \texttt{fontspec} 指定编译环境可用的字体。可以请助手先查询可用字体，再根据返回的字体名修改设置。若另一个模板提示找不到字体，先核对字体名；需要随项目携带字体时，可以上传你有权使用的 \texttt{.ttf} 或 \texttt{.otf} 文件，再按项目路径引用。不必为一个字体错误重写正文。
+
+\subsection{出错时，从第一条错误开始}
+编译失败后切到\menu{日志}，先看第一条有效错误及其文件、行号；后面一长串往往只是连带结果。检查括号、环境配对、文件路径和字体名，通常比从头重写更快。
+
+可以把编译错误交给助手处理。它会结合日志与项目文件做诊断、提出修改，也能建议更换主文件或引擎。逐项确认后再编译；若修改不合适，可以拒绝候选，或从版本历史找回先前文本。
+
+\tryit{先在本章末尾加一个练习段，试写公式、表格或一段引文。保持主文件为 \texttt{main.tex}，重新编译后查看效果。}

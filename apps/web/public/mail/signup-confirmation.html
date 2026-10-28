@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Prims 邮箱验证码</title>
+  </head>
+  <body
+    style="
+      font-family: Arial, sans-serif;
+      line-height: 1.7;
+      color: #242424;
+      padding: 24px;
+    "
+  >
+    <h1 style="font-size: 24px">验证你的 Prims 邮箱</h1>
+    <p>请在注册页面填写以下验证码：</p>
+    <p style="font-size: 32px; letter-spacing: 8px; font-weight: bold">
+      {{ .Token }}
+    </p>
+    <p>验证码 10 分钟内有效。重新发送后，请使用最新验证码。</p>
+    <p>也可以<a href="{{ .ConfirmationURL }}">点击这里验证邮箱</a>。</p>
+    <p>如果不是你发起的注册，请忽略此邮件。不要向他人提供验证码或验证链接。</p>
+    <p>联系管理员：970130431@qq.com</p>
+  </body>
+</html>

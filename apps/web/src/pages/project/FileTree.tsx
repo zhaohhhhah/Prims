@@ -19,6 +19,7 @@ import {
   FilePlus,
   FileText,
   FolderClosed,
+  FolderInput,
   FolderOpen,
   FolderPlus,
   Loader2,
@@ -57,7 +58,7 @@ function filesUnder(files: readonly ProjectFile[], folderPath: string): ProjectF
 }
 
 export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTreeProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -68,8 +69,9 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
   const [selecting, setSelecting] = useState(false);
   const [checkedIds, setCheckedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [batchBusy, setBatchBusy] = useState(false);
+  const [moveRequested, setMoveRequested] = useState(0);
   const selectedFiles = files.filter(file => checkedIds.has(file.id));
-  useEffect(() => { setSelecting(false); setCheckedIds(new Set()); }, [projectId]);
+  useEffect(() => { setSelecting(false); setCheckedIds(new Set()); setMoveRequested(0); }, [projectId]);
   useEffect(() => { setCheckedIds(previous => { const valid = new Set<string>(files.map(file => file.id)); const next = new Set([...previous].filter(id => valid.has(id))); return next.size === previous.size ? previous : next; }); }, [files]);
   function checkFiles(items: readonly ProjectFile[], value: boolean) {
     setCheckedIds(previous => { const next = new Set(previous); for (const file of items) { if (value) next.add(file.id); else next.delete(file.id); } return next; });
@@ -463,6 +465,10 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
               <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
               {t('project.renameFile')}
             </ContextMenuItem>
+            <ContextMenuItem disabled={!canWrite || busy} onClick={() => { setCheckedIds(new Set([node.file.id])); setSelecting(true); setMoveRequested(value => value + 1); }}>
+              <FolderInput className="h-3.5 w-3.5" aria-hidden="true" />
+              {i18n.language.startsWith('zh') ? '移动到…' : 'Move to…'}
+            </ContextMenuItem>
             <ContextMenuItem
               onClick={() => {
                 void downloadFile(node.file);
@@ -508,7 +514,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
           {t('project.files')}
         </span>
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="icon" className={`h-6 w-6 ${selecting ? 'bg-accent' : ''}`} disabled={busy} aria-label="批量选择文件" title="批量选择文件" aria-pressed={selecting} onClick={()=>{setSelecting(value=>!value);setCheckedIds(new Set());}}><ListChecks className="h-3.5 w-3.5" /></Button>
+          <Button variant="ghost" size="icon" className={`h-6 w-6 ${selecting ? 'bg-accent' : ''}`} disabled={busy} aria-label="批量选择文件" title="批量选择文件" aria-pressed={selecting} onClick={()=>{setSelecting(value=>!value);setCheckedIds(new Set());setMoveRequested(0);}}><ListChecks className="h-3.5 w-3.5" /></Button>
           <Button
             variant="ghost"
             size="icon"
@@ -562,7 +568,7 @@ export function FileTree({ projectId, files, selectedFileId, onSelect }: FileTre
           <input ref={folderInputRef} type="file" multiple id="file-tree-folder-upload" name="file-tree-folder-upload" className="hidden" disabled={busy || !canWrite} onChange={event => void handleFolderUploadChange(event)} aria-hidden="true" />
         </div>
       </div>
-      {selecting && <FileBatchActions key={projectId} projectId={projectId} files={files} selected={selectedFiles} directories={directoryPaths} canWrite={canWrite} onSelection={setCheckedIds} onBusy={setBatchBusy} onRefresh={refreshFiles} onClose={()=>{setSelecting(false);setCheckedIds(new Set());}} />}
+      {selecting && <FileBatchActions key={projectId} projectId={projectId} files={files} selected={selectedFiles} directories={directoryPaths} canWrite={canWrite} moveRequested={moveRequested} onSelection={setCheckedIds} onBusy={setBatchBusy} onRefresh={refreshFiles} onClose={()=>{setSelecting(false);setCheckedIds(new Set());setMoveRequested(0);}} />}
       {tree.length === 0 ? (
         <p className="text-xs text-muted-foreground">{t('project.noFiles')}</p>
       ) : (

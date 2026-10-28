@@ -71,3 +71,5 @@ pub mod agent_history;
 pub mod context_policy;
 
 pub mod ai_usage;
+
+pub mod agent_compile_log;

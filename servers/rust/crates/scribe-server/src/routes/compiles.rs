@@ -38,6 +38,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/projects/:project_id/compile", post(enqueue))
         .route("/api/compile/engines", get(engines))
         .route("/api/projects/:project_id/compiles", get(list))
+        .route("/api/projects/:project_id/compile-log", get(read_compile_log))
         .route("/api/compiles/:job_id", get(get_one))
         .route("/api/compiles/:job_id/artifact-url", get(artifact_url))
         .layer(from_fn(require_auth));
@@ -72,6 +73,14 @@ async fn list(
 ) -> ApiResult<Json<Vec<CompileJob>>> {
     let svc = service(&state)?;
     Ok(Json(svc.list(user.id, ProjectId::new(project_id), 10).await?))
+}
+
+async fn read_compile_log(State(state):State<AppState>,Authenticated(user):Authenticated,Path(project):Path<Uuid>,Query(params):Query<std::collections::HashMap<String,String>>)->ApiResult<Json<serde_json::Value>>{
+    let mut call=serde_json::json!({"tool":"read_compile_log"});
+    for (key,value) in params{
+        match key.as_str(){"jobId"=>call[key]=serde_json::json!(value),"offset"|"limit"=>call[key]=serde_json::json!(value.parse::<u64>().map_err(|_|ApiError::validation("日志分页参数必须是非负整数"))?),_=>return Err(ApiError::validation("编译日志接口仅接受jobId、offset、limit"))}
+    }
+    Ok(Json(crate::services::agent_compile_log::run(&state,user.id,ProjectId::new(project),&call).await?))
 }
 
 async fn get_one(

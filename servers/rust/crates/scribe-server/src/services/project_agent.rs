@@ -129,7 +129,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
      let mut round_results=vec![];
      for call in &calls{
       let key=call.to_string();
-      if !matches!(call.get("tool").and_then(Value::as_str),Some("web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check")){if let Some(previous)=completed.get(&key).filter(|value|tool_result_succeeded(value)){round_results.push(json!({"toolCall":call,"toolResult":previous,"reused":true}));continue;}}
+      if !matches!(call.get("tool").and_then(Value::as_str),Some("web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"read_compile_log")){if let Some(previous)=completed.get(&key).filter(|value|tool_result_succeeded(value)){round_results.push(json!({"toolCall":call,"toolResult":previous,"reused":true}));continue;}}
       let tool=call.get("tool").and_then(Value::as_str).ok_or_else(||ApiError::validation("读取工具缺少名称"))?;
       let preferences=library.preferences(user).await?;
       if let Err(error)=super::agent_library::gate_tool(tool,&preferences,writer,allow_files){round_results.push(json!({"toolCall":call,"toolResult":{"error":error.message}}));continue;}
@@ -145,6 +145,10 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
        },
        "read_project_memory"=>{
         if !preferences.memory_enabled{Err(ApiError::validation("项目记忆已关闭"))}else{emit(&tx,json!({"status":"正在查看项目笔记…"})).await?;library.memory(user,project).await.map(|memory|json!({"content":memory.content,"revision":memory.revision,"untrusted":true,"permissionsGranted":false}))}
+       },
+       "read_compile_log"=>{
+        emit(&tx,json!({"status":"正在读取当前项目的实际编译日志…"})).await?;
+        super::agent_compile_log::run(&state,user,project,call).await
        },
        "run_project_check"=>{
         if !preferences.diagnostics_enabled||!allow_files{Err(ApiError::validation("项目诊断或文件读取已关闭"))}else if !writer{Err(ApiError::forbidden("只读成员不能运行项目诊断"))}else{
@@ -194,7 +198,7 @@ pub async fn start(state:AppState,user:UserId,mut input:AICompleteInput)->ApiRes
       };
       let value=match result{Ok(value) if tool=="search_project"=>value,Ok(value)=>value,Err(err)=>json!({"tool":tool,"error":err.message})};
       let same_previous=completed.get(&key).is_some_and(|previous|previous==&value);
-      if !same_previous&&value.get("error").is_none()&&value.get("ok")!=Some(&Value::Bool(false))&&((matches!(tool,"list_files"|"search_project"|"read_file"|"list_versions"|"read_version_file"|"compare_versions"|"compact_context"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"))||(tool=="update_plan"&&value.get("changed")==Some(&Value::Bool(true)))||(tool=="web_search"&&value.get("cached")!=Some(&Value::Bool(true)))){new_results+=1;}
+      if !same_previous&&value.get("error").is_none()&&value.get("ok")!=Some(&Value::Bool(false))&&((matches!(tool,"list_files"|"search_project"|"read_file"|"list_versions"|"read_version_file"|"compare_versions"|"compact_context"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"read_compile_log"))||(tool=="update_plan"&&value.get("changed")==Some(&Value::Bool(true)))||(tool=="web_search"&&value.get("cached")!=Some(&Value::Bool(true)))){new_results+=1;}
       completed.insert(key,value.clone());round_results.push(json!({"toolCall":call,"toolResult":value}));
      }
      if loop_guard.observe(&calls,new_results,pending.items.len().saturating_sub(before_proposals)){return Err(ApiError::validation(super::agent_loop_guard::STOP_REPLY));}
@@ -349,8 +353,8 @@ impl NativeCalls{
 fn native_calls_output(calls:&[NativeToolCall])->ApiResult<Value>{
  if calls.is_empty(){return Err(output_format_error());}let mut normalized=vec![];
  for call in calls{
-  let allowed:&[&str]=match call.name.as_str(){"list_files"=>&["offset"],"compact_context"|"list_skills"|"read_project_memory"=>&[],"search_project"=>&["query","offset"],"read_file"=>&["path","startLine","endLine","startOffset","endOffset"],"propose_edit"=>&["filePath","before","after"],"update_plan"=>&["explanation","plan"],"web_search"=>&["query","count"],"read_skill"=>&["id"],"install_skill"=>&["content","url"],"run_project_check"=>&["task","path","fontName"],name if super::agent_history::is_history_tool(name)=>super::agent_history::allowed_arguments(name).unwrap(),_=>return Err(ApiError::validation("模型请求了未授权工具，只允许列目录、查找和读取项目文件"))};
-  let args:Value=serde_json::from_str(if call.arguments.trim().is_empty()&&matches!(call.name.as_str(),"list_files"|"list_versions"|"compact_context"|"list_skills"|"read_project_memory"){"{}"}else{&call.arguments}).map_err(|_|ApiError::validation("原生工具参数未完整生成，本轮未执行"))?;
+  let allowed:&[&str]=match call.name.as_str(){"list_files"=>&["offset"],"compact_context"|"list_skills"|"read_project_memory"=>&[],"search_project"=>&["query","offset"],"read_file"=>&["path","startLine","endLine","startOffset","endOffset"],"propose_edit"=>&["filePath","before","after"],"update_plan"=>&["explanation","plan"],"web_search"=>&["query","count"],"read_skill"=>&["id"],"install_skill"=>&["content","url"],"run_project_check"=>&["task","path","fontName"],"read_compile_log"=>super::agent_compile_log::ARGUMENTS,name if super::agent_history::is_history_tool(name)=>super::agent_history::allowed_arguments(name).unwrap(),_=>return Err(ApiError::validation("模型请求了未授权工具，只允许列目录、查找和读取项目文件"))};
+  let args:Value=serde_json::from_str(if call.arguments.trim().is_empty()&&matches!(call.name.as_str(),"list_files"|"list_versions"|"compact_context"|"list_skills"|"read_project_memory"|"read_compile_log"){"{}"}else{&call.arguments}).map_err(|_|ApiError::validation("原生工具参数未完整生成，本轮未执行"))?;
   let args=args.as_object().filter(|args|args.keys().all(|key|allowed.contains(&key.as_str()))).ok_or_else(||ApiError::validation("原生工具参数必须是白名单字段组成的完整对象"))?;
   let mut value=Value::Object(args.clone());value["tool"]=json!(call.name);normalized.push(value);
  }
@@ -381,11 +385,11 @@ fn parse_read_tool_sequence(raw:&str)->ApiResult<Option<Value>>{
   let status=super::project_progress::take_public_status(&mut value);if public_status.is_none(){public_status=status;}
   let item=value.as_object().ok_or_else(||ApiError::validation("读取工具批次必须由完整 JSON 对象组成"))?;
   if let Some(name)=item.get("tool").filter(|value|!value.is_null()){
-   let name=name.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"list_versions"|"read_version_file"|"compare_versions")).ok_or_else(||ApiError::validation("工具批次只允许 list_files、search_project、read_file"))?;
+   let name=name.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"read_compile_log"|"list_versions"|"read_version_file"|"compare_versions")).ok_or_else(||ApiError::validation("工具批次只允许 list_files、search_project、read_file"))?;
    let mut call=json!({"tool":name});
    match name{
     name if super::agent_history::is_history_tool(name)=>{call=super::agent_history::normalize_call(&value)?;},
-    "list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"=>{super::agent_library::validate_tool(&value)?;for key in ["id","task","path","fontName","content","url"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
+    "list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"read_compile_log"=>{super::agent_library::validate_tool(&value)?;for key in ["id","task","path","fontName","content","url","jobId","offset","limit"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "web_search"=>{for key in ["query","count"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "update_plan"=>{for key in ["explanation","plan"]{if let Some(value)=item.get(key){call[key]=value.clone();}}},
     "propose_edit"=>{for key in ["filePath","before","after"]{call[key]=item.get(key).filter(|value|value.is_string()).cloned().ok_or_else(||ApiError::validation("propose_edit需要完整filePath、before、after字符串"))?;}},
@@ -434,10 +438,10 @@ fn normalize_model_value_without_status(value:Value,trusted:bool)->ApiResult<Val
  let object=value.as_object().ok_or_else(output_format_error)?;
  if let Some(tool)=object.get("tool").filter(|tool|!tool.is_null()){
   if !trusted{return Err(output_format_error());}
-  let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"list_versions"|"read_version_file"|"compare_versions")).ok_or_else(output_format_error)?;
+  let name=tool.as_str().filter(|name|matches!(*name,"list_files"|"search_project"|"read_file"|"propose_edit"|"compact_context"|"update_plan"|"web_search"|"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"read_compile_log"|"list_versions"|"read_version_file"|"compare_versions")).ok_or_else(output_format_error)?;
   if super::agent_history::is_history_tool(name){return super::agent_history::normalize_call(&value);}
-  if matches!(name,"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"){super::agent_library::validate_tool(&value)?;}
-  let mut output=json!({"tool":name});for key in ["id","task","path","fontName","content","url","query","offset","startOffset","endOffset","startLine","endLine","filePath","before","after","explanation","plan","count"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
+  if matches!(name,"list_skills"|"read_skill"|"install_skill"|"read_project_memory"|"run_project_check"|"read_compile_log"){super::agent_library::validate_tool(&value)?;}
+  let mut output=json!({"tool":name});for key in ["id","task","path","fontName","content","url","jobId","limit","query","offset","startOffset","endOffset","startLine","endLine","filePath","before","after","explanation","plan","count"]{if let Some(value)=object.get(key){output[key]=value.clone();}}
   if matches!(name,"list_files"|"search_project")&&output.get("offset").is_some_and(|v|!v.is_u64()){return Err(output_format_error());}
   if name=="read_file"{let path=output.get("path").and_then(Value::as_str).ok_or_else(output_format_error)?;super::project_context::validate_path(path)?;for key in ["startLine","endLine","startOffset","endOffset"]{if output.get(key).is_some_and(|value|!value.is_u64()){return Err(output_format_error());}}}
   if name=="search_project"&&!output.get("query").and_then(Value::as_str).is_some_and(|query|!query.trim().is_empty()&&query.chars().count()<=200){return Err(output_format_error());}
@@ -688,3 +692,7 @@ fn validate_project_edit_targets(output:&Value,context:Option<&ProjectContext>)-
 }
 
 #[cfg(test)]mod continuation_transport_tests{use super::*;#[test]fn cursor_arguments_survive_native_single_and_batch_transports(){let calls=vec![json!({"tool":"list_files","offset":200}),json!({"tool":"search_project","query":"needle","offset":40}),json!({"tool":"read_file","path":"large.tex","startOffset":10000,"endOffset":90000})];for call in &calls{assert_eq!(parse_model_output(&call.to_string()).unwrap(),*call);let args=call.as_object().unwrap().iter().filter(|(key,_)|key.as_str()!="tool").map(|(k,v)|(k.clone(),v.clone())).collect::<serde_json::Map<_,_>>();let native=NativeToolCall{id:"cursor".into(),name:call["tool"].as_str().unwrap().into(),arguments:Value::Object(args).to_string()};assert!(native_calls_output(&[native]).is_ok());}let parsed=parse_read_tool_sequence(&json!(calls).to_string()).unwrap().unwrap();assert_eq!(parsed["calls"],json!(calls));}}
+
+#[cfg(test)]mod compile_log_transport_tests{use super::*;
+ #[test]fn compile_log_uses_native_and_compatibility_without_scope_overrides(){for call in [json!({"tool":"read_compile_log"}),json!({"tool":"read_compile_log","jobId":Uuid::new_v4(),"offset":0,"limit":1000})]{assert!(parse_model_output(&call.to_string()).is_ok());let mut args=call.clone();args.as_object_mut().unwrap().remove("tool");let native=NativeToolCall{id:"log-1".into(),name:"read_compile_log".into(),arguments:args.to_string()};assert!(native_calls_output(&[native]).is_ok());assert!(parse_read_tool_sequence(&json!([call]).to_string()).is_ok());}for call in [json!({"tool":"read_compile_log","projectId":Uuid::new_v4()}),json!({"tool":"read_compile_log","path":"/etc/passwd"}),json!({"tool":"read_compile_log","jobId":"not-a-uuid"})]{assert!(parse_model_output(&call.to_string()).is_err());}}
+}

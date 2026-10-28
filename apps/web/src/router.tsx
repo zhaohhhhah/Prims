@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 
 import { AppShell } from './layouts/AppShell';
+import { AuthArtLayout } from './layouts/AuthArtLayout';
 import { AuthGuard } from './layouts/AuthGuard';
 import { RootLayout } from './layouts/RootLayout';
 import { AuthCallbackPage } from './pages/auth/AuthCallbackPage';
@@ -21,8 +22,13 @@ export const router = createBrowserRouter([
     element: <RootLayout />,
     errorElement: <ErrorPage />,
     children: [
-      { path: '/login', element: <LoginPage />, errorElement: <ErrorPage /> },
-      { path: '/signup', element: <SignupPage />, errorElement: <ErrorPage /> },
+      {
+        element: <AuthArtLayout />,
+        children: [
+          { path: '/login', element: <LoginPage />, errorElement: <ErrorPage /> },
+          { path: '/signup', element: <SignupPage />, errorElement: <ErrorPage /> },
+        ],
+      },
       { path: '/forgot', element: <ForgotPasswordPage />, errorElement: <ErrorPage /> },
       { path: '/auth/callback', element: <AuthCallbackPage />, errorElement: <ErrorPage /> },
       { path: '/auth/reset-password', element: <ResetPasswordPage />, errorElement: <ErrorPage /> },

@@ -215,7 +215,7 @@ impl AIService {
         if native_mode{
             req.native_tools.extend(super::agent_library::native_tools());
             let allow_files=input.options.as_ref().and_then(|options|options.get("agentFileToolsAllowed")).is_none_or(|value|value!="false");
-            req.native_tools.retain(|tool|match tool.name.as_str(){"list_skills"|"read_skill"|"install_skill"=>agent_preferences.skills_enabled,"read_project_memory"=>agent_preferences.memory_enabled,"run_project_check"=>agent_preferences.diagnostics_enabled&&super::agent_workbench::configured(),"list_files"|"read_file"|"search_project"|"propose_edit"|"list_versions"|"read_version_file"|"compare_versions"=>allow_files,_=>true});
+            req.native_tools.retain(|tool|match tool.name.as_str(){"list_skills"|"read_skill"|"install_skill"=>agent_preferences.skills_enabled,"read_project_memory"=>agent_preferences.memory_enabled,"run_project_check"=>agent_preferences.diagnostics_enabled&&allow_files&&super::agent_workbench::configured(),"read_compile_log"=>agent_preferences.diagnostics_enabled&&allow_files,"list_files"|"read_file"|"search_project"|"propose_edit"|"list_versions"|"read_version_file"|"compare_versions"=>allow_files,_=>true});
         }
         let selected_search=if inline{self.resolve_search(user,&req).await.ok().flatten()}else{None};
         let search_available=agent_preferences.search_enabled&&selected_search.is_some();

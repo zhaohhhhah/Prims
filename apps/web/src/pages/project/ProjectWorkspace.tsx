@@ -343,6 +343,7 @@ export function ProjectWorkspace({
   const editorRef = useRef<LatexEditorImperativeHandle>(null);
   const [workspaceWidth,setWorkspaceWidth]=useState(window.innerWidth);
   const [assistantAway,setAssistantAway]=useState(false);
+  const [assistantBusy,setAssistantBusy]=useState(false);
   const [assistantTabHost,setAssistantTabHost]=useState<HTMLDivElement|null>(null);
   const [assistantRightHost,setAssistantRightHost]=useState<HTMLDivElement|null>(null);
   const [assistantBottomHost,setAssistantBottomHost]=useState<HTMLDivElement|null>(null);
@@ -1591,6 +1592,8 @@ export function ProjectWorkspace({
   const previewPanel = (
     <PreviewPanel
       compileSession={compileSession}
+      assistantBusy={assistantBusy}
+      assistantUnavailable={assistantAway}
       projectId={projectId}
       jobProjectId={compileSession.job?.projectId??null}
       knownFilePaths={files.map(file=>file.path)}
@@ -1744,7 +1747,7 @@ export function ProjectWorkspace({
       {assistantRightSlot}
       </div>
       {assistantOnly&&<div ref={setAssistantTabHost} className="min-h-0 flex-1" data-testid="assistant-tab-host"/>}
-      <InlineAssistant standalone={assistantOnly} fileId={selectedFile?.id} onDetachedChange={setAssistantAway} controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly || fileBatchBusy} layout={shownAssistantLayout} effectiveMode={assistantMode} onLayoutChange={assistantOnly?()=>{}:updateAssistantLayout} viewport={assistantViewport} rightHost={assistantOnly?assistantTabHost:assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} onFollowFile={path=>{if(!path){onClearFile?.();return;}const next=files.find(file=>file.path===path);if(next)onSelectFile(next);}} selectionMatches={(from,to,text)=>{const content=editorRef.current?.getContent();return content!==undefined&&content.slice(from,to)===text;}} />
+      <InlineAssistant onBusyChange={setAssistantBusy} standalone={assistantOnly} fileId={selectedFile?.id} onDetachedChange={setAssistantAway} controller={assistantController} projectId={projectId} filePath={selectedFile?.path ?? ''} readOnly={editorReadOnly || fileBatchBusy} layout={shownAssistantLayout} effectiveMode={assistantMode} onLayoutChange={assistantOnly?()=>{}:updateAssistantLayout} viewport={assistantViewport} rightHost={assistantOnly?assistantTabHost:assistantRightHost} bottomHost={assistantBottomHost} diagnosticPending={compileAnchor!==null} beforeProjectAction={flushAssistantEditor} knownTextPaths={files.filter(isEditableTextFile).map(file=>file.path)} onFollowFile={path=>{if(!path){onClearFile?.();return;}const next=files.find(file=>file.path===path);if(next)onSelectFile(next);}} selectionMatches={(from,to,text)=>{const content=editorRef.current?.getContent();return content!==undefined&&content.slice(from,to)===text;}} />
       <CommandPalette
         open={cmdPaletteOpen}
         onOpenChange={setCmdPaletteOpen}

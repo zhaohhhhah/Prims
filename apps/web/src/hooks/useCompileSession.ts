@@ -12,6 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api, ApiError } from '../lib/api';
 import { log } from '../lib/debug';
+import { isCompilePending } from '../lib/initial-pdf';
 import {
   type DesktopCompileCompletedEvent,
   type DesktopCompileLogEvent,
@@ -107,6 +108,8 @@ const INITIAL: InternalState = {
 export function useCompileSession(projectId: ProjectId | null): CompileSessionState {
   const [state, setState] = useState<InternalState>(INITIAL);
   const socketRef = useRef<WebSocket | null>(null);
+  const bootstrapEpoch = useRef(0);
+  const openExistingStreamRef = useRef<(id: CompileJobId, current: () => boolean) => Promise<void>>(async () => {});
 
   const cleanupSocket = useCallback(() => {
     if (socketRef.current !== null) {
@@ -123,13 +126,16 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
   // the state from its row (status, entries, error_message), then
   // resolve the artifact URLs — all of that is cheap (one list
   // call + one signed-URL call). If the most recent job is still
-  // in-flight, we just hold the snapshot we have; the user can
-  // recompile to take over the stream.
+  // in-flight, attach its stream and poll its final row as a fallback.
+  // A newly created tutorial may enqueue just after this first request.
   //
   // Skipped in Tauri mode: we don't persist compile history locally
   // yet, so there's nothing to restore. The user gets the empty
   // state until they hit Compile.
   useEffect(() => {
+    const epoch = ++bootstrapEpoch.current;
+    cleanupSocket();
+    setState(INITIAL);
     if (projectId === null) {
       setState(INITIAL);
       return;
@@ -157,33 +163,45 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
       };
     }
     let cancelled = false;
+    const current = () => !cancelled && bootstrapEpoch.current === epoch;
     void (async () => {
       try {
-        const jobs = await api.compiles.list(projectId);
-        if (cancelled || jobs.length === 0) return;
-        const latest = jobs[0];
-        if (latest === undefined) return;
-        setState((s) => ({
-          ...s,
-          job: latest,
-          status: latest.status,
-          entries: latest.entries ?? [],
-          errorMessage: latest.errorMessage ?? null,
-        }));
-        // Only ask for artifact URLs when the job actually
-        // produced one (a failed compile leaves pdf_key null,
-        // so no signing call is necessary or useful).
-        if (latest.pdfKey !== null) {
-          void refreshArtifactUrlsRef.current(latest.id);
+        let jobs: readonly CompileJob[] = [];
+        for (let attempt = 0; attempt < 5 && current(); attempt++) {
+          jobs = await api.compiles.list(projectId);
+          if (jobs.length || !current()) break;
+          await new Promise(resolve => window.setTimeout(resolve, 2000));
         }
+        if (!current() || !jobs.length) return;
+        let latest = jobs[0];
+        if (latest === undefined) return;
+        const initial = latest;
+        setState(s => ({...s, job:initial, status:initial.status, entries:initial.entries??[], errorMessage:initial.errorMessage??null}));
+        if (latest.pdfKey !== null) void refreshArtifactUrlsRef.current(latest.id,current);
+        if (!isCompilePending(latest)) return;
+        try {
+          await openExistingStreamRef.current(latest.id,current);
+        } catch (err) {
+          if (current()) log.compile.warn('background compile stream unavailable; polling its final row', err);
+        }
+        // The persisted row is authoritative if WebSocket setup/replay is lost.
+        const deadline = Date.now()+180_000;
+        while (current() && isCompilePending(latest) && Date.now()<deadline) {
+          await new Promise(resolve => window.setTimeout(resolve, 2000));
+          if (!current()) return;
+          latest = await api.compiles.get(latest.id);
+        }
+        if (!current() || isCompilePending(latest)) return;
+        const finished = latest;
+        setState(s => ({...s, job:finished, status:finished.status, entries:finished.entries??[], errorMessage:finished.errorMessage??null}));
+        if (finished.pdfKey !== null) void refreshArtifactUrlsRef.current(finished.id,current);
       } catch (err) {
-        log.compile.warn('failed to restore last compile', err);
+        if (current()) log.compile.warn('failed to restore last compile', err);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
+    return () => { cancelled = true; cleanupSocket(); };
+
+  }, [projectId, cleanupSocket]);
 
   // Desktop event-subscription cleanup. Each compile registers three
   // listeners (log / status / completed); we keep their unlisten
@@ -205,11 +223,11 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
   // Forward-ref so the bootstrap effect above can call the
   // memoised `refreshArtifactUrls` without listing it as a dep
   // (its identity depends on `setState`, which would loop).
-  const refreshArtifactUrlsRef = useRef<(jobId: CompileJobId) => Promise<void>>(async () => {
+  const refreshArtifactUrlsRef = useRef<(jobId: CompileJobId, current?: () => boolean) => Promise<void>>(async () => {
     /* set below */
   });
 
-  const refreshArtifactUrls = useCallback(async (jobId: CompileJobId) => {
+  const refreshArtifactUrls = useCallback(async (jobId: CompileJobId, current: () => boolean = () => true) => {
     try {
       // PDF is on the critical path of the worker — it's uploaded
       // synchronously, so by the time we see `Completed` the signed
@@ -218,6 +236,7 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
         .artifactUrl(jobId, 'pdf')
         .then((res) => ({ ok: true as const, url: res.url }))
         .catch((err: unknown) => ({ ok: false as const, err }));
+      if (!current()) return;
       if (pdfResult.ok) {
         setState((s) => ({ ...s, pdfUrl: pdfResult.url }));
       } else {
@@ -232,9 +251,11 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
       // the browser console.
       const trySynctex = (delay: number) => {
         window.setTimeout(() => {
+          if (!current()) return;
           void api.compiles
             .artifactUrl(jobId, 'synctex')
             .then((res) => {
+              if (!current()) return;
               setState((s) => ({ ...s, synctexUrl: res.url }));
             })
             .catch((err: unknown) => {
@@ -264,15 +285,17 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
   refreshArtifactUrlsRef.current = refreshArtifactUrls;
 
   const openStream = useCallback(
-    async (jobId: CompileJobId) => {
+    async (jobId: CompileJobId, current: () => boolean = () => true) => {
+      if (!current()) return;
       cleanupSocket();
       const { data } = await supabase.auth.getSession();
       const token = data.session?.access_token;
-      if (token === undefined) return;
+      if (token === undefined || !current()) return;
       const url = `${wsOrigin()}/api/compiles/${jobId}/stream?token=${encodeURIComponent(token)}`;
       const ws = new WebSocket(url);
       socketRef.current = ws;
       ws.onmessage = (event) => {
+        if (!current()) return;
         try {
           const parsed = compileLogStreamMessageSchema.safeParse(JSON.parse(event.data as string));
           if (!parsed.success) return;
@@ -298,7 +321,7 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
                   : s.job,
             }));
             if (msg.pdfKey !== null) {
-              void refreshArtifactUrls(jobId);
+              void refreshArtifactUrls(jobId,current);
             }
           }
         } catch (err) {
@@ -309,18 +332,23 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
         }
       };
       ws.onerror = () => {
+        if (!current()) return;
         setState((s) => ({ ...s, errorMessage: 'WebSocket error' }));
       };
       ws.onclose = () => {
-        socketRef.current = null;
+        if (socketRef.current === ws) socketRef.current = null;
       };
     },
     [cleanupSocket, refreshArtifactUrls],
   );
 
+  openExistingStreamRef.current = openStream;
+
   const compile = useCallback(
     async (mainFile?: string, editorOverrides?: Readonly<Record<string, string>>) => {
       if (projectId === null) return;
+      bootstrapEpoch.current++;
+      cleanupSocket();
       setState({
         ...INITIAL,
         status: 'queued',
@@ -489,7 +517,7 @@ export function useCompileSession(projectId: ProjectId | null): CompileSessionSt
         setState((s) => ({ ...s, status: 'error', errorMessage: msg }));
       }
     },
-    [projectId, openStream, cleanupDesktopListeners],
+    [projectId, openStream, cleanupDesktopListeners, cleanupSocket],
   );
 
   return {
