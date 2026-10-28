@@ -4,7 +4,8 @@ use axum::{
 };
 use scribe_auth::{require_auth, Authenticated};
 use scribe_shared::{ApiError, ApiResult, ErrorCode, ProjectId};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use scribe_storage::{Storage, COMPILE_ARTIFACTS_BUCKET};
 use sqlx::Row;
 use uuid::Uuid;
 use crate::{state::AppState, services::{FileService, membership::assert_member}};
@@ -26,7 +27,36 @@ struct Person { id: Uuid, name: String }
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/projects/:project_id/dashboard-summary", get(summary))
+        .route("/api/projects/:project_id/bookshelf-pdf", get(bookshelf_pdf))
         .layer(from_fn(require_auth))
+}
+
+
+#[derive(Deserialize)]
+struct PreviewQuery { #[serde(default)] original: bool }
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+struct PreviewUrl { url: String, job_id: Uuid, optimized: bool }
+async fn bookshelf_pdf(
+    State(state): State<AppState>, Authenticated(user): Authenticated,
+    Path(id): Path<Uuid>, axum::extract::Query(query): axum::extract::Query<PreviewQuery>,
+) -> ApiResult<Json<PreviewUrl>> {
+    let pool=state.db().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"database not configured"))?.pool();
+    assert_member(pool,user.id,ProjectId::new(id)).await?;
+    let row=sqlx::query("select id,pdf_key from public.compile_jobs where project_id=$1 and status='success' and pdf_key is not null order by enqueued_at desc,id desc limit 1")
+        .bind(id).fetch_optional(pool).await.map_err(|_|ApiError::internal("PDF unavailable"))?
+        .ok_or_else(||ApiError::not_found("No successful PDF"))?;
+    let job_id:Uuid=row.get("id"); let original:String=row.get("pdf_key");
+    let storage=state.storage().ok_or_else(||ApiError::new(ErrorCode::ServiceUnavailable,"storage not configured"))?;
+    if !query.original {
+        if let Some(key)=crate::services::pdf_previews::preview_key(pool,id,job_id).await {
+            if let Ok(url)=storage.signed_url(COMPILE_ARTIFACTS_BUCKET,&key,300).await {
+                return Ok(Json(PreviewUrl{url,job_id,optimized:true}));
+            }
+        }
+    }
+    let url=storage.signed_url(COMPILE_ARTIFACTS_BUCKET,&original,300).await?;
+    Ok(Json(PreviewUrl{url,job_id,optimized:false}))
 }
 
 async fn summary(
@@ -45,7 +75,7 @@ async fn summary(
             from public.project_files f where f.project_id=p.id),p.updated_at)) updated_at,
           (select count(*) from public.project_versions v where v.project_id=p.id) versions,
           (select j.id from public.compile_jobs j where j.project_id=p.id
-            and j.pdf_key is not null order by j.enqueued_at desc limit 1) latest_pdf_job_id
+            and j.status='success' and j.pdf_key is not null order by j.enqueued_at desc,j.id desc limit 1) latest_pdf_job_id
         from public.projects p where p.id=$1
     "#).bind(id).fetch_one(pool).await
         .map_err(|_| ApiError::internal("Project summary unavailable"))?;

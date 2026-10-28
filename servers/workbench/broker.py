@@ -13,6 +13,7 @@ import time
 import uuid
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import pdf_optimizer
 from worker import MAX_BODY, validate_job, read_stream_header, STREAM_MAX_BODY, STREAM_MAX_TOTAL
 
 VERSION = '1.0.0'
@@ -249,12 +250,43 @@ class Handler(BaseHTTPRequestHandler):
             healthy = False
         self.respond(200 if healthy else 503, {'ok': healthy, 'version': VERSION,
             'capabilities': ((['font_check','list_fonts','latex_compile'] if TEXLIVE else []) if COMPILE_ONLY else ['latex_check','font_check','list_fonts']) if healthy else [],
+            'pdfPreviewOptimizer': COMPILE_ONLY, 'maxConcurrentPdfPreviews': 1,
             'maxConcurrentJobs': SLOT_COUNT, 'snapshotMaxBytes': 32 * 1024 * 1024,
             'commandTimeoutSeconds': 45, 'jobTimeoutSeconds': 90, 'maxOutputBytes': 65536,
             'sandboxCreateTimeoutSeconds':CREATE_TIMEOUT_SECONDS,'compileJobTimeoutSeconds':180,'compileSnapshotMaxBytes':STREAM_MAX_TOTAL,'compileStreamProtocol':'prims-compile-v1','compileArtifactTotalMaxBytes':32*1024*1024})
 
+    def optimize_pdf(self):
+        if not COMPILE_ONLY:
+            self.respond(404, {'error': 'Not found'})
+            return
+        try:
+            length = int(self.headers.get('Content-Length', '-1'))
+            if self.headers.get('Transfer-Encoding') or not 8 <= length <= pdf_optimizer.MAX_PDF:
+                self.respond(413, {'error': 'PDF exceeds preview limit'})
+                self.close_connection = True
+                return
+            if self.headers.get('Content-Type') != 'application/pdf':
+                self.respond(400, {'error': 'PDF required'})
+                return
+            self.connection.settimeout(30)
+            raw = self.rfile.read(length)
+            if len(raw) != length: raise ValueError('Incomplete PDF')
+            def busy():
+                with LOCK: return bool(RUNS)
+            code, output = pdf_optimizer.optimize(raw, DOCKER, IMAGE, busy)
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/pdf' if code == 200 else 'text/plain')
+            self.send_header('Content-Length', str(len(output)))
+            self.end_headers()
+            self.wfile.write(output)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            self.close_connection = True
+
     def do_POST(self):
         if not self.authorized():
+            return
+        if self.path == '/optimize':
+            self.optimize_pdf()
             return
         if self.path != '/run':
             self.respond(404, {'error': 'Not found'})

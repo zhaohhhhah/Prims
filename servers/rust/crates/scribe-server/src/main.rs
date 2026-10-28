@@ -181,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let verifier = Arc::new(match state.db() { Some(db) => verifier.with_accounts(db.pool().clone()), None => verifier });
     services::user_management::start_cleanup_worker(state.clone());
+    services::pdf_previews::start_worker(state.clone());
 
     // Yjs registry: built lazily once we know we have a DB to back it.
     // If the DB isn't configured, the WS route 503s rather than panicking.

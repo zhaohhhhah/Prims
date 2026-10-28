@@ -77,3 +77,5 @@ pub mod agent_compile_log;
 pub mod user_management;
 
 pub mod upload_limits;
+
+pub mod pdf_previews;
