@@ -7,5 +7,5 @@ export const appearancePalette=(id:string)=>APPEARANCE_PALETTES.find(palette=>pa
 export const UI_FONTS=['inherit','modern','literary','humanist'] as const;
 export const CODE_FONTS=['inherit','menlo','system','courier'] as const;
 export const BRAND_STYLES=['classic','calligraphy','simple'] as const;
-export const BOOK_TITLE_STYLES=['inherit','handwritten','literary','simple'] as const;
+export const BOOK_TITLE_STYLES=['inherit','pen','handwritten','literary','simple'] as const;
 export const ICON_STYLES=['system','fine','soft','sketch'] as const;

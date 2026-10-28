@@ -1,6 +1,6 @@
 import {appearancePalette,APPEARANCE_SERIES,BOOK_TITLE_STYLES,BRAND_STYLES,CODE_FONTS,ICON_STYLES,UI_FONTS,type AppearanceSeries} from './appearance-catalog';
 export interface AppearancePreferences {lightPalette:string;darkPalette:string;paletteSeries:AppearanceSeries;uiFont:(typeof UI_FONTS)[number];codeFont:(typeof CODE_FONTS)[number];brandStyle:(typeof BRAND_STYLES)[number];bookTitleStyle:(typeof BOOK_TITLE_STYLES)[number];iconStyle:(typeof ICON_STYLES)[number];presetId:string|null}
-export const DEFAULT_APPEARANCE:AppearancePreferences={lightPalette:'classic-light',darkPalette:'classic-dark',paletteSeries:'original',uiFont:'inherit',codeFont:'inherit',brandStyle:'calligraphy',bookTitleStyle:'handwritten',iconStyle:'system',presetId:null};
+export const DEFAULT_APPEARANCE:AppearancePreferences={lightPalette:'classic-light',darkPalette:'classic-dark',paletteSeries:'original',uiFont:'inherit',codeFont:'inherit',brandStyle:'calligraphy',bookTitleStyle:'pen',iconStyle:'system',presetId:null};
 export type AppearancePresetId='classic'|'mist'|'impression'|'celadon'|'indigo'|'nocturne';
 export interface AppearancePreset {id:AppearancePresetId;mode:'system'|'light'|'dark';preferences:Omit<AppearancePreferences,'presetId'>}
 const classic={...DEFAULT_APPEARANCE};
